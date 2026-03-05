@@ -1,0 +1,29 @@
+# =============================================================================
+# Guardian Common - Shared Types
+# =============================================================================
+#
+# This crate contains type definitions shared between the eBPF kernel program
+# and the userspace daemon. Because eBPF programs run in a constrained
+# environment (no standard library, no heap allocation), this crate MUST be
+# `no_std` compatible.
+#
+# Rules for this crate:
+#   - NO external dependencies (keeps it compatible with both environments)
+#   - All structs must be #[repr(C)] for stable memory layout across
+#     kernel/userspace boundary
+#   - All structs must be Copy + Clone (eBPF maps require this)
+#   - Use fixed-size arrays, never Vec or String
+
+[package]
+name = "guardian-common"
+version = "0.1.0"
+edition = "2021"
+description = "Shared types between Guardian Shell eBPF and userspace components"
+
+[features]
+default = []
+# Enable this feature in userspace code for std-dependent functionality
+user = []
+
+[dependencies]
+# Intentionally empty - this crate must work in both no_std (eBPF) and std contexts

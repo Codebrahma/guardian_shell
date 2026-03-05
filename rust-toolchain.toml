@@ -1,0 +1,16 @@
+# =============================================================================
+# Rust Toolchain Configuration
+# =============================================================================
+#
+# We need the nightly toolchain because:
+#   1. eBPF programs require `-Z build-std=core` (an unstable cargo flag)
+#      to build the `core` library for the BPF target
+#   2. The bpfel-unknown-none target is a tier 3 target requiring nightly
+#
+# The userspace code is compatible with stable Rust, but we use nightly
+# for the whole workspace for simplicity.
+
+[toolchain]
+channel = "nightly"
+# These components are needed for eBPF development
+components = ["rust-src", "rustfmt", "clippy"]

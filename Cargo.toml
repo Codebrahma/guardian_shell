@@ -1,0 +1,33 @@
+# =============================================================================
+# Guardian Shell - Workspace Root
+# =============================================================================
+#
+# This is the Cargo workspace that ties together all crates in the project:
+#
+#   guardian/          - Userspace daemon (loads eBPF, processes events, enforces policy)
+#   guardian-common/   - Shared types between kernel and userspace (must be no_std)
+#   guardian-ebpf/     - eBPF programs that run inside the Linux kernel
+#   xtask/             - Build tooling (compiles the eBPF program for BPF target)
+#
+# Build workflow:
+#   1. cargo xtask build-ebpf          # Compile eBPF program for BPF target
+#   2. cargo build                     # Compile userspace daemon
+#   3. sudo target/debug/guardian ...  # Run (needs root for eBPF)
+
+[workspace]
+resolver = "2"
+members = [
+    "guardian",
+    "guardian-common",
+    "guardian-ebpf",
+    "xtask",
+]
+# guardian-ebpf requires a special target (bpfel-unknown-none) and nightly Rust.
+# It's built separately via `cargo xtask build-ebpf`, NOT by normal `cargo build`.
+# default-members controls what `cargo build` compiles.
+default-members = ["guardian", "xtask"]
+
+# NOTE: The guardian-ebpf crate has its own profile settings but since it's
+# built via `cargo xtask build-ebpf` (not normal `cargo build`), workspace
+# profile overrides don't apply to it. The eBPF crate defines its own
+# profiles in its Cargo.toml for when it's built standalone by xtask.

@@ -1,0 +1,55 @@
+# =============================================================================
+# Guardian - Userspace Daemon
+# =============================================================================
+#
+# This is the main userspace application. It:
+#   1. Reads the security policy from a TOML config file
+#   2. Discovers LLM agent processes by name
+#   3. Loads the eBPF program into the kernel
+#   4. Receives file access events from the eBPF program
+#   5. Evaluates events against policy rules
+#   6. Logs allowed/denied access attempts
+#
+# This program requires root privileges (or CAP_BPF + CAP_PERFMON capabilities)
+# to load eBPF programs into the kernel.
+#
+# Usage:
+#   sudo target/debug/guardian --config config.toml
+
+[package]
+name = "guardian"
+version = "0.1.0"
+edition = "2021"
+description = "Userspace daemon for Guardian Shell - monitors LLM agent file access"
+
+[dependencies]
+# Aya - the Rust eBPF framework (userspace side)
+# Provides APIs to load eBPF programs, manage maps, and read perf buffers
+aya = { version = "0.13", features = ["async_tokio"] }
+
+# Aya log integration - receives log messages from the eBPF program
+# and forwards them to the standard Rust `log` facade
+aya-log = "0.2"
+
+# Our shared types (FileAccessEvent, constants)
+guardian-common = { path = "../guardian-common", features = ["user"] }
+
+# Async runtime - eBPF event processing is naturally async (waiting for events)
+tokio = { version = "1", features = ["full"] }
+
+# Configuration parsing
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Error handling - provides context-rich error chains
+anyhow = "1"
+
+# Byte buffer management for reading perf events
+bytes = "1"
+
+# Command-line argument parsing
+clap = { version = "4", features = ["derive"] }

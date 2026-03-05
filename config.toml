@@ -1,0 +1,175 @@
+# =============================================================================
+# Guardian Shell - Example Configuration
+# =============================================================================
+#
+# This file defines the security policies for LLM agents monitored by
+# Guardian Shell. Each agent section configures:
+#   - Which process to monitor (by name)
+#   - What file access is allowed or denied
+#
+# SECURITY PRINCIPLE: Default Deny
+# =================================
+# Always use `default = "deny"` unless you have a specific reason not to.
+# This follows the principle of least privilege: agents can only access
+# files you explicitly allow.
+#
+# HOW TO FIND YOUR AGENT'S PROCESS NAME:
+# ========================================
+# 1. Start your LLM agent
+# 2. Run: ps aux | grep <agent-name>
+# 3. Or: cat /proc/<PID>/comm
+#
+# The process name (comm) is the first 15 characters of the executable name.
+# Examples:
+#   - Claude Code runs as "claude" or "node" (depends on how it's launched)
+#   - Python-based agents run as "python3"
+#   - Custom agents: check with `ps` or `cat /proc/PID/comm`
+
+# =============================================================================
+# Global Settings
+# =============================================================================
+
+[global]
+# Log level controls how much output Guardian Shell produces.
+#
+# Levels (from most to least verbose):
+#   "trace" - Raw event data, internal operations (very noisy)
+#   "debug" - Allow decisions, PID discovery, eBPF loading details
+#   "info"  - Startup/shutdown, policy violations (recommended for production)
+#   "warn"  - Only policy violations and warnings
+#   "error" - Only errors
+#
+# You can also override this with the RUST_LOG environment variable:
+#   RUST_LOG=debug sudo target/debug/guardian --config config.toml
+log_level = "info"
+
+# =============================================================================
+# Agent Configurations
+# =============================================================================
+#
+# Each [[agents]] section defines one LLM agent to monitor.
+# You can have multiple agent sections for different agents.
+
+# -----------------------------------------------------------------------------
+# Example: Claude Code Agent
+# -----------------------------------------------------------------------------
+# This configuration monitors Claude Code and restricts its file access to
+# only the project directory and essential system libraries.
+
+[[agents]]
+# Human-readable name (used in log messages and alerts)
+name = "claude-code"
+
+# Process name to match against /proc/PID/comm
+# Change this to match your actual agent's process name.
+# Tip: Run `ps aux | grep claude` to find the right name.
+process_name = "claude"
+
+# File access policy
+[agents.file_access]
+# Default action when no allow/deny rule matches.
+# "deny" = block unless explicitly allowed (RECOMMENDED - principle of least privilege)
+# "allow" = permit unless explicitly denied (use only for trusted agents)
+default = "deny"
+
+# Paths the agent IS allowed to access.
+# Patterns:
+#   "/exact/path"     - matches only this specific file
+#   "/dir/**"         - matches everything under /dir/ recursively
+#   "/dir/*"          - matches files directly in /dir/ (not subdirectories)
+allow = [
+    # Project workspace - the agent needs to read/write code files
+    "/home/user/projects/**",
+
+    # Temporary files - many tools need /tmp
+    "/tmp/**",
+
+    # System libraries - needed for running subprocesses
+    "/usr/lib/**",
+    "/usr/share/**",
+    "/lib/**",
+
+    # Basic system info (read-only in practice)
+    "/etc/hostname",
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/ssl/**",
+
+    # Locale and timezone
+    "/usr/share/zoneinfo/**",
+
+    # Dynamic linker cache
+    "/etc/ld.so.cache",
+
+    # Proc filesystem (needed for process info)
+    "/proc/**",
+]
+
+# Paths the agent is NEVER allowed to access.
+# IMPORTANT: Deny rules take precedence over allow rules!
+# Even if a path matches an allow pattern, a matching deny pattern blocks it.
+deny = [
+    # Credentials and authentication
+    "/etc/shadow",
+    "/etc/gshadow",
+    "/etc/sudoers",
+    "/etc/sudoers.d/**",
+
+    # SSH keys - an agent should NEVER access these
+    "/home/user/.ssh/**",
+    "/root/.ssh/**",
+
+    # GPG keys
+    "/home/user/.gnupg/**",
+
+    # Cloud provider credentials
+    "/home/user/.aws/**",
+    "/home/user/.azure/**",
+    "/home/user/.config/gcloud/**",
+
+    # Kubernetes configs
+    "/home/user/.kube/**",
+
+    # Docker socket (could be used for container escape)
+    "/var/run/docker.sock",
+
+    # Environment files that may contain secrets
+    "/home/user/projects/**/.env",
+    "/home/user/projects/**/.env.local",
+    "/home/user/projects/**/.env.production",
+
+    # Root home directory
+    "/root/**",
+
+    # Kernel and boot
+    "/boot/**",
+    "/proc/kcore",
+    "/proc/kallsyms",
+
+    # Security-sensitive proc entries
+    "/proc/*/mem",
+]
+
+# -----------------------------------------------------------------------------
+# Example: Python-based Agent (e.g., AutoGPT, CrewAI)
+# -----------------------------------------------------------------------------
+# Uncomment and customize this section for Python-based LLM agents.
+
+# [[agents]]
+# name = "autogpt"
+# process_name = "python3"
+#
+# [agents.file_access]
+# default = "deny"
+# allow = [
+#     "/home/user/autogpt/**",
+#     "/tmp/**",
+#     "/usr/lib/python3/**",
+#     "/usr/local/lib/python3/**",
+#     "/home/user/.local/lib/python3/**",
+# ]
+# deny = [
+#     "/home/user/.ssh/**",
+#     "/home/user/.aws/**",
+#     "/etc/shadow",
+# ]

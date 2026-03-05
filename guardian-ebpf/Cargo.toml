@@ -1,0 +1,52 @@
+# =============================================================================
+# Guardian eBPF - Kernel-Space Program
+# =============================================================================
+#
+# This crate compiles to BPF bytecode that runs inside the Linux kernel.
+# It is NOT a normal Rust program - key differences:
+#
+#   - Target: bpfel-unknown-none (BPF little-endian, no OS)
+#   - No standard library (#![no_std])
+#   - No main function (#![no_main]) - entry points are BPF program types
+#   - No heap allocation, no threads, no filesystem access
+#   - 512-byte stack limit per function
+#   - Must pass the BPF verifier (kernel safety checker)
+#
+# Build this crate with:
+#   cargo xtask build-ebpf [--release]
+#
+# DO NOT build with regular `cargo build` - it will fail because the default
+# target is not BPF.
+
+[package]
+name = "guardian-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Aya's eBPF runtime library - provides BPF program types, map definitions,
+# and helper function wrappers for the kernel side.
+aya-ebpf = "0.1"
+
+# Logging support for eBPF programs. Messages are sent to userspace via
+# a special BPF map and displayed using the standard `log` crate.
+aya-log-ebpf = "0.1"
+
+# Our shared types (FileAccessEvent, constants)
+guardian-common = { path = "../guardian-common" }
+
+# Build profiles for eBPF programs:
+# - panic = "abort": BPF programs can't unwind the stack
+# - opt-level = 2: Optimization helps the BPF verifier accept the program
+#   (unoptimized code often has patterns the verifier rejects)
+#
+# NOTE: When built via `cargo xtask build-ebpf`, this crate is compiled
+# standalone (not as a workspace member), so these profiles DO apply.
+# The workspace root Cargo.toml warns about this but it's harmless.
+[profile.dev]
+panic = "abort"
+opt-level = 2       # Required: verifier rejects unoptimized BPF code
+debug = 2           # Keep debug info for troubleshooting verifier errors
+
+[profile.release]
+panic = "abort"

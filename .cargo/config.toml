@@ -1,0 +1,18 @@
+# =============================================================================
+# Cargo Configuration
+# =============================================================================
+#
+# This configures the BPF linker for eBPF program compilation.
+# The [target.bpfel-unknown-none] section ONLY applies when building for the
+# BPF target, so it won't affect normal userspace builds.
+
+[target.bpfel-unknown-none]
+# bpf-linker is a specialized linker for eBPF programs.
+# Install it with: cargo install bpf-linker
+# It handles BPF-specific linking requirements like BTF (BPF Type Format)
+# generation, which is needed for CO-RE (Compile Once, Run Everywhere).
+linker = "bpf-linker"
+
+# Alias for the build tool - makes `cargo xtask` work as a command
+[alias]
+xtask = "run --package xtask --"

@@ -1,0 +1,29 @@
+# =============================================================================
+# xtask - Build Tooling
+# =============================================================================
+#
+# `xtask` is a Rust convention for project-specific build commands.
+# Instead of complex Makefiles or shell scripts, build logic is written
+# in Rust and invoked via `cargo xtask <command>`.
+#
+# Available commands:
+#   cargo xtask build-ebpf           # Build eBPF program (debug)
+#   cargo xtask build-ebpf --release # Build eBPF program (release)
+#
+# WHY THIS EXISTS:
+# The eBPF program needs to be compiled with special flags:
+#   - Target: bpfel-unknown-none (BPF bytecode, not native code)
+#   - Build std: Must rebuild core library for the BPF target
+#   - Nightly: Required for -Z build-std
+#
+# Using xtask makes this a simple, documented command instead of a
+# long cargo invocation that's easy to get wrong.
+
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }

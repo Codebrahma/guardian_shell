@@ -139,6 +139,10 @@ pub struct FileAccessEvent {
 /// Key: u32 (tgid/PID), Value: u8 (1 = watched)
 pub const MAP_WATCHED_PIDS: &str = "WATCHED_PIDS";
 
+/// Name of the eBPF HashMap that stores watched process names (comm).
+/// Key: [u8; 16] (comm name), Value: u8 (1 = watched)
+pub const MAP_WATCHED_COMMS: &str = "WATCHED_COMMS";
+
 /// Name of the eBPF PerfEventArray for sending events to userspace.
 pub const MAP_EVENTS: &str = "EVENTS";
 

@@ -28,10 +28,6 @@ edition = "2021"
 # and helper function wrappers for the kernel side.
 aya-ebpf = "0.1"
 
-# Logging support for eBPF programs. Messages are sent to userspace via
-# a special BPF map and displayed using the standard `log` crate.
-aya-log-ebpf = "0.1"
-
 # Our shared types (FileAccessEvent, constants)
 guardian-common = { path = "../guardian-common" }
 

@@ -1,0 +1,22 @@
+[global]
+log_level = "debug"
+
+[[agents]]
+name = "test-cat"
+process_name = "cat"
+
+[agents.file_access]
+default = "deny"
+allow = [
+    "/tmp/**",
+    "/lib/**",
+    "/lib64/**",
+    "/usr/lib/**",
+    "/usr/share/locale/**",
+    "/etc/ld.so.cache",
+]
+deny = [
+    "/etc/shadow",
+    "/home/**/.ssh/**",
+    "/home/**/.env",
+]

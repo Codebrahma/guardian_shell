@@ -45,11 +45,12 @@ mod config;
 
 use anyhow::{Context, Result};
 use aya::{
-    maps::{AsyncPerfEventArray, HashMap},
+    maps::{AsyncPerfEventArray, HashMap, MapData},
     programs::TracePoint,
     util::online_cpus,
     Ebpf,
 };
+// Note: aya-log-ebpf removed from eBPF program for verifier compatibility
 use bytes::BytesMut;
 use clap::Parser;
 use guardian_common::FileAccessEvent;
@@ -57,7 +58,7 @@ use log::{debug, error, info, warn};
 use std::path::PathBuf;
 use tokio::signal;
 
-use crate::config::{check_file_policy, AgentConfig, Config};
+use crate::config::{check_file_policy, Config};
 
 // =============================================================================
 // Command-Line Arguments
@@ -159,46 +160,32 @@ async fn main() -> Result<()> {
     }
 
     // =========================================================================
-    // Step 3: Discover and Register Agent PIDs
+    // Step 3: Register Watched Process Names
     // =========================================================================
     //
-    // We scan /proc/ to find processes matching the configured process names.
-    // Each matching PID is inserted into the WATCHED_PIDS eBPF map so the
-    // kernel-side program knows which processes to monitor.
-    //
-    // LIMITATION: This is a point-in-time scan. If an agent process starts
-    // AFTER Guardian Shell, it won't be detected. Future phases will add:
-    //   - Periodic PID rescanning
-    //   - Process exec tracing (watch for new agent processes)
-    //   - Cgroup-based matching (automatically includes child processes)
-    let mut watched_pids: HashMap<_, u32, u8> =
-        HashMap::try_from(bpf.map_mut("WATCHED_PIDS").context(
-            "Failed to find WATCHED_PIDS map in eBPF program. \
-             Is the eBPF program compiled correctly?",
+    // We populate the WATCHED_COMMS eBPF map with process names from config.
+    // The eBPF program matches by comm name directly in the kernel, so even
+    // short-lived processes (like `cat`) are caught during their syscall.
+    let mut watched_comms: HashMap<MapData, [u8; 16], u8> =
+        HashMap::try_from(bpf.take_map("WATCHED_COMMS").context(
+            "Failed to find WATCHED_COMMS map in eBPF program.",
         )?)?;
 
-    let mut total_watched = 0u32;
     for agent in &config.agents {
-        let pids = find_pids_by_name(&agent.process_name)?;
-        if pids.is_empty() {
-            warn!(
-                "No running processes found matching '{}' for agent '{}'. \
-                 Make sure the agent is running before starting Guardian Shell.",
-                agent.process_name, agent.name
-            );
-        }
-        for pid in pids {
-            watched_pids
-                .insert(pid, 1, 0)
-                .with_context(|| format!("Failed to insert PID {} into WATCHED_PIDS map", pid))?;
-            info!(
-                "Watching PID {} (process: '{}', agent: '{}')",
-                pid, agent.process_name, agent.name
-            );
-            total_watched += 1;
-        }
+        // Convert process_name to a null-padded [u8; 16] comm key
+        let mut comm_key = [0u8; 16];
+        let name_bytes = agent.process_name.as_bytes();
+        let copy_len = core::cmp::min(name_bytes.len(), 15); // 15 chars + null
+        comm_key[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+
+        watched_comms.insert(comm_key, 1, 0).with_context(|| {
+            format!("Failed to insert comm '{}' into WATCHED_COMMS map", agent.process_name)
+        })?;
+        info!(
+            "Watching process name '{}' for agent '{}'",
+            agent.process_name, agent.name
+        );
     }
-    info!("Total PIDs being watched: {}", total_watched);
 
     // =========================================================================
     // Step 4: Attach eBPF Program to Tracepoint
@@ -245,12 +232,12 @@ async fn main() -> Result<()> {
     // The event processing flow:
     //   CPU perf buffer → read_events() → parse FileAccessEvent → check policy → log
     let mut perf_array = AsyncPerfEventArray::try_from(
-        bpf.map_mut("EVENTS")
+        bpf.take_map("EVENTS")
             .context("Failed to find EVENTS map in eBPF program")?,
     )?;
 
     // Get the list of online CPUs
-    let cpus = online_cpus().context("Failed to get online CPUs")?;
+    let cpus = online_cpus().map_err(|(msg, e)| anyhow::anyhow!("{}: {}", msg, e))?;
     info!("Setting up event readers for {} CPUs", cpus.len());
 
     // Spawn an async task for each CPU to process events
@@ -370,7 +357,7 @@ fn process_event(event: &FileAccessEvent, config: &Config) {
             let allowed = check_file_policy(&agent.file_access, filename);
             if allowed {
                 // File access is permitted by policy
-                debug!(
+                info!(
                     "[ALLOW] agent='{}' pid={} uid={} file='{}' mode={}",
                     agent.name, event.tgid, event.uid, filename, access_mode
                 );

@@ -93,10 +93,6 @@ pub const MAP_EVENT_BUF: &str = "EVENT_BUF";
 pub const MAP_EXEC_EVENTS: &str = "EXEC_EVENTS";
 pub const MAP_EXEC_BUF: &str = "EXEC_BUF";
 pub const MAP_PENDING_DENY: &str = "PENDING_DENY";
-pub const MAP_DENY_RULES: &str = "DENY_RULES";
-pub const MAP_DENY_RULE_COUNT: &str = "DENY_RULE_COUNT";
-pub const MAP_ALLOW_RULES: &str = "ALLOW_RULES";
-pub const MAP_ALLOW_RULE_COUNT: &str = "ALLOW_RULE_COUNT";
 pub const MAP_DEFAULT_ACTION: &str = "DEFAULT_ACTION";
 pub const MAP_CHILD_PIDS: &str = "CHILD_PIDS";
 
@@ -108,5 +104,3 @@ pub const MAP_CHILD_PIDS: &str = "CHILD_PIDS";
 unsafe impl aya::Pod for FileAccessEvent {}
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for ExecEvent {}
-#[cfg(feature = "user")]
-unsafe impl aya::Pod for PolicyRule {}

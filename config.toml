@@ -1,82 +1,63 @@
-# =============================================================================
-# Guardian Shell - Configuration
-# =============================================================================
-
 [global]
 log_level = "info"
-
-# Operating mode:
-#   "monitor" - Log allow/deny decisions but don't block access (Phase 1 behavior)
-#   "enforce" - Actually block denied file access using LSM BPF hooks
 mode = "enforce"
-
-# How often (seconds) to rescan /proc for new agent processes
 pid_rescan_interval = 5
-
-# =============================================================================
-# Agent Configurations
-# =============================================================================
 
 [[agents]]
 name = "claude-code"
 process_name = "claude"
-
-# Track child processes spawned by this agent (default: true)
 watch_children = true
 
-# File access policy
 [agents.file_access]
 default = "deny"
 allow = [
-    "/home/user/projects/**",
+    # Allowed test folder
+    "/home/suren/codebrahma/llm_allowed/**",
+
+    # Guardian Shell project
+    "/home/suren/codebrahma/guardian_shell/**",
+
+    # Home directory (Claude needs dotfiles, configs, etc.)
+    "/home/suren/**",
+
+    # System paths
     "/tmp/**",
+    "/proc/**",
+    "/sys/**",
+    "/dev/**",
     "/usr/lib/**",
+    "/usr/lib64/**",
     "/usr/share/**",
+    "/usr/local/**",
+    "/usr/bin/**",
     "/lib/**",
-    "/etc/hostname",
+    "/lib64/**",
+    "/bin/**",
+    "/etc/ld.so.cache",
+    "/etc/ssl/**",
     "/etc/resolv.conf",
     "/etc/hosts",
-    "/etc/ssl/**",
-    "/usr/share/zoneinfo/**",
-    "/etc/ld.so.cache",
-    "/proc/**",
+    "/etc/hostname",
+    "/etc/passwd",
+    "/etc/nsswitch.conf",
+    "/etc/localtime",
+    "/etc/claude-code/**",
+    "/run/**",
+    "/var/tmp/**",
 ]
 deny = [
+    # === THE TEST: Block this folder ===
+    "/home/suren/codebrahma/llm_not_allowed/**",
+
+    # Sensitive files
     "/etc/shadow",
     "/etc/gshadow",
-    "/etc/sudoers",
-    "/etc/sudoers.d/**",
-    "/home/user/.ssh/**",
-    "/root/.ssh/**",
-    "/home/user/.gnupg/**",
-    "/home/user/.aws/**",
-    "/home/user/.azure/**",
-    "/home/user/.config/gcloud/**",
-    "/home/user/.kube/**",
-    "/var/run/docker.sock",
-    "/home/user/projects/**/.env",
-    "/home/user/projects/**/.env.local",
-    "/home/user/projects/**/.env.production",
-    "/root/**",
-    "/boot/**",
-    "/proc/kcore",
-    "/proc/kallsyms",
+    "/home/suren/.ssh/**",
+    "/home/suren/.gnupg/**",
+    "/home/suren/.aws/**",
 ]
 
-# Command execution policy (Phase 2)
 [agents.exec_policy]
 default = "allow"
-allow = [
-    "/usr/bin/**",
-    "/usr/local/bin/**",
-    "/bin/**",
-]
-deny = [
-    "/usr/bin/rm",
-    "/usr/bin/dd",
-    "/usr/bin/mkfs",
-    "/usr/sbin/**",
-    "/usr/bin/passwd",
-    "/usr/bin/chown",
-    "/usr/bin/chmod",
-]
+allow = ["/usr/bin/**", "/usr/local/bin/**", "/bin/**"]
+deny = []

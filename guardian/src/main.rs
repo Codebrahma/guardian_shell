@@ -2,20 +2,21 @@ mod config;
 
 use anyhow::{Context, Result};
 use aya::{
-    maps::{Array, AsyncPerfEventArray, HashMap, MapData},
+    maps::{AsyncPerfEventArray, HashMap, MapData, lpm_trie::{LpmTrie, Key}},
     programs::{Lsm, TracePoint},
     util::online_cpus,
     Btf, Ebpf,
 };
 use bytes::BytesMut;
 use clap::Parser;
-use guardian_common::{ExecEvent, FileAccessEvent, PolicyRule, MAX_POLICY_RULES};
+use guardian_common::{ExecEvent, FileAccessEvent, MAX_FILENAME_LEN};
 use log::{debug, error, info, warn};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::{signal, time};
 
-use crate::config::{check_exec_policy, check_file_policy, pattern_to_policy_rule, Config};
+use crate::config::{check_exec_policy, check_file_policy, Config};
 
 // =============================================================================
 // Command-Line Arguments
@@ -90,21 +91,36 @@ async fn main() -> Result<()> {
         warn!("Failed to initialize eBPF logger (non-critical): {}", e);
     }
 
-    // Step 3: Populate BPF Maps
+    // Step 3: Load all eBPF programs into the kernel BEFORE taking maps.
+    // Programs reference maps by FD; take_map() invalidates those FDs.
+    load_tracepoint(&mut bpf, "guardian_file_open")?;
+    load_tracepoint(&mut bpf, "guardian_exec_monitor")?;
+    load_tracepoint(&mut bpf, "guardian_fork_track")?;
+    load_tracepoint(&mut bpf, "guardian_exit_track")?;
+    if enforce_mode {
+        if let Err(e) = load_lsm(&mut bpf) {
+            warn!(
+                "Failed to load LSM program: {}. Falling back to monitor-only mode.",
+                e
+            );
+        }
+    }
+    info!("All eBPF programs loaded into kernel");
+
+    // Step 4: Populate BPF Maps (safe to take_map now that programs are loaded)
     populate_watched_comms(&mut bpf, &config)?;
+    let (watched_tgids_map, enforce_tgids_map) =
+        populate_watched_tgids(&mut bpf, &config, enforce_mode)?;
 
     if enforce_mode {
         populate_enforcement_maps(&mut bpf, &config)?;
         info!("Enforcement maps populated");
     }
 
-    // Step 4: Attach eBPF Programs
-
-    // 4a: File access monitoring tracepoint (always attached)
+    // Step 5: Attach eBPF Programs to hooks
     attach_tracepoint(&mut bpf, "guardian_file_open", "syscalls", "sys_enter_openat")?;
     info!("Attached: syscalls/sys_enter_openat (file monitoring)");
 
-    // 4b: Exec monitoring tracepoint
     attach_tracepoint(
         &mut bpf,
         "guardian_exec_monitor",
@@ -113,7 +129,6 @@ async fn main() -> Result<()> {
     )?;
     info!("Attached: syscalls/sys_enter_execve (exec monitoring)");
 
-    // 4c: Process fork tracking
     attach_tracepoint(
         &mut bpf,
         "guardian_fork_track",
@@ -122,7 +137,6 @@ async fn main() -> Result<()> {
     )?;
     info!("Attached: sched/sched_process_fork (child tracking)");
 
-    // 4d: Process exit cleanup
     attach_tracepoint(
         &mut bpf,
         "guardian_exit_track",
@@ -131,7 +145,6 @@ async fn main() -> Result<()> {
     )?;
     info!("Attached: sched/sched_process_exit (cleanup)");
 
-    // 4e: LSM enforcement (only in enforce mode)
     if enforce_mode {
         match attach_lsm(&mut bpf) {
             Ok(()) => info!("Attached: LSM file_open (enforcement ACTIVE)"),
@@ -155,14 +168,14 @@ async fn main() -> Result<()> {
     // 5b: Exec event readers
     setup_exec_event_readers(&mut bpf, &cpus, &config)?;
 
-    // Step 6: Periodic PID Rescanning
+    // Step 6: Periodic PID Rescanning - updates WATCHED_TGIDS and ENFORCE_TGIDS maps
     let rescan_config = config.clone();
+    let rescan_watched = watched_tgids_map.clone();
+    let rescan_enforce = enforce_tgids_map.clone();
     let rescan_handle = tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(rescan_interval));
         loop {
             interval.tick().await;
-            // Log discovered processes (the BPF program uses comm-based matching,
-            // so we don't need to update PID maps, but this helps with visibility)
             for agent in &rescan_config.agents {
                 match find_pids_by_name(&agent.process_name) {
                     Ok(pids) if !pids.is_empty() => {
@@ -172,6 +185,20 @@ async fn main() -> Result<()> {
                             pids.len(),
                             pids
                         );
+                        // Update WATCHED_TGIDS map
+                        if let Ok(mut map) = rescan_watched.lock() {
+                            for pid in &pids {
+                                let _ = map.insert(*pid, 1, 0);
+                            }
+                        }
+                        // Update ENFORCE_TGIDS map
+                        if let Some(ref enforce) = rescan_enforce {
+                            if let Ok(mut map) = enforce.lock() {
+                                for pid in &pids {
+                                    let _ = map.insert(*pid, 1, 0);
+                                }
+                            }
+                        }
                     }
                     Ok(_) => {
                         debug!(
@@ -227,85 +254,146 @@ fn populate_watched_comms(bpf: &mut Ebpf, config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Shared handle to BPF maps that need periodic updates.
+type SharedBpfMap = Arc<Mutex<HashMap<MapData, u32, u8>>>;
+
+fn populate_watched_tgids(
+    bpf: &mut Ebpf,
+    config: &Config,
+    enforce_mode: bool,
+) -> Result<(SharedBpfMap, Option<SharedBpfMap>)> {
+    let mut watched_tgids: HashMap<MapData, u32, u8> =
+        HashMap::try_from(bpf.take_map("WATCHED_TGIDS").context("WATCHED_TGIDS map not found")?)?;
+
+    let mut enforce_tgids: Option<HashMap<MapData, u32, u8>> = if enforce_mode {
+        Some(HashMap::try_from(
+            bpf.take_map("ENFORCE_TGIDS").context("ENFORCE_TGIDS map not found")?,
+        )?)
+    } else {
+        None
+    };
+
+    for agent in &config.agents {
+        let pids = find_pids_by_name(&agent.process_name).unwrap_or_default();
+        for pid in &pids {
+            watched_tgids.insert(*pid, 1, 0)?;
+            if let Some(ref mut et) = enforce_tgids {
+                let _ = et.insert(*pid, 1, 0);
+            }
+        }
+        if !pids.is_empty() {
+            info!(
+                "Tracking {} PID(s) for agent '{}': {:?}",
+                pids.len(),
+                agent.name,
+                pids
+            );
+        }
+    }
+
+    let watched = Arc::new(Mutex::new(watched_tgids));
+    let enforce = enforce_tgids.map(|et| Arc::new(Mutex::new(et)));
+    Ok((watched, enforce))
+}
+
 fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()> {
-    // Populate ENFORCE_COMMS
     let mut enforce_comms: HashMap<MapData, [u8; 16], u8> =
         HashMap::try_from(bpf.take_map("ENFORCE_COMMS").context("ENFORCE_COMMS map not found")?)?;
 
-    // Populate DEFAULT_ACTION
     let mut default_action: HashMap<MapData, [u8; 16], u8> =
         HashMap::try_from(bpf.take_map("DEFAULT_ACTION").context("DEFAULT_ACTION map not found")?)?;
 
-    // Collect all deny and allow rules across agents
-    let mut deny_rules: Vec<PolicyRule> = Vec::new();
-    let mut allow_rules: Vec<PolicyRule> = Vec::new();
+    let mut deny_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        LpmTrie::try_from(bpf.take_map("DENY_PREFIXES").context("DENY_PREFIXES map not found")?)?;
+
+    let mut deny_exact: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        HashMap::try_from(bpf.take_map("DENY_EXACT").context("DENY_EXACT map not found")?)?;
+
+    let mut allow_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        LpmTrie::try_from(bpf.take_map("ALLOW_PREFIXES").context("ALLOW_PREFIXES map not found")?)?;
+
+    let mut allow_exact: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        HashMap::try_from(bpf.take_map("ALLOW_EXACT").context("ALLOW_EXACT map not found")?)?;
+
+    let mut deny_count = 0u32;
+    let mut allow_count = 0u32;
 
     for agent in &config.agents {
         let comm_key = comm_to_key(&agent.process_name);
-
         enforce_comms.insert(comm_key, 1, 0)?;
 
-        let default_val = if agent.file_access.default == "deny" {
-            0u8
-        } else {
-            1u8
-        };
+        let default_val = if agent.file_access.default == "deny" { 0u8 } else { 1u8 };
         default_action.insert(comm_key, default_val, 0)?;
 
+        // Insert deny rules
         for pattern in &agent.file_access.deny {
-            if deny_rules.len() >= MAX_POLICY_RULES {
-                warn!("Maximum deny rules ({}) reached, skipping: {}", MAX_POLICY_RULES, pattern);
-                break;
+            if pattern.ends_with("/**") {
+                // Prefix match: store with trailing '/' in LPM trie
+                let prefix = format!("{}/", &pattern[..pattern.len() - 3]);
+                let key = path_to_lpm_key(prefix.as_bytes());
+                deny_prefixes.insert(&key, 1, 0)?;
+                // Also add the directory itself as exact match
+                let exact = path_to_map_key(pattern[..pattern.len() - 3].as_bytes());
+                let _ = deny_exact.insert(exact, 1, 0);
+            } else {
+                // Exact match
+                let key = path_to_map_key(pattern.as_bytes());
+                deny_exact.insert(key, 1, 0)?;
             }
-            deny_rules.push(pattern_to_policy_rule(pattern));
+            deny_count += 1;
         }
 
+        // Insert allow rules
         for pattern in &agent.file_access.allow {
-            if allow_rules.len() >= MAX_POLICY_RULES {
-                warn!(
-                    "Maximum allow rules ({}) reached, skipping: {}",
-                    MAX_POLICY_RULES, pattern
-                );
-                break;
+            if pattern.ends_with("/**") {
+                let prefix = format!("{}/", &pattern[..pattern.len() - 3]);
+                let key = path_to_lpm_key(prefix.as_bytes());
+                allow_prefixes.insert(&key, 1, 0)?;
+                let exact = path_to_map_key(pattern[..pattern.len() - 3].as_bytes());
+                let _ = allow_exact.insert(exact, 1, 0);
+            } else {
+                let key = path_to_map_key(pattern.as_bytes());
+                allow_exact.insert(key, 1, 0)?;
             }
-            allow_rules.push(pattern_to_policy_rule(pattern));
+            allow_count += 1;
         }
     }
 
-    // Populate DENY_RULES array
-    let mut deny_arr: Array<MapData, PolicyRule> =
-        Array::try_from(bpf.take_map("DENY_RULES").context("DENY_RULES map not found")?)?;
-    for (i, rule) in deny_rules.iter().enumerate() {
-        deny_arr.set(i as u32, *rule, 0)?;
-    }
-
-    let mut deny_count: Array<MapData, u32> = Array::try_from(
-        bpf.take_map("DENY_RULE_COUNT")
-            .context("DENY_RULE_COUNT map not found")?,
-    )?;
-    deny_count.set(0, deny_rules.len() as u32, 0)?;
-    info!("Loaded {} deny rules into BPF", deny_rules.len());
-
-    // Populate ALLOW_RULES array
-    let mut allow_arr: Array<MapData, PolicyRule> =
-        Array::try_from(bpf.take_map("ALLOW_RULES").context("ALLOW_RULES map not found")?)?;
-    for (i, rule) in allow_rules.iter().enumerate() {
-        allow_arr.set(i as u32, *rule, 0)?;
-    }
-
-    let mut allow_count: Array<MapData, u32> = Array::try_from(
-        bpf.take_map("ALLOW_RULE_COUNT")
-            .context("ALLOW_RULE_COUNT map not found")?,
-    )?;
-    allow_count.set(0, allow_rules.len() as u32, 0)?;
-    info!("Loaded {} allow rules into BPF", allow_rules.len());
-
+    info!("Loaded {} deny rules, {} allow rules into BPF", deny_count, allow_count);
     Ok(())
+}
+
+fn path_to_lpm_key(path: &[u8]) -> Key<[u8; MAX_FILENAME_LEN]> {
+    let mut data = [0u8; MAX_FILENAME_LEN];
+    let len = core::cmp::min(path.len(), MAX_FILENAME_LEN);
+    data[..len].copy_from_slice(&path[..len]);
+    Key::new((len as u32) * 8, data)
+}
+
+fn path_to_map_key(path: &[u8]) -> [u8; MAX_FILENAME_LEN] {
+    let mut key = [0u8; MAX_FILENAME_LEN];
+    let len = core::cmp::min(path.len(), MAX_FILENAME_LEN);
+    key[..len].copy_from_slice(&path[..len]);
+    key
 }
 
 // =============================================================================
 // Program Attachment
 // =============================================================================
+
+fn load_tracepoint(bpf: &mut Ebpf, prog_name: &str) -> Result<()> {
+    let program: &mut TracePoint = bpf
+        .program_mut(prog_name)
+        .with_context(|| format!("Program '{}' not found", prog_name))?
+        .try_into()
+        .with_context(|| format!("'{}' is not a TracePoint program", prog_name))?;
+
+    program
+        .load()
+        .with_context(|| format!("Failed to load '{}'", prog_name))?;
+
+    Ok(())
+}
 
 fn attach_tracepoint(
     bpf: &mut Ebpf,
@@ -320,17 +408,13 @@ fn attach_tracepoint(
         .with_context(|| format!("'{}' is not a TracePoint program", prog_name))?;
 
     program
-        .load()
-        .with_context(|| format!("Failed to load '{}'", prog_name))?;
-
-    program
         .attach(category, event)
         .with_context(|| format!("Failed to attach '{}' to {}/{}", prog_name, category, event))?;
 
     Ok(())
 }
 
-fn attach_lsm(bpf: &mut Ebpf) -> Result<()> {
+fn load_lsm(bpf: &mut Ebpf) -> Result<()> {
     let btf = Btf::from_sys_fs().context("Failed to load BTF from /sys/kernel/btf/vmlinux")?;
 
     let program: &mut Lsm = bpf
@@ -342,6 +426,16 @@ fn attach_lsm(bpf: &mut Ebpf) -> Result<()> {
     program
         .load("file_open", &btf)
         .context("Failed to load LSM program")?;
+
+    Ok(())
+}
+
+fn attach_lsm(bpf: &mut Ebpf) -> Result<()> {
+    let program: &mut Lsm = bpf
+        .program_mut("guardian_enforce_file_open")
+        .context("LSM program 'guardian_enforce_file_open' not found")?
+        .try_into()
+        .context("'guardian_enforce_file_open' is not an LSM program")?;
 
     program.attach().context("Failed to attach LSM program")?;
 
@@ -445,12 +539,22 @@ fn setup_exec_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Re
 // Event Processing
 // =============================================================================
 
+fn find_agent_for_event<'a>(config: &'a Config, comm: &str) -> Option<&'a config::AgentConfig> {
+    // Try exact comm match first
+    if let Some(agent) = config.agents.iter().find(|a| a.process_name == comm) {
+        return Some(agent);
+    }
+    // Fall back to first agent for worker threads (e.g., "Bun Pool 0", "HeapHelper")
+    // These threads belong to a watched process but have different comm names
+    config.agents.first()
+}
+
 fn process_file_event(event: &FileAccessEvent, config: &Config, enforce_mode: bool) {
     let filename = std::str::from_utf8(event.filename_bytes()).unwrap_or("<invalid-utf8>");
     let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
     let access_mode = decode_open_flags(event.flags);
 
-    let agent_config = config.agents.iter().find(|a| a.process_name == comm);
+    let agent_config = find_agent_for_event(config, comm);
 
     match agent_config {
         Some(agent) => {
@@ -458,26 +562,25 @@ fn process_file_event(event: &FileAccessEvent, config: &Config, enforce_mode: bo
             let mode_tag = if enforce_mode { "ENFORCE" } else { "MONITOR" };
 
             if allowed {
-                info!(
-                    "[ALLOW] agent='{}' pid={} file='{}' mode={}",
-                    agent.name, event.tgid, filename, access_mode
+                debug!(
+                    "[ALLOW] agent='{}' pid={} comm='{}' file='{}' mode={}",
+                    agent.name, event.tgid, comm, filename, access_mode
                 );
             } else if enforce_mode {
                 warn!(
-                    "[BLOCKED|{}] agent='{}' pid={} file='{}' mode={}",
-                    mode_tag, agent.name, event.tgid, filename, access_mode
+                    "[BLOCKED|{}] agent='{}' pid={} comm='{}' file='{}' mode={}",
+                    mode_tag, agent.name, event.tgid, comm, filename, access_mode
                 );
             } else {
                 warn!(
-                    "[DENY|{}] agent='{}' pid={} file='{}' mode={} (not blocked)",
-                    mode_tag, agent.name, event.tgid, filename, access_mode
+                    "[DENY|{}] agent='{}' pid={} comm='{}' file='{}' mode={} (not blocked)",
+                    mode_tag, agent.name, event.tgid, comm, filename, access_mode
                 );
             }
         }
         None => {
-            // Likely a child process of a watched agent
             debug!(
-                "[CHILD] pid={} comm='{}' file='{}' mode={}",
+                "[UNKNOWN] pid={} comm='{}' file='{}' mode={}",
                 event.tgid, comm, filename, access_mode
             );
         }
@@ -488,30 +591,30 @@ fn process_exec_event(event: &ExecEvent, config: &Config) {
     let filename = std::str::from_utf8(event.filename_bytes()).unwrap_or("<invalid-utf8>");
     let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
 
-    let agent_config = config.agents.iter().find(|a| a.process_name == comm);
+    let agent_config = find_agent_for_event(config, comm);
 
     match agent_config {
         Some(agent) => {
             let allowed = match &agent.exec_policy {
                 Some(policy) => check_exec_policy(policy, filename),
-                None => true, // No exec policy = allow all
+                None => true,
             };
 
             if allowed {
-                info!(
-                    "[EXEC|ALLOW] agent='{}' pid={} cmd='{}'",
-                    agent.name, event.tgid, filename
+                debug!(
+                    "[EXEC|ALLOW] agent='{}' pid={} comm='{}' cmd='{}'",
+                    agent.name, event.tgid, comm, filename
                 );
             } else {
                 warn!(
-                    "[EXEC|DENY] agent='{}' pid={} cmd='{}'",
-                    agent.name, event.tgid, filename
+                    "[EXEC|DENY] agent='{}' pid={} comm='{}' cmd='{}'",
+                    agent.name, event.tgid, comm, filename
                 );
             }
         }
         None => {
             debug!(
-                "[EXEC|CHILD] pid={} comm='{}' cmd='{}'",
+                "[EXEC|UNKNOWN] pid={} comm='{}' cmd='{}'",
                 event.tgid, comm, filename
             );
         }

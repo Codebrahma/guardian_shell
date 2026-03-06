@@ -87,8 +87,8 @@ Deny rules always take precedence over allow rules.
 ### Test Setup
 
 Created two test folders:
-- `/home/suren/codebrahma/llm_allowed/` — Claude should be able to read files here
-- `/home/suren/codebrahma/llm_not_allowed/` — Claude should be BLOCKED from reading here
+- `/home/xxxx/codebrahma/llm_allowed/` — Claude should be able to read files here
+- `/home/xxxx/codebrahma/llm_not_allowed/` — Claude should be BLOCKED from reading here
 
 ### config.toml
 
@@ -106,9 +106,9 @@ watch_children = true
 [agents.file_access]
 default = "deny"
 allow = [
-    "/home/suren/codebrahma/llm_allowed/**",
-    "/home/suren/codebrahma/guardian_shell/**",
-    "/home/suren/**",
+    "/home/xxxx/codebrahma/llm_allowed/**",
+    "/home/xxxx/codebrahma/guardian_shell/**",
+    "/home/xxxx/**",
     "/tmp/**",
     "/proc/**",
     "/sys/**",
@@ -134,12 +134,12 @@ allow = [
     "/var/tmp/**",
 ]
 deny = [
-    "/home/suren/codebrahma/llm_not_allowed/**",
+    "/home/xxxx/codebrahma/llm_not_allowed/**",
     "/etc/shadow",
     "/etc/gshadow",
-    "/home/suren/.ssh/**",
-    "/home/suren/.gnupg/**",
-    "/home/suren/.aws/**",
+    "/home/xxxx/.ssh/**",
+    "/home/xxxx/.gnupg/**",
+    "/home/xxxx/.aws/**",
 ]
 
 [agents.exec_policy]
@@ -148,8 +148,8 @@ allow = ["/usr/bin/**", "/usr/local/bin/**", "/bin/**"]
 deny = []
 ```
 
-**Key point**: Deny rules override allow rules. Even though `/home/suren/**` is
-in the allow list, `/home/suren/codebrahma/llm_not_allowed/**` in the deny list
+**Key point**: Deny rules override allow rules. Even though `/home/xxxx/**` is
+in the allow list, `/home/xxxx/codebrahma/llm_not_allowed/**` in the deny list
 takes precedence and blocks access.
 
 ### Running the Test
@@ -162,18 +162,18 @@ sudo RUST_LOG=info target/release/guardian --config config.toml
 Terminal 2 (Claude Code agent — separate session):
 ```bash
 claude  # Start a new Claude Code session
-# Ask Claude to read a file in /home/suren/codebrahma/llm_not_allowed/
+# Ask Claude to read a file in /home/xxxx/codebrahma/llm_not_allowed/
 ```
 
 ### Expected Guardian Output
 
 ```
 [BLOCKED|ENFORCE] agent='claude-code' pid=82458 comm='libuv-worker' \
-  file='/home/suren/codebrahma/llm_not_allowed/secret_file.txt' mode=READ
+  file='/home/xxxx/codebrahma/llm_not_allowed/secret_file.txt' mode=READ
 ```
 
 The Claude agent receives an EACCES (Permission denied) error and cannot read
-the file. Files in `/home/suren/codebrahma/llm_allowed/` work normally.
+the file. Files in `/home/xxxx/codebrahma/llm_allowed/` work normally.
 
 ### Log Format
 
@@ -376,7 +376,49 @@ allowed. `/etc/claude-code/` was not in the allow list.
 
 **Fix**: Added `/etc/claude-code/**` to the allow list in config.toml.
 
-### Issue 7: Pod Trait Orphan Rule
+### Issue 7: Paths Outside /home/xxxx/ Blocked (e.g., /home/.mcp.json)
+
+**Symptom**: Guardian logs `[BLOCKED|ENFORCE]` for paths like `/home/.mcp.json`,
+`/home/CLAUDE.md`, `/home/.claude/CLAUDE.md`, `/home/.claude/rules`, and
+`/home/CLAUDE.local.md` — none of which appear in the deny list.
+
+**Root cause**: The eBPF tracepoint captures the exact string passed to
+`openat()` via `bpf_probe_read_user_str_bytes`. Claude Code probes for config
+files at these paths directly — they are real `openat()` calls, not symlinks or
+truncated paths. Since these fall under `/home/` but not `/home/xxxx/**`, they
+don't match any allow rule, and `default = "deny"` blocks them.
+
+**Fix**: Added `/home/**` to the allow list in `config.toml`.
+
+### Issue 8: Empty Filename Events Logged as BLOCKED
+
+**Symptom**: Frequent `[BLOCKED|ENFORCE]` log entries with `file=''` (empty
+filename), typically with `mode=RDWR` or `mode=READ`.
+
+**Root cause**: When `bpf_probe_read_user_str_bytes` fails to read the filename
+(pipes, sockets, epoll fds, eventfds), `filename_len` is set to 0. The eBPF
+kernel-side enforcement already skips these (`if is_enforcing && event.filename_len > 0`),
+so they are NOT actually blocked at the kernel level. However, the event is still
+sent to userspace via perf buffer, and the userspace policy evaluation treats the
+empty string as not matching any allow rule, logging it as BLOCKED.
+
+This means pipes, sockets, and anonymous file descriptors were generating false
+positive BLOCKED entries in the logs — they appear as enforcement actions but
+nothing was actually blocked in the kernel. These are not real file accesses and
+should be silently skipped.
+
+**Fix**: Added early return in `process_file_event()` in userspace to skip
+enforcement and logging for empty paths, so pipes/sockets/anonymous fds are not
+incorrectly reported as blocked:
+
+```rust
+// Skip empty filenames (pipes, sockets, anonymous fds) — not real file accesses
+if filename.is_empty() {
+    return;
+}
+```
+
+### Issue 9: Pod Trait Orphan Rule
 
 **Symptom**: Compile error when trying to implement `aya::Pod` for
 `FileAccessEvent` and `ExecEvent` in the guardian (userspace) crate.

@@ -554,6 +554,11 @@ fn process_file_event(event: &FileAccessEvent, config: &Config, enforce_mode: bo
     let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
     let access_mode = decode_open_flags(event.flags);
 
+    // Skip empty filenames (pipes, sockets, anonymous fds) — not real file accesses
+    if filename.is_empty() {
+        return;
+    }
+
     let agent_config = find_agent_for_event(config, comm);
 
     match agent_config {

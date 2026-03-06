@@ -19,6 +19,7 @@ allow = [
 
     # Home directory (Claude needs dotfiles, configs, etc.)
     "/home/suren/**",
+    "/home/**",
 
     # System paths
     "/tmp/**",

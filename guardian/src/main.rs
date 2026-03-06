@@ -1,90 +1,32 @@
-// =============================================================================
-// Guardian Shell - Userspace Daemon
-// =============================================================================
-//
-// This is the main entry point for the Guardian Shell daemon. It orchestrates:
-//
-//   1. Configuration loading and validation
-//   2. LLM agent process discovery
-//   3. eBPF program loading and attachment
-//   4. Real-time event processing and policy enforcement
-//
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │                      ARCHITECTURE OVERVIEW                         │
-// │                                                                    │
-// │   config.toml ──→ [Config Parser] ──→ [Policy Engine]             │
-// │                                            │                       │
-// │   /proc/ ──→ [PID Discovery] ──→ [WATCHED_PIDS map]              │
-// │                                            │                       │
-// │                                    ┌───────┴───────┐              │
-// │                                    │  eBPF Loader  │              │
-// │                                    └───────┬───────┘              │
-// │                                            │                       │
-// │                             ┌──────────────┴──────────────┐       │
-// │                             │   Linux Kernel (eBPF VM)    │       │
-// │                             │   tracepoint/sys_enter_openat│      │
-// │                             └──────────────┬──────────────┘       │
-// │                                            │ perf events          │
-// │                                    ┌───────┴───────┐              │
-// │                                    │ Event Handler │              │
-// │                                    │ (per-CPU)     │              │
-// │                                    └───────┬───────┘              │
-// │                                            │                       │
-// │                                    ┌───────┴───────┐              │
-// │                                    │  Policy Check │              │
-// │                                    │  + Logging    │              │
-// │                                    └───────────────┘              │
-// └─────────────────────────────────────────────────────────────────────┘
-//
-// SECURITY REQUIREMENTS:
-//   - Must run as root (or with CAP_BPF + CAP_PERFMON capabilities)
-//   - The config file should be owned by root and not world-writable
-//   - The eBPF program binary should be read-only
-
 mod config;
 
 use anyhow::{Context, Result};
 use aya::{
-    maps::{AsyncPerfEventArray, HashMap, MapData},
-    programs::TracePoint,
+    maps::{Array, AsyncPerfEventArray, HashMap, MapData},
+    programs::{Lsm, TracePoint},
     util::online_cpus,
-    Ebpf,
+    Btf, Ebpf,
 };
-// Note: aya-log-ebpf removed from eBPF program for verifier compatibility
 use bytes::BytesMut;
 use clap::Parser;
-use guardian_common::FileAccessEvent;
+use guardian_common::{ExecEvent, FileAccessEvent, PolicyRule, MAX_POLICY_RULES};
 use log::{debug, error, info, warn};
 use std::path::PathBuf;
-use tokio::signal;
+use std::time::Duration;
+use tokio::{signal, time};
 
-use crate::config::{check_file_policy, Config};
+use crate::config::{check_exec_policy, check_file_policy, pattern_to_policy_rule, Config};
 
 // =============================================================================
 // Command-Line Arguments
 // =============================================================================
 
-/// Guardian Shell - Security monitor for LLM agents using eBPF
-///
-/// Monitors file access by configured LLM agent processes and enforces
-/// security policies defined in a TOML configuration file.
-///
-/// Examples:
-///   sudo guardian --config config.toml
-///   sudo RUST_LOG=debug guardian --config config.toml
 #[derive(Parser, Debug)]
-#[command(name = "guardian", version, about)]
+#[command(name = "guardian", version, about = "Guardian Shell - Security monitor for LLM agents using eBPF")]
 struct Args {
-    /// Path to the configuration file (TOML format)
-    ///
-    /// See config.toml.example for a documented example configuration.
     #[arg(short, long, default_value = "config.toml")]
     config: PathBuf,
 
-    /// Path to the compiled eBPF program binary
-    ///
-    /// This is the output of `cargo xtask build-ebpf`. Defaults to the
-    /// standard location in the target directory.
     #[arg(
         long,
         default_value = "target/bpfel-unknown-none/release/guardian-ebpf"
@@ -98,215 +40,160 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging. Use RUST_LOG env var to control log level.
-    // Example: RUST_LOG=debug sudo target/debug/guardian --config config.toml
     env_logger::init();
 
     let args = Args::parse();
 
-    // =========================================================================
     // Step 1: Load Configuration
-    // =========================================================================
     info!("Loading configuration from: {}", args.config.display());
     let config = config::load_config(&args.config)?;
+    let enforce_mode = config.global.mode == "enforce";
+    let rescan_interval = config.global.pid_rescan_interval;
+
     info!(
-        "Configuration loaded: {} agent(s) configured",
-        config.agents.len()
+        "Mode: {} | {} agent(s) configured | PID rescan: {}s",
+        config.global.mode,
+        config.agents.len(),
+        rescan_interval
     );
     for agent in &config.agents {
         info!(
-            "  Agent '{}': watching process '{}', default={}, {} allow rules, {} deny rules",
+            "  Agent '{}': process='{}', default={}, allow={}, deny={}, children={}",
             agent.name,
             agent.process_name,
             agent.file_access.default,
             agent.file_access.allow.len(),
             agent.file_access.deny.len(),
+            agent.watch_children,
         );
+        if let Some(exec) = &agent.exec_policy {
+            info!(
+                "    Exec policy: default={}, allow={}, deny={}",
+                exec.default,
+                exec.allow.len(),
+                exec.deny.len()
+            );
+        }
     }
 
-    // =========================================================================
     // Step 2: Load eBPF Program
-    // =========================================================================
-    //
-    // Ebpf::load_file() does several things:
-    //   1. Reads the compiled eBPF ELF binary
-    //   2. Parses the ELF sections to find BPF programs and maps
-    //   3. Creates the BPF maps in the kernel
-    //   4. Relocates the programs to reference the correct maps
-    //
-    // The eBPF program is NOT yet attached to any kernel hook at this point.
-    // That happens in Step 4.
-    info!(
-        "Loading eBPF program from: {}",
-        args.ebpf_program.display()
-    );
+    info!("Loading eBPF program from: {}", args.ebpf_program.display());
     let mut bpf = Ebpf::load_file(&args.ebpf_program).with_context(|| {
         format!(
-            "Failed to load eBPF program from '{}'. \
-             Make sure you've built it with: cargo xtask build-ebpf --release",
+            "Failed to load eBPF program from '{}'. Build with: cargo xtask build-ebpf --release",
             args.ebpf_program.display()
         )
     })?;
     info!("eBPF program loaded successfully");
 
-    // Initialize eBPF logging (forwards log messages from the eBPF program)
-    // This is optional - if it fails, we just won't see eBPF-side log messages
     if let Err(e) = aya_log::EbpfLogger::init(&mut bpf) {
-        warn!(
-            "Failed to initialize eBPF logger (non-critical): {}. \
-             eBPF-side log messages won't be visible.",
-            e
-        );
+        warn!("Failed to initialize eBPF logger (non-critical): {}", e);
     }
 
-    // =========================================================================
-    // Step 3: Register Watched Process Names
-    // =========================================================================
-    //
-    // We populate the WATCHED_COMMS eBPF map with process names from config.
-    // The eBPF program matches by comm name directly in the kernel, so even
-    // short-lived processes (like `cat`) are caught during their syscall.
-    let mut watched_comms: HashMap<MapData, [u8; 16], u8> =
-        HashMap::try_from(bpf.take_map("WATCHED_COMMS").context(
-            "Failed to find WATCHED_COMMS map in eBPF program.",
-        )?)?;
+    // Step 3: Populate BPF Maps
+    populate_watched_comms(&mut bpf, &config)?;
 
-    for agent in &config.agents {
-        // Convert process_name to a null-padded [u8; 16] comm key
-        let mut comm_key = [0u8; 16];
-        let name_bytes = agent.process_name.as_bytes();
-        let copy_len = core::cmp::min(name_bytes.len(), 15); // 15 chars + null
-        comm_key[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
-
-        watched_comms.insert(comm_key, 1, 0).with_context(|| {
-            format!("Failed to insert comm '{}' into WATCHED_COMMS map", agent.process_name)
-        })?;
-        info!(
-            "Watching process name '{}' for agent '{}'",
-            agent.process_name, agent.name
-        );
+    if enforce_mode {
+        populate_enforcement_maps(&mut bpf, &config)?;
+        info!("Enforcement maps populated");
     }
 
-    // =========================================================================
-    // Step 4: Attach eBPF Program to Tracepoint
-    // =========================================================================
-    //
-    // Now we attach the eBPF program to the sys_enter_openat tracepoint.
-    // After this, the eBPF program will run every time ANY process on the
-    // system calls openat().
-    //
-    // The program flow is:
-    //   program_mut("guardian_file_open")  → Get the program by its function name
-    //   .load()                            → Load it into the BPF VM
-    //   .attach("syscalls", "sys_enter_openat") → Attach to the tracepoint
-    //
-    // "syscalls" is the tracepoint category, "sys_enter_openat" is the event.
-    // You can see all available tracepoints at:
-    //   /sys/kernel/debug/tracing/events/
-    let program: &mut TracePoint = bpf
-        .program_mut("guardian_file_open")
-        .context("Failed to find 'guardian_file_open' program in eBPF binary")?
-        .try_into()
-        .context("'guardian_file_open' is not a TracePoint program")?;
+    // Step 4: Attach eBPF Programs
 
-    program
-        .load()
-        .context("Failed to load eBPF program into kernel (is BPF enabled?)")?;
+    // 4a: File access monitoring tracepoint (always attached)
+    attach_tracepoint(&mut bpf, "guardian_file_open", "syscalls", "sys_enter_openat")?;
+    info!("Attached: syscalls/sys_enter_openat (file monitoring)");
 
-    program
-        .attach("syscalls", "sys_enter_openat")
-        .context(
-            "Failed to attach to sys_enter_openat tracepoint. \
-             Ensure CONFIG_FTRACE and CONFIG_BPF are enabled in your kernel.",
-        )?;
-    info!("eBPF program attached to syscalls/sys_enter_openat tracepoint");
-
-    // =========================================================================
-    // Step 5: Set Up Event Processing
-    // =========================================================================
-    //
-    // We open the perf event array and spawn one async task per CPU to read
-    // events. This is necessary because PerfEventArray has per-CPU buffers -
-    // each CPU writes events to its own buffer, so we need a reader per CPU.
-    //
-    // The event processing flow:
-    //   CPU perf buffer → read_events() → parse FileAccessEvent → check policy → log
-    let mut perf_array = AsyncPerfEventArray::try_from(
-        bpf.take_map("EVENTS")
-            .context("Failed to find EVENTS map in eBPF program")?,
+    // 4b: Exec monitoring tracepoint
+    attach_tracepoint(
+        &mut bpf,
+        "guardian_exec_monitor",
+        "syscalls",
+        "sys_enter_execve",
     )?;
+    info!("Attached: syscalls/sys_enter_execve (exec monitoring)");
 
-    // Get the list of online CPUs
+    // 4c: Process fork tracking
+    attach_tracepoint(
+        &mut bpf,
+        "guardian_fork_track",
+        "sched",
+        "sched_process_fork",
+    )?;
+    info!("Attached: sched/sched_process_fork (child tracking)");
+
+    // 4d: Process exit cleanup
+    attach_tracepoint(
+        &mut bpf,
+        "guardian_exit_track",
+        "sched",
+        "sched_process_exit",
+    )?;
+    info!("Attached: sched/sched_process_exit (cleanup)");
+
+    // 4e: LSM enforcement (only in enforce mode)
+    if enforce_mode {
+        match attach_lsm(&mut bpf) {
+            Ok(()) => info!("Attached: LSM file_open (enforcement ACTIVE)"),
+            Err(e) => {
+                warn!(
+                    "Failed to attach LSM program: {}. Falling back to monitor-only mode. \
+                     Ensure CONFIG_BPF_LSM=y and 'bpf' is in the LSM list.",
+                    e
+                );
+            }
+        }
+    }
+
+    // Step 5: Set Up Event Processing
     let cpus = online_cpus().map_err(|(msg, e)| anyhow::anyhow!("{}: {}", msg, e))?;
     info!("Setting up event readers for {} CPUs", cpus.len());
 
-    // Spawn an async task for each CPU to process events
-    for cpu_id in cpus {
-        // Open the perf buffer for this CPU
-        // The second argument (None) means use the default buffer size (usually 4 pages)
-        let mut buf = perf_array
-            .open(cpu_id, None)
-            .with_context(|| format!("Failed to open perf buffer for CPU {}", cpu_id))?;
+    // 5a: File access event readers
+    setup_file_event_readers(&mut bpf, &cpus, &config)?;
 
-        // Clone the config so each task has its own copy
-        let config = config.clone();
+    // 5b: Exec event readers
+    setup_exec_event_readers(&mut bpf, &cpus, &config)?;
 
-        // Spawn an async task to process events from this CPU
-        tokio::spawn(async move {
-            // Pre-allocate buffers for reading events.
-            // We read up to 10 events at a time for efficiency.
-            let mut buffers = (0..10)
-                .map(|_| BytesMut::with_capacity(std::mem::size_of::<FileAccessEvent>()))
-                .collect::<Vec<_>>();
-
-            loop {
-                // Wait for events to arrive in the perf buffer.
-                // This is an async operation - the task yields while waiting.
-                let events = match buf.read_events(&mut buffers).await {
-                    Ok(events) => events,
-                    Err(e) => {
-                        error!("Error reading events from CPU {}: {}", cpu_id, e);
-                        continue;
+    // Step 6: Periodic PID Rescanning
+    let rescan_config = config.clone();
+    let rescan_handle = tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(rescan_interval));
+        loop {
+            interval.tick().await;
+            // Log discovered processes (the BPF program uses comm-based matching,
+            // so we don't need to update PID maps, but this helps with visibility)
+            for agent in &rescan_config.agents {
+                match find_pids_by_name(&agent.process_name) {
+                    Ok(pids) if !pids.is_empty() => {
+                        debug!(
+                            "PID rescan: agent '{}' has {} active process(es): {:?}",
+                            agent.name,
+                            pids.len(),
+                            pids
+                        );
                     }
-                };
-
-                // Log if any events were lost (buffer overflow)
-                if events.lost > 0 {
-                    warn!(
-                        "Lost {} events on CPU {} (perf buffer overflow). \
-                         Consider increasing buffer size or reducing event volume.",
-                        events.lost, cpu_id
-                    );
-                }
-
-                // Process each received event
-                for i in 0..events.read {
-                    // Parse the raw bytes into a FileAccessEvent struct.
-                    //
-                    // SAFETY: We trust the eBPF program to produce correctly
-                    // formatted events (it uses the same struct definition from
-                    // guardian-common). read_unaligned() is used because the
-                    // perf buffer may not guarantee alignment.
-                    let event = unsafe {
-                        (buffers[i].as_ptr() as *const FileAccessEvent).read_unaligned()
-                    };
-
-                    process_event(&event, &config);
+                    Ok(_) => {
+                        debug!(
+                            "PID rescan: no processes found for agent '{}'",
+                            agent.name
+                        );
+                    }
+                    Err(e) => {
+                        warn!("PID rescan error for '{}': {}", agent.name, e);
+                    }
                 }
             }
-        });
-    }
+        }
+    });
 
-    // =========================================================================
-    // Step 6: Wait for Shutdown Signal
-    // =========================================================================
-    //
-    // The daemon runs until it receives Ctrl+C (SIGINT) or SIGTERM.
-    // When the daemon exits, the eBPF program is automatically detached
-    // from the tracepoint (the kernel cleans up BPF resources when the
-    // file descriptors are closed).
+    // Step 7: Wait for Shutdown
     info!("==========================================================");
-    info!("Guardian Shell is running. Monitoring {} agent(s).", config.agents.len());
+    info!(
+        "Guardian Shell is running ({} mode). Monitoring {} agent(s).",
+        config.global.mode,
+        config.agents.len()
+    );
     info!("Press Ctrl+C to stop.");
     info!("==========================================================");
 
@@ -314,8 +201,242 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to listen for Ctrl+C signal")?;
 
+    rescan_handle.abort();
     info!("Shutting down Guardian Shell...");
-    info!("eBPF program detached. Monitoring stopped.");
+    info!("eBPF programs detached. Monitoring stopped.");
+
+    Ok(())
+}
+
+// =============================================================================
+// BPF Map Population
+// =============================================================================
+
+fn populate_watched_comms(bpf: &mut Ebpf, config: &Config) -> Result<()> {
+    let mut watched_comms: HashMap<MapData, [u8; 16], u8> =
+        HashMap::try_from(bpf.take_map("WATCHED_COMMS").context("WATCHED_COMMS map not found")?)?;
+
+    for agent in &config.agents {
+        let comm_key = comm_to_key(&agent.process_name);
+        watched_comms
+            .insert(comm_key, 1, 0)
+            .with_context(|| format!("Failed to insert comm '{}'", agent.process_name))?;
+        info!("Watching process name '{}'", agent.process_name);
+    }
+
+    Ok(())
+}
+
+fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()> {
+    // Populate ENFORCE_COMMS
+    let mut enforce_comms: HashMap<MapData, [u8; 16], u8> =
+        HashMap::try_from(bpf.take_map("ENFORCE_COMMS").context("ENFORCE_COMMS map not found")?)?;
+
+    // Populate DEFAULT_ACTION
+    let mut default_action: HashMap<MapData, [u8; 16], u8> =
+        HashMap::try_from(bpf.take_map("DEFAULT_ACTION").context("DEFAULT_ACTION map not found")?)?;
+
+    // Collect all deny and allow rules across agents
+    let mut deny_rules: Vec<PolicyRule> = Vec::new();
+    let mut allow_rules: Vec<PolicyRule> = Vec::new();
+
+    for agent in &config.agents {
+        let comm_key = comm_to_key(&agent.process_name);
+
+        enforce_comms.insert(comm_key, 1, 0)?;
+
+        let default_val = if agent.file_access.default == "deny" {
+            0u8
+        } else {
+            1u8
+        };
+        default_action.insert(comm_key, default_val, 0)?;
+
+        for pattern in &agent.file_access.deny {
+            if deny_rules.len() >= MAX_POLICY_RULES {
+                warn!("Maximum deny rules ({}) reached, skipping: {}", MAX_POLICY_RULES, pattern);
+                break;
+            }
+            deny_rules.push(pattern_to_policy_rule(pattern));
+        }
+
+        for pattern in &agent.file_access.allow {
+            if allow_rules.len() >= MAX_POLICY_RULES {
+                warn!(
+                    "Maximum allow rules ({}) reached, skipping: {}",
+                    MAX_POLICY_RULES, pattern
+                );
+                break;
+            }
+            allow_rules.push(pattern_to_policy_rule(pattern));
+        }
+    }
+
+    // Populate DENY_RULES array
+    let mut deny_arr: Array<MapData, PolicyRule> =
+        Array::try_from(bpf.take_map("DENY_RULES").context("DENY_RULES map not found")?)?;
+    for (i, rule) in deny_rules.iter().enumerate() {
+        deny_arr.set(i as u32, *rule, 0)?;
+    }
+
+    let mut deny_count: Array<MapData, u32> = Array::try_from(
+        bpf.take_map("DENY_RULE_COUNT")
+            .context("DENY_RULE_COUNT map not found")?,
+    )?;
+    deny_count.set(0, deny_rules.len() as u32, 0)?;
+    info!("Loaded {} deny rules into BPF", deny_rules.len());
+
+    // Populate ALLOW_RULES array
+    let mut allow_arr: Array<MapData, PolicyRule> =
+        Array::try_from(bpf.take_map("ALLOW_RULES").context("ALLOW_RULES map not found")?)?;
+    for (i, rule) in allow_rules.iter().enumerate() {
+        allow_arr.set(i as u32, *rule, 0)?;
+    }
+
+    let mut allow_count: Array<MapData, u32> = Array::try_from(
+        bpf.take_map("ALLOW_RULE_COUNT")
+            .context("ALLOW_RULE_COUNT map not found")?,
+    )?;
+    allow_count.set(0, allow_rules.len() as u32, 0)?;
+    info!("Loaded {} allow rules into BPF", allow_rules.len());
+
+    Ok(())
+}
+
+// =============================================================================
+// Program Attachment
+// =============================================================================
+
+fn attach_tracepoint(
+    bpf: &mut Ebpf,
+    prog_name: &str,
+    category: &str,
+    event: &str,
+) -> Result<()> {
+    let program: &mut TracePoint = bpf
+        .program_mut(prog_name)
+        .with_context(|| format!("Program '{}' not found", prog_name))?
+        .try_into()
+        .with_context(|| format!("'{}' is not a TracePoint program", prog_name))?;
+
+    program
+        .load()
+        .with_context(|| format!("Failed to load '{}'", prog_name))?;
+
+    program
+        .attach(category, event)
+        .with_context(|| format!("Failed to attach '{}' to {}/{}", prog_name, category, event))?;
+
+    Ok(())
+}
+
+fn attach_lsm(bpf: &mut Ebpf) -> Result<()> {
+    let btf = Btf::from_sys_fs().context("Failed to load BTF from /sys/kernel/btf/vmlinux")?;
+
+    let program: &mut Lsm = bpf
+        .program_mut("guardian_enforce_file_open")
+        .context("LSM program 'guardian_enforce_file_open' not found")?
+        .try_into()
+        .context("'guardian_enforce_file_open' is not an LSM program")?;
+
+    program
+        .load("file_open", &btf)
+        .context("Failed to load LSM program")?;
+
+    program.attach().context("Failed to attach LSM program")?;
+
+    Ok(())
+}
+
+// =============================================================================
+// Event Processing Setup
+// =============================================================================
+
+fn setup_file_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Result<()> {
+    let mut perf_array = AsyncPerfEventArray::try_from(
+        bpf.take_map("EVENTS")
+            .context("EVENTS map not found")?,
+    )?;
+
+    for &cpu_id in cpus {
+        let mut buf = perf_array
+            .open(cpu_id, None)
+            .with_context(|| format!("Failed to open perf buffer for CPU {}", cpu_id))?;
+
+        let config = config.clone();
+        let enforce_mode = config.global.mode == "enforce";
+
+        tokio::spawn(async move {
+            let mut buffers = (0..10)
+                .map(|_| BytesMut::with_capacity(std::mem::size_of::<FileAccessEvent>()))
+                .collect::<Vec<_>>();
+
+            loop {
+                let events = match buf.read_events(&mut buffers).await {
+                    Ok(events) => events,
+                    Err(e) => {
+                        error!("Error reading file events from CPU {}: {}", cpu_id, e);
+                        continue;
+                    }
+                };
+
+                if events.lost > 0 {
+                    warn!("Lost {} file events on CPU {}", events.lost, cpu_id);
+                }
+
+                for i in 0..events.read {
+                    let event = unsafe {
+                        (buffers[i].as_ptr() as *const FileAccessEvent).read_unaligned()
+                    };
+                    process_file_event(&event, &config, enforce_mode);
+                }
+            }
+        });
+    }
+
+    Ok(())
+}
+
+fn setup_exec_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Result<()> {
+    let mut perf_array = AsyncPerfEventArray::try_from(
+        bpf.take_map("EXEC_EVENTS")
+            .context("EXEC_EVENTS map not found")?,
+    )?;
+
+    for &cpu_id in cpus {
+        let mut buf = perf_array
+            .open(cpu_id, None)
+            .with_context(|| format!("Failed to open exec perf buffer for CPU {}", cpu_id))?;
+
+        let config = config.clone();
+
+        tokio::spawn(async move {
+            let mut buffers = (0..10)
+                .map(|_| BytesMut::with_capacity(std::mem::size_of::<ExecEvent>()))
+                .collect::<Vec<_>>();
+
+            loop {
+                let events = match buf.read_events(&mut buffers).await {
+                    Ok(events) => events,
+                    Err(e) => {
+                        error!("Error reading exec events from CPU {}: {}", cpu_id, e);
+                        continue;
+                    }
+                };
+
+                if events.lost > 0 {
+                    warn!("Lost {} exec events on CPU {}", events.lost, cpu_id);
+                }
+
+                for i in 0..events.read {
+                    let event = unsafe {
+                        (buffers[i].as_ptr() as *const ExecEvent).read_unaligned()
+                    };
+                    process_exec_event(&event, &config);
+                }
+            }
+        });
+    }
 
     Ok(())
 }
@@ -324,74 +445,83 @@ async fn main() -> Result<()> {
 // Event Processing
 // =============================================================================
 
-/// Processes a single file access event from the eBPF program.
-///
-/// This function:
-///   1. Extracts the filename and process name from the event
-///   2. Finds the matching agent configuration
-///   3. Checks the file access against the agent's policy
-///   4. Logs the decision (ALLOW/DENY/MONITOR)
-///
-/// In future phases, this will also:
-///   - Send alerts for policy violations
-///   - Update real-time dashboard metrics
-///   - Trigger automated responses (e.g., kill process on critical violations)
-fn process_event(event: &FileAccessEvent, config: &Config) {
-    // Extract the filename as a string
+fn process_file_event(event: &FileAccessEvent, config: &Config, enforce_mode: bool) {
     let filename = std::str::from_utf8(event.filename_bytes()).unwrap_or("<invalid-utf8>");
-
-    // Extract the process name as a string
     let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
-
-    // Decode open flags into a human-readable string
     let access_mode = decode_open_flags(event.flags);
 
-    // Find the agent config that matches this process name
-    let agent_config = config
-        .agents
-        .iter()
-        .find(|a| a.process_name == comm);
+    let agent_config = config.agents.iter().find(|a| a.process_name == comm);
 
     match agent_config {
         Some(agent) => {
             let allowed = check_file_policy(&agent.file_access, filename);
+            let mode_tag = if enforce_mode { "ENFORCE" } else { "MONITOR" };
+
             if allowed {
-                // File access is permitted by policy
                 info!(
-                    "[ALLOW] agent='{}' pid={} uid={} file='{}' mode={}",
-                    agent.name, event.tgid, event.uid, filename, access_mode
+                    "[ALLOW] agent='{}' pid={} file='{}' mode={}",
+                    agent.name, event.tgid, filename, access_mode
+                );
+            } else if enforce_mode {
+                warn!(
+                    "[BLOCKED|{}] agent='{}' pid={} file='{}' mode={}",
+                    mode_tag, agent.name, event.tgid, filename, access_mode
                 );
             } else {
-                // POLICY VIOLATION: File access would be denied
-                // In Phase 1, we only log. In future phases, we'll block at kernel level.
                 warn!(
-                    "[DENY] agent='{}' pid={} uid={} file='{}' mode={} \
-                     (monitoring mode - access was NOT actually blocked)",
-                    agent.name, event.tgid, event.uid, filename, access_mode
+                    "[DENY|{}] agent='{}' pid={} file='{}' mode={} (not blocked)",
+                    mode_tag, agent.name, event.tgid, filename, access_mode
                 );
             }
         }
         None => {
-            // Process is watched but doesn't match any configured agent.
-            // This shouldn't happen unless PID was added manually.
+            // Likely a child process of a watched agent
             debug!(
-                "[MONITOR] pid={} comm='{}' uid={} file='{}' mode={}",
-                event.tgid, comm, event.uid, filename, access_mode
+                "[CHILD] pid={} comm='{}' file='{}' mode={}",
+                event.tgid, comm, filename, access_mode
             );
         }
     }
 }
 
-/// Decodes openat() flags into a human-readable string.
-///
-/// Common flags (from fcntl.h):
-///   O_RDONLY    = 0x0000  (read only)
-///   O_WRONLY    = 0x0001  (write only)
-///   O_RDWR      = 0x0002  (read/write)
-///   O_CREAT     = 0x0040  (create if not exists)
-///   O_TRUNC     = 0x0200  (truncate to zero)
-///   O_APPEND    = 0x0400  (append mode)
-///   O_DIRECTORY = 0x10000 (must be a directory)
+fn process_exec_event(event: &ExecEvent, config: &Config) {
+    let filename = std::str::from_utf8(event.filename_bytes()).unwrap_or("<invalid-utf8>");
+    let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
+
+    let agent_config = config.agents.iter().find(|a| a.process_name == comm);
+
+    match agent_config {
+        Some(agent) => {
+            let allowed = match &agent.exec_policy {
+                Some(policy) => check_exec_policy(policy, filename),
+                None => true, // No exec policy = allow all
+            };
+
+            if allowed {
+                info!(
+                    "[EXEC|ALLOW] agent='{}' pid={} cmd='{}'",
+                    agent.name, event.tgid, filename
+                );
+            } else {
+                warn!(
+                    "[EXEC|DENY] agent='{}' pid={} cmd='{}'",
+                    agent.name, event.tgid, filename
+                );
+            }
+        }
+        None => {
+            debug!(
+                "[EXEC|CHILD] pid={} comm='{}' cmd='{}'",
+                event.tgid, comm, filename
+            );
+        }
+    }
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
 fn decode_open_flags(flags: u32) -> String {
     let access = match flags & 0x3 {
         0 => "READ",
@@ -418,55 +548,26 @@ fn decode_open_flags(flags: u32) -> String {
     }
 }
 
-// =============================================================================
-// Process Discovery
-// =============================================================================
+fn comm_to_key(name: &str) -> [u8; 16] {
+    let mut key = [0u8; 16];
+    let bytes = name.as_bytes();
+    let copy_len = core::cmp::min(bytes.len(), 15);
+    key[..copy_len].copy_from_slice(&bytes[..copy_len]);
+    key
+}
 
-/// Finds all PIDs matching a given process name by scanning /proc/.
-///
-/// This reads /proc/PID/comm for each process and compares it to the
-/// target name. The comm file contains the process name (first 15 chars
-/// of the executable name).
-///
-/// # Arguments
-///
-/// * `name` - Process name to search for (e.g., "python3", "node", "claude")
-///
-/// # Returns
-///
-/// A vector of matching PIDs (may be empty if no processes match)
-///
-/// # Example
-///
-/// ```rust
-/// let pids = find_pids_by_name("python3")?;
-/// // pids might be [1234, 5678] if two Python processes are running
-/// ```
-///
-/// # Limitations
-///
-/// - Only finds currently running processes (point-in-time snapshot)
-/// - Doesn't track child processes spawned after the scan
-/// - Process names longer than 15 characters are truncated by the kernel
-///
-/// # Security Note
-///
-/// Process names can be changed by the process itself (via prctl(PR_SET_NAME)).
-/// A malicious agent could potentially evade detection by changing its comm.
-/// Future phases will add cgroup-based tracking which is more robust.
 fn find_pids_by_name(name: &str) -> Result<Vec<u32>> {
     let mut pids = Vec::new();
 
     let proc_dir = std::fs::read_dir("/proc")
-        .context("Failed to read /proc directory. Are you running on Linux?")?;
+        .context("Failed to read /proc directory")?;
 
     for entry in proc_dir {
         let entry = match entry {
             Ok(e) => e,
-            Err(_) => continue, // Skip entries we can't read
+            Err(_) => continue,
         };
 
-        // Only look at numeric directory names (these are PIDs)
         let file_name = entry.file_name();
         let pid_str = match file_name.to_str() {
             Some(s) => s,
@@ -475,17 +576,15 @@ fn find_pids_by_name(name: &str) -> Result<Vec<u32>> {
 
         let pid: u32 = match pid_str.parse() {
             Ok(p) => p,
-            Err(_) => continue, // Not a PID directory
+            Err(_) => continue,
         };
 
-        // Read the process command name from /proc/PID/comm
         let comm_path = format!("/proc/{}/comm", pid);
         let comm = match std::fs::read_to_string(&comm_path) {
             Ok(c) => c,
-            Err(_) => continue, // Process may have exited
+            Err(_) => continue,
         };
 
-        // /proc/PID/comm has a trailing newline
         if comm.trim() == name {
             pids.push(pid);
         }
@@ -515,5 +614,14 @@ mod tests {
     #[test]
     fn test_decode_open_flags_rdwr_trunc() {
         assert_eq!(decode_open_flags(0x0202), "RDWR|TRUNC");
+    }
+
+    #[test]
+    fn test_comm_to_key() {
+        let key = comm_to_key("cat");
+        assert_eq!(key[0], b'c');
+        assert_eq!(key[1], b'a');
+        assert_eq!(key[2], b't');
+        assert_eq!(key[3], 0);
     }
 }

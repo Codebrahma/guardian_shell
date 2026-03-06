@@ -8,12 +8,18 @@ on this project on a Linux machine.
 Guardian Shell is a Linux security tool that uses eBPF to monitor and restrict
 LLM agent activities. It's built with Rust and the Aya eBPF framework.
 
-**Current state: Phase 1 - File Access Monitoring (code complete, not yet compiled on Linux)**
+**Current state: Phase 2 - Enforcement + Exec Monitoring (compiled on Linux)**
 
-The code was written on macOS and needs to be built and tested on Linux.
-The `aya` crate (eBPF userspace library) is Linux-only, so only `guardian-common`
-and `xtask` have been verified to compile. The full build and first test run
-need to happen on Linux.
+Phase 2 adds:
+- **LSM BPF enforcement**: Kernel-level blocking of denied file access via `file_open` LSM hook
+- **Exec monitoring**: `sys_enter_execve` tracepoint monitors command execution
+- **Process tree tracking**: `sched_process_fork`/`sched_process_exit` tracks child processes
+- **Periodic PID rescanning**: Tokio interval rescans /proc for new agent processes
+- **Kernel-side policy evaluation**: Deny/allow rules stored in BPF maps for in-kernel matching
+
+Architecture: The `sys_enter_openat` tracepoint evaluates policy rules in-kernel and
+marks denied accesses in a `PENDING_DENY` BPF map. The LSM `file_open` hook then
+checks this map and returns `-EACCES` to block the syscall.
 
 ## Project Structure
 
@@ -92,14 +98,25 @@ cargo build --release
 Edit `config.toml` to watch a common process like `cat`:
 
 ```toml
+[global]
+log_level = "info"
+mode = "enforce"       # or "monitor" for Phase 1 behavior
+pid_rescan_interval = 5
+
 [[agents]]
 name = "test-cat"
 process_name = "cat"
+watch_children = true
 
 [agents.file_access]
 default = "deny"
 allow = ["/tmp/**"]
 deny = ["/etc/shadow"]
+
+[agents.exec_policy]
+default = "allow"
+allow = ["/usr/bin/**"]
+deny = ["/usr/bin/rm"]
 ```
 
 Then in one terminal:
@@ -110,8 +127,9 @@ sudo RUST_LOG=debug target/release/guardian --config config.toml
 In another terminal:
 ```bash
 cat /tmp/somefile       # Should show [ALLOW]
-cat /etc/passwd         # Should show [DENY] (not in allow list, default=deny)
-cat /etc/shadow         # Should show [DENY] (explicit deny)
+cat /etc/passwd         # In enforce mode: actually BLOCKED (returns EACCES)
+                        # In monitor mode: shows [DENY] but allows access
+cat /etc/shadow         # Blocked/denied (explicit deny rule)
 ```
 
 ### 4. Potential Build Issues to Watch For
@@ -131,36 +149,42 @@ cat /etc/shadow         # Should show [DENY] (explicit deny)
 
 | Decision | Rationale |
 |----------|-----------|
-| Tracepoint (not LSM BPF) | Phase 1 is monitor-only. LSM hooks can enforce (block access) but require `CONFIG_BPF_LSM` which not all kernels have. Tracepoints work everywhere. |
-| Process name matching | Simplest identification. Scans `/proc/PID/comm`. Limitation: point-in-time scan, agents started after daemon aren't detected. |
+| Tracepoint + LSM hybrid | Tracepoint captures filename from syscall args (easy). LSM hook blocks access (enforcement). Tracepoint sets PENDING_DENY map entry, LSM reads it. Avoids complex path reading in LSM context. |
+| Process name matching + child tracking | Comm-based matching catches short-lived processes. Fork tracking via `sched_process_fork` watches child processes automatically. |
+| Kernel-side policy evaluation | Deny/allow rules stored in BPF Array maps. Tracepoint evaluates policy in-kernel with bounded loops. Eliminates userspace round-trip for enforcement decisions. |
 | Per-CPU array scratch buffer | eBPF has 512-byte stack limit. `FileAccessEvent` is 292 bytes. Using `PerCpuArray` as a pre-allocated buffer is the standard pattern. |
 | `PerfEventArray` (not `RingBuf`) | Compatible with Linux 5.2+. `RingBuf` is more efficient but needs 5.8+. |
 | Deny-takes-precedence policy | Security best practice. Even if a path matches an allow rule, a deny rule overrides it. Prevents accidental over-permissioning. |
 | `#[repr(C)]` on shared structs | Ensures identical memory layout between BPF target and native target. Without it, Rust may reorder fields differently per target. |
+| Graceful LSM fallback | If LSM attachment fails (kernel doesn't support it), daemon falls back to monitor-only mode instead of crashing. |
 
-## Known Limitations (Phase 1)
+## Known Limitations (Phase 2)
 
-1. **Monitor-only**: Logs violations but doesn't actually block file access
-2. **Point-in-time PID scan**: Agents started after Guardian aren't detected until restart
-3. **Process name spoofable**: Agent could `prctl(PR_SET_NAME)` to change its comm
-4. **Relative paths not resolved**: eBPF captures whatever path the syscall receives
-5. **Only hooks `openat`**: Doesn't cover `open` (rare on modern Linux), `openat2`,
+1. **Process name spoofable**: Agent could `prctl(PR_SET_NAME)` to change its comm
+2. **Relative paths not resolved**: eBPF captures whatever path the syscall receives
+3. **Only hooks `openat`**: Doesn't cover `open` (rare on modern Linux), `openat2`,
    or `readlink`/`stat` (for detecting path enumeration)
-6. **x86_64 offsets hardcoded**: Tracepoint field offsets may differ on aarch64/arm
+4. **x86_64 offsets hardcoded**: Tracepoint field offsets may differ on aarch64/arm
+5. **Max 64 deny/allow rules**: Combined across all agents for BPF map size limits
+6. **Enforcement requires CONFIG_BPF_LSM**: Kernel must have `CONFIG_BPF_LSM=y`
+   and `bpf` in the LSM list. Falls back to monitor-only if unavailable.
+7. **Exec monitoring is log-only**: Exec events are logged but not blocked in Phase 2
+8. **Tracepoint-LSM timing dependency**: Enforcement relies on the `sys_enter_openat`
+   tracepoint firing before the LSM `file_open` hook in the same syscall
 
-## Unused Import Warning
+## Build Notes
 
-`guardian/src/main.rs:60` imports `AgentConfig` which is currently unused in that
-file (it's used indirectly through the `Config` struct). If the compiler warns,
-either remove the import or add `#[allow(unused_imports)]`.
+- The `log_level` field in `GlobalConfig` triggers a dead_code warning since
+  env_logger uses `RUST_LOG` env var. This is intentional for future use.
 
 ## Roadmap for Future Phases
 
-### Phase 2: Enforcement + Exec Monitoring
-- Replace tracepoint with **LSM BPF hooks** (`file_open`) for kernel-level blocking
-- Add `sys_enter_execve` tracepoint for command execution monitoring
-- Add process tree tracking (watch child processes of agents)
-- Add periodic PID rescanning or exec-based auto-discovery
+### Phase 2: Enforcement + Exec Monitoring ✅ DONE
+- LSM BPF `file_open` hook for kernel-level blocking
+- `sys_enter_execve` tracepoint for command execution monitoring
+- Process tree tracking via `sched_process_fork` / `sched_process_exit`
+- Periodic PID rescanning via tokio interval
+- Kernel-side policy evaluation with deny/allow rules in BPF maps
 
 ### Phase 3: Advanced Identity & Access
 - **Cgroup-based agent identification** (robust, can't be spoofed)

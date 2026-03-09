@@ -23,6 +23,10 @@ pub struct GlobalConfig {
     /// Default: 5
     #[serde(default = "default_rescan_interval")]
     pub pid_rescan_interval: u64,
+    /// Unix socket path for IPC with guardian-launch and CLI tools.
+    /// Default: "/run/guardian.sock"
+    #[serde(default = "default_socket_path")]
+    pub socket_path: String,
 }
 
 fn default_mode() -> String {
@@ -33,10 +37,21 @@ fn default_rescan_interval() -> u64 {
     5
 }
 
+fn default_socket_path() -> String {
+    guardian_common::DEFAULT_SOCKET_PATH.to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     pub name: String,
-    pub process_name: String,
+    /// Identity method: "comm" (Phase 1/2) or "cgroup" (Phase 3).
+    /// Default: "comm" when process_name is set, "cgroup" otherwise.
+    #[serde(default)]
+    pub identity: Option<String>,
+    /// Process name for comm-based identification (Phase 1/2).
+    /// Required when identity = "comm", ignored when identity = "cgroup".
+    #[serde(default)]
+    pub process_name: Option<String>,
     pub file_access: FileAccessPolicy,
     /// Exec policy: controls which commands the agent can execute.
     /// Optional - if not set, all exec is allowed (monitor-only).
@@ -44,6 +59,27 @@ pub struct AgentConfig {
     /// Whether to track child processes of this agent. Default: true
     #[serde(default = "default_true")]
     pub watch_children: bool,
+    /// Resource limits applied via cgroup controllers (Phase 3).
+    /// Only effective for cgroup-based agents.
+    pub resources: Option<ResourceLimits>,
+}
+
+impl AgentConfig {
+    /// Returns the effective identity method for this agent.
+    pub fn effective_identity(&self) -> &str {
+        if let Some(ref id) = self.identity {
+            id.as_str()
+        } else if self.process_name.is_some() {
+            "comm"
+        } else {
+            "cgroup"
+        }
+    }
+
+    /// Returns the process name, defaulting to the agent name if not set.
+    pub fn effective_process_name(&self) -> &str {
+        self.process_name.as_deref().unwrap_or(&self.name)
+    }
 }
 
 fn default_true() -> bool {
@@ -66,6 +102,17 @@ pub struct ExecPolicy {
     pub allow: Vec<String>,
     /// List of denied command path patterns
     pub deny: Vec<String>,
+}
+
+/// Resource limits applied via cgroup v2 controllers.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResourceLimits {
+    /// Memory limit (e.g., "4G", "512M"). Written to memory.max.
+    pub memory_max: Option<String>,
+    /// Max number of processes. Written to pids.max.
+    pub pids_max: Option<u32>,
+    /// CPU limit (e.g., "200000 100000" = 2 cores). Written to cpu.max.
+    pub cpu_max: Option<String>,
 }
 
 // =============================================================================
@@ -102,6 +149,23 @@ fn validate_config(config: &Config) -> Result<()> {
     }
 
     for agent in &config.agents {
+        // Validate identity method
+        match agent.effective_identity() {
+            "comm" => {
+                // Comm-based agents need a process_name (or use agent name)
+            }
+            "cgroup" => {
+                // Cgroup-based agents are registered dynamically via launcher
+            }
+            other => {
+                anyhow::bail!(
+                    "Agent '{}': invalid identity method '{}'. Must be 'comm' or 'cgroup'",
+                    agent.name,
+                    other
+                );
+            }
+        }
+
         match agent.file_access.default.as_str() {
             "allow" | "deny" => {}
             other => {
@@ -336,5 +400,43 @@ mod tests {
         let rule = pattern_to_policy_rule("/etc/shadow");
         assert_eq!(rule.match_type, 0);
         assert_eq!(rule.prefix_len, 11);
+    }
+
+    #[test]
+    fn test_effective_identity_comm() {
+        let agent = AgentConfig {
+            name: "test".to_string(),
+            identity: None,
+            process_name: Some("myproc".to_string()),
+            file_access: FileAccessPolicy {
+                default: "deny".to_string(),
+                allow: vec![],
+                deny: vec![],
+            },
+            exec_policy: None,
+            watch_children: true,
+            resources: None,
+        };
+        assert_eq!(agent.effective_identity(), "comm");
+        assert_eq!(agent.effective_process_name(), "myproc");
+    }
+
+    #[test]
+    fn test_effective_identity_cgroup() {
+        let agent = AgentConfig {
+            name: "test".to_string(),
+            identity: Some("cgroup".to_string()),
+            process_name: None,
+            file_access: FileAccessPolicy {
+                default: "deny".to_string(),
+                allow: vec![],
+                deny: vec![],
+            },
+            exec_policy: None,
+            watch_children: true,
+            resources: None,
+        };
+        assert_eq!(agent.effective_identity(), "cgroup");
+        assert_eq!(agent.effective_process_name(), "test");
     }
 }

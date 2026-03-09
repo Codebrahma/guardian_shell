@@ -4,6 +4,7 @@
 use aya_ebpf::{
     helpers::{
         bpf_get_current_comm,
+        bpf_get_current_cgroup_id,
         bpf_get_current_pid_tgid,
         bpf_get_current_uid_gid,
         bpf_probe_read_user_str_bytes,
@@ -26,6 +27,20 @@ static WATCHED_COMMS: HashMap<[u8; 16], u8> = HashMap::with_max_entries(256, 0);
 /// Process comm names in enforcement mode (key: comm, value: 1).
 #[map]
 static ENFORCE_COMMS: HashMap<[u8; 16], u8> = HashMap::with_max_entries(256, 0);
+
+/// Watched cgroup IDs (key: cgroup_id, value: 1).
+/// Phase 3: Primary identification method — unspoofable.
+#[map]
+static WATCHED_CGROUPS: HashMap<u64, u8> = HashMap::with_max_entries(256, 0);
+
+/// Enforced cgroup IDs (key: cgroup_id, value: 1).
+/// Phase 3: Enforcement for cgroup-based agents.
+#[map]
+static ENFORCE_CGROUPS: HashMap<u64, u8> = HashMap::with_max_entries(256, 0);
+
+/// Default action per cgroup: key = cgroup_id, value: 0 = deny, 1 = allow.
+#[map]
+static CGROUP_DEFAULT_ACTION: HashMap<u64, u8> = HashMap::with_max_entries(256, 0);
 
 /// Per-CPU scratch buffer for file access events.
 #[map]
@@ -89,11 +104,32 @@ static ENFORCE_TGIDS: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
 // Helpers
 // =============================================================================
 
+/// Check if the current process is watched, using 3-tier identification:
+/// 1. Cgroup ID (Phase 3 — strongest, unspoofable)
+/// 2. TGID / child PID tracking (Phase 2)
+/// 3. Comm name (Phase 1 — fallback)
 #[inline(always)]
-fn is_process_watched(comm: &[u8; 16], tgid: u32) -> bool {
+fn is_process_watched(comm: &[u8; 16], tgid: u32, cgroup_id: u64) -> bool {
+    // Priority 1: Cgroup-based identification (cannot be spoofed)
+    if unsafe { WATCHED_CGROUPS.get(&cgroup_id) }.is_some() {
+        return true;
+    }
+    // Priority 2: Comm-based and PID-based (Phase 1 & 2 fallback)
     unsafe { WATCHED_COMMS.get(comm) }.is_some()
         || unsafe { WATCHED_TGIDS.get(&tgid) }.is_some()
         || unsafe { CHILD_PIDS.get(&tgid) }.is_some()
+}
+
+/// Check if the current process is in enforcement mode.
+#[inline(always)]
+fn is_process_enforcing(comm: &[u8; 16], tgid: u32, cgroup_id: u64) -> bool {
+    // Priority 1: Cgroup-based enforcement
+    if unsafe { ENFORCE_CGROUPS.get(&cgroup_id) }.is_some() {
+        return true;
+    }
+    // Priority 2: Comm/TGID-based enforcement
+    unsafe { ENFORCE_COMMS.get(comm) }.is_some()
+        || unsafe { ENFORCE_TGIDS.get(&tgid) }.is_some()
 }
 
 /// Evaluate deny/allow rules using map lookups (no loops).
@@ -103,6 +139,7 @@ fn evaluate_policy(
     filename: &[u8; MAX_FILENAME_LEN],
     filename_len: usize,
     comm: &[u8; 16],
+    cgroup_id: u64,
 ) -> bool {
     let prefix_bits = (filename_len as u32) * 8;
     let lpm_key = Key::new(prefix_bits, *filename);
@@ -127,7 +164,10 @@ fn evaluate_policy(
         return true;
     }
 
-    // Step 5: Default action for this comm
+    // Step 5: Default action — check by cgroup first, then by comm
+    if let Some(&action) = unsafe { CGROUP_DEFAULT_ACTION.get(&cgroup_id) } {
+        return action == 1;
+    }
     match unsafe { DEFAULT_ACTION.get(comm) } {
         Some(&action) => action == 1,
         None => true, // fail-open if no default configured
@@ -150,8 +190,9 @@ fn try_guardian_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
     let comm = bpf_get_current_comm().map_err(|e| e)?;
     let pid_tgid = bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
 
-    if !is_process_watched(&comm, tgid) {
+    if !is_process_watched(&comm, tgid, cgroup_id) {
         return Ok(0);
     }
 
@@ -182,11 +223,8 @@ fn try_guardian_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
     }
 
     // Kernel-side policy evaluation for enforcement
-    // Check both by comm name and by tgid (worker threads have different comm)
-    let is_enforcing = unsafe { ENFORCE_COMMS.get(&comm) }.is_some()
-        || unsafe { ENFORCE_TGIDS.get(&tgid) }.is_some();
-    if is_enforcing && event.filename_len > 0 {
-        let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm);
+    if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
+        let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
         if !allowed {
             let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
         }
@@ -237,8 +275,9 @@ fn try_guardian_exec_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
     let comm = bpf_get_current_comm().map_err(|e| e)?;
     let pid_tgid = bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
 
-    if !is_process_watched(&comm, tgid) {
+    if !is_process_watched(&comm, tgid, cgroup_id) {
         return Ok(0);
     }
 
@@ -287,8 +326,9 @@ fn try_guardian_fork_track(ctx: &TracePointContext) -> Result<u32, i64> {
     let comm = bpf_get_current_comm().map_err(|e| e)?;
     let pid_tgid = bpf_get_current_pid_tgid();
     let parent_tgid = (pid_tgid >> 32) as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
 
-    if !is_process_watched(&comm, parent_tgid) {
+    if !is_process_watched(&comm, parent_tgid, cgroup_id) {
         return Ok(0);
     }
 

@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(feature = "user"), no_std)]
 
 // =============================================================================
 // Constants
@@ -7,6 +7,12 @@
 pub const MAX_FILENAME_LEN: usize = 256;
 pub const MAX_COMM_LEN: usize = 16;
 pub const MAX_POLICY_RULES: usize = 64;
+
+/// Default Unix socket path for daemon IPC.
+pub const DEFAULT_SOCKET_PATH: &str = "/run/guardian.sock";
+
+/// Cgroup base path under /sys/fs/cgroup.
+pub const CGROUP_BASE: &str = "guardian";
 
 // =============================================================================
 // Event Types
@@ -95,6 +101,9 @@ pub const MAP_EXEC_BUF: &str = "EXEC_BUF";
 pub const MAP_PENDING_DENY: &str = "PENDING_DENY";
 pub const MAP_DEFAULT_ACTION: &str = "DEFAULT_ACTION";
 pub const MAP_CHILD_PIDS: &str = "CHILD_PIDS";
+pub const MAP_WATCHED_CGROUPS: &str = "WATCHED_CGROUPS";
+pub const MAP_ENFORCE_CGROUPS: &str = "ENFORCE_CGROUPS";
+pub const MAP_CGROUP_DEFAULT_ACTION: &str = "CGROUP_DEFAULT_ACTION";
 
 // =============================================================================
 // Aya Pod Implementations (userspace only)
@@ -104,3 +113,102 @@ pub const MAP_CHILD_PIDS: &str = "CHILD_PIDS";
 unsafe impl aya::Pod for FileAccessEvent {}
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for ExecEvent {}
+
+// =============================================================================
+// IPC Protocol Types (userspace only)
+// =============================================================================
+
+#[cfg(feature = "user")]
+pub mod ipc {
+    use serde::{Deserialize, Serialize};
+
+    /// Request from launcher/CLI to the Guardian daemon.
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(tag = "type")]
+    pub enum IpcRequest {
+        /// Register a new agent launched in a cgroup.
+        #[serde(rename = "register")]
+        Register {
+            cgroup_path: String,
+            cgroup_id: u64,
+            agent_name: String,
+        },
+
+        /// List all running agents.
+        #[serde(rename = "list")]
+        ListAgents,
+
+        /// Stop an agent by name (SIGTERM all processes in its cgroup).
+        #[serde(rename = "stop")]
+        StopAgent { agent_name: String },
+
+        /// Grant temporary access to a path for an agent.
+        #[serde(rename = "grant")]
+        GrantAccess {
+            agent_name: String,
+            path: String,
+            duration_secs: u64,
+        },
+    }
+
+    /// Response from the Guardian daemon.
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(tag = "type")]
+    pub enum IpcResponse {
+        /// Success acknowledgment.
+        #[serde(rename = "ack")]
+        Ack,
+
+        /// Error response.
+        #[serde(rename = "error")]
+        Error { message: String },
+
+        /// List of running agents.
+        #[serde(rename = "agents")]
+        AgentList { agents: Vec<AgentStatus> },
+    }
+
+    /// Status of a registered agent.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct AgentStatus {
+        pub name: String,
+        pub cgroup_path: String,
+        pub cgroup_id: u64,
+        pub num_processes: u32,
+        pub uptime_secs: u64,
+    }
+
+    /// Send a length-prefixed JSON message over a writer.
+    pub fn send_message<W: std::io::Write>(
+        writer: &mut W,
+        msg: &impl Serialize,
+    ) -> std::io::Result<()> {
+        let json = serde_json::to_vec(msg).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })?;
+        let len = (json.len() as u32).to_be_bytes();
+        writer.write_all(&len)?;
+        writer.write_all(&json)?;
+        writer.flush()
+    }
+
+    /// Receive a length-prefixed JSON message from a reader.
+    pub fn recv_message<R: std::io::Read, T: serde::de::DeserializeOwned>(
+        reader: &mut R,
+    ) -> std::io::Result<T> {
+        let mut len_buf = [0u8; 4];
+        reader.read_exact(&mut len_buf)?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+        if len > 1024 * 1024 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "message too large",
+            ));
+        }
+        let mut buf = vec![0u8; len];
+        reader.read_exact(&mut buf)?;
+        serde_json::from_slice(&buf).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })
+    }
+}

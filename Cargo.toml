@@ -19,13 +19,15 @@ resolver = "2"
 members = [
     "guardian",
     "guardian-common",
+    "guardian-ctl",
     "guardian-ebpf",
+    "guardian-launch",
     "xtask",
 ]
 # guardian-ebpf requires a special target (bpfel-unknown-none) and nightly Rust.
 # It's built separately via `cargo xtask build-ebpf`, NOT by normal `cargo build`.
 # default-members controls what `cargo build` compiles.
-default-members = ["guardian", "xtask"]
+default-members = ["guardian", "guardian-ctl", "guardian-launch", "xtask"]
 
 # NOTE: The guardian-ebpf crate has its own profile settings but since it's
 # built via `cargo xtask build-ebpf` (not normal `cargo build`), workspace

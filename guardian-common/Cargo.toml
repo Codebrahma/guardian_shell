@@ -23,7 +23,9 @@ description = "Shared types between Guardian Shell eBPF and userspace components
 [features]
 default = []
 # Enable this feature in userspace code for std-dependent functionality
-user = ["aya"]
+user = ["aya", "serde", "serde_json"]
 
 [dependencies]
 aya = { version = "0.13", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }

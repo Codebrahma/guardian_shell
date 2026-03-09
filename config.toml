@@ -2,7 +2,12 @@
 log_level = "info"
 mode = "enforce"
 pid_rescan_interval = 5
+socket_path = "/run/guardian.sock"
 
+# =============================================================================
+# Comm-based agent (Phase 1/2 backward compatible)
+# Identified by process name — works without guardian-launch
+# =============================================================================
 [[agents]]
 name = "claude-code"
 process_name = "claude"
@@ -62,3 +67,40 @@ deny = [
 default = "allow"
 allow = ["/usr/bin/**", "/usr/local/bin/**", "/bin/**"]
 deny = []
+
+# =============================================================================
+# Cgroup-based agent (Phase 3 — unspoofable identity)
+# Launch with: guardian-launch --name "aider" -- python3 -m aider
+# =============================================================================
+# [[agents]]
+# name = "aider"
+# identity = "cgroup"
+#
+# [agents.file_access]
+# default = "deny"
+# allow = [
+#     "/home/suren/projects/aider-workspace/**",
+#     "/tmp/**",
+#     "/usr/lib/**",
+#     "/usr/lib64/**",
+#     "/lib/**",
+#     "/lib64/**",
+#     "/usr/share/**",
+#     "/etc/ld.so.cache",
+#     "/etc/ssl/**",
+#     "/proc/**",
+# ]
+# deny = [
+#     "/home/suren/.ssh/**",
+#     "/home/suren/.aws/**",
+#     "/home/suren/.gnupg/**",
+# ]
+#
+# [agents.exec_policy]
+# default = "allow"
+# allow = ["/usr/bin/**", "/usr/local/bin/**"]
+# deny = ["/usr/bin/rm", "/usr/bin/curl", "/usr/bin/wget"]
+#
+# [agents.resources]
+# memory_max = "4G"
+# pids_max = 200

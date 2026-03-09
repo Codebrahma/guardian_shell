@@ -1,9 +1,13 @@
 # Guardian Shell - Usage Guide
 
-Guardian Shell is a Linux security tool that monitors file access by LLM agents (Claude Code, AutoGPT, Aider, Cursor, etc.) using eBPF. It hooks into the kernel's file-open syscall and evaluates every file access against your policy rules in real time.
+Guardian Shell is a Linux security tool that monitors and enforces file access policies for LLM agents (Claude Code, OpenAI Codex, Aider, OpenClaw, Cursor, etc.) using eBPF. It hooks into the kernel's file-open syscall, evaluates every file access against your policy rules in real time, and can block unauthorized access at the kernel level.
 
-**Current mode: Monitor-only (Phase 1)**
-Guardian logs ALLOW/DENY decisions but does not block file access yet. Use it to audit what your agents are doing and tune your policy before enforcement mode arrives in Phase 2.
+**Current mode: Phase 3 — Cgroup Identity, Guardian Launcher & Time-Based Access**
+
+Guardian Shell now provides three layers of protection:
+- **Phase 1**: Monitor-only file access logging via eBPF tracepoints
+- **Phase 2**: Kernel-level enforcement via LSM BPF hooks (blocks denied access)
+- **Phase 3**: Unspoofable cgroup-based agent identity, resource limits, launcher wrapper, and time-based access grants
 
 ---
 
@@ -15,42 +19,57 @@ Guardian logs ALLOW/DENY decisions but does not block file access yet. Use it to
 4. [Configuration](#configuration)
    - [Global Settings](#global-settings)
    - [Agent Definitions](#agent-definitions)
+   - [Cgroup-Based Agents (Phase 3)](#cgroup-based-agents-phase-3)
    - [File Access Policies](#file-access-policies)
    - [Pattern Matching](#pattern-matching)
    - [Policy Evaluation Order](#policy-evaluation-order)
 5. [Running Guardian Shell](#running-guardian-shell)
    - [CLI Options](#cli-options)
    - [Log Levels](#log-levels)
-6. [Understanding the Output](#understanding-the-output)
+6. [guardian-launch: Launching Agents with Cgroup Isolation](#guardian-launch-launching-agents-with-cgroup-isolation)
+   - [What guardian-launch Does](#what-guardian-launch-does)
+   - [Why You Need It](#why-you-need-it)
+   - [Usage](#guardian-launch-usage)
+   - [Resource Limits](#resource-limits)
+7. [guardian-ctl: Managing Running Agents](#guardian-ctl-managing-running-agents)
+   - [Listing Agents](#listing-agents)
+   - [Stopping Agents](#stopping-agents)
+   - [Temporary Access Grants](#temporary-access-grants)
+8. [Understanding the Output](#understanding-the-output)
    - [Startup Messages](#startup-messages)
    - [ALLOW Events](#allow-events)
    - [DENY Events](#deny-events)
    - [Event Fields](#event-fields)
-7. [Writing Effective Policies](#writing-effective-policies)
+9. [Writing Effective Policies](#writing-effective-policies)
    - [Principle of Least Privilege](#principle-of-least-privilege)
    - [Common Allow Patterns](#common-allow-patterns)
    - [Recommended Deny Patterns](#recommended-deny-patterns)
    - [Per-Agent Policies](#per-agent-policies)
    - [Tuning Your Policy](#tuning-your-policy)
-8. [Real-World Examples](#real-world-examples)
-   - [Monitoring Claude Code](#monitoring-claude-code)
-   - [Monitoring a Python Agent](#monitoring-a-python-agent)
-   - [Monitoring Multiple Agents](#monitoring-multiple-agents)
-   - [Strict Lockdown Policy](#strict-lockdown-policy)
-   - [Permissive Audit Policy](#permissive-audit-policy)
-9. [How It Works](#how-it-works)
-   - [Architecture Overview](#architecture-overview)
-   - [eBPF and Tracepoints](#ebpf-and-tracepoints)
-   - [Process Name Matching](#process-name-matching)
-   - [Event Pipeline](#event-pipeline)
-10. [Troubleshooting](#troubleshooting)
-11. [Security Considerations](#security-considerations)
-12. [Known Limitations](#known-limitations)
-13. [Roadmap](#roadmap)
+10. [Real-World Examples](#real-world-examples)
+    - [Monitoring Claude Code (comm-based)](#monitoring-claude-code-comm-based)
+    - [Isolating Aider with Cgroups](#isolating-aider-with-cgroups)
+    - [Running OpenClaw in a Sandbox](#running-openclaw-in-a-sandbox)
+    - [Securing OpenAI Codex CLI Agent](#securing-openai-codex-cli-agent)
+    - [Multiple LLM Agents Side by Side](#multiple-llm-agents-side-by-side)
+    - [Strict Lockdown Policy](#strict-lockdown-policy)
+    - [Permissive Audit Policy](#permissive-audit-policy)
+11. [How It Works](#how-it-works)
+    - [Architecture Overview](#architecture-overview)
+    - [eBPF and Tracepoints](#ebpf-and-tracepoints)
+    - [3-Tier Agent Identification](#3-tier-agent-identification)
+    - [Event Pipeline](#event-pipeline)
+12. [LLM Agent Security: Why This Matters](#llm-agent-security-why-this-matters)
+13. [Troubleshooting](#troubleshooting)
+14. [Security Considerations](#security-considerations)
+15. [Known Limitations](#known-limitations)
+16. [Roadmap](#roadmap)
 
 ---
 
 ## Quick Start
+
+### Option A: Comm-based monitoring (Phase 1/2 — simple, works with any process)
 
 ```bash
 # 1. Build (one-time)
@@ -61,6 +80,8 @@ cargo build --release
 cat > my-policy.toml << 'EOF'
 [global]
 log_level = "info"
+mode = "enforce"
+socket_path = "/run/guardian.sock"
 
 [[agents]]
 name = "my-agent"
@@ -85,7 +106,56 @@ EOF
 sudo RUST_LOG=info target/release/guardian --config my-policy.toml
 
 # 4. In another terminal, use your agent normally
-# Guardian will log every file access decision
+# Guardian will log every file access decision and block denied access
+```
+
+### Option B: Cgroup-based isolation (Phase 3 — recommended for production)
+
+```bash
+# 1. Build (one-time)
+cargo xtask build-ebpf --release
+cargo build --release
+
+# 2. Create a policy file with cgroup-based agent
+cat > my-policy.toml << 'EOF'
+[global]
+log_level = "info"
+mode = "enforce"
+socket_path = "/run/guardian.sock"
+
+[[agents]]
+name = "aider"
+identity = "cgroup"
+
+[agents.file_access]
+default = "deny"
+allow = [
+    "/home/user/project/**",
+    "/tmp/**",
+    "/usr/lib/**",
+    "/lib/**",
+    "/lib64/**",
+]
+deny = [
+    "/home/user/.ssh/**",
+    "/home/user/.aws/**",
+]
+EOF
+
+# 3. Start the Guardian daemon
+sudo RUST_LOG=info target/release/guardian --config my-policy.toml
+
+# 4. In another terminal, launch the agent through guardian-launch
+sudo target/release/guardian-launch \
+    --name aider \
+    --memory 4G \
+    --pids 200 \
+    -- python3 -m aider
+
+# 5. Manage running agents
+sudo target/release/guardian-ctl list
+sudo target/release/guardian-ctl grant --name aider --path "/home/user/.aws/**" --duration 300
+sudo target/release/guardian-ctl stop --name aider
 ```
 
 ---
@@ -171,7 +241,9 @@ target/
 ├── bpfel-unknown-none/release/
 │   └── guardian-ebpf              # eBPF program (loaded into kernel)
 └── release/
-    └── guardian                    # Userspace daemon
+    ├── guardian                    # Userspace daemon
+    ├── guardian-launch            # Agent launcher with cgroup isolation (Phase 3)
+    └── guardian-ctl               # Agent management CLI (Phase 3)
 ```
 
 ---
@@ -185,20 +257,28 @@ Guardian Shell is configured via a TOML file. The configuration defines which pr
 ```toml
 [global]
 log_level = "info"
+mode = "enforce"                     # "monitor" or "enforce"
+pid_rescan_interval = 5              # seconds between /proc scans for comm-based agents
+socket_path = "/run/guardian.sock"   # Unix socket for guardian-launch/guardian-ctl IPC
 ```
 
 | Field | Values | Description |
 |-------|--------|-------------|
 | `log_level` | `trace`, `debug`, `info`, `warn`, `error` | Default log verbosity (can be overridden with `RUST_LOG` env var) |
+| `mode` | `monitor`, `enforce` | `monitor` = log only; `enforce` = kernel-level blocking via LSM |
+| `pid_rescan_interval` | Integer (seconds) | How often to rescan `/proc` for new comm-based agent processes |
+| `socket_path` | Path string | Unix socket path for IPC with `guardian-launch` and `guardian-ctl` |
 
 ### Agent Definitions
 
-Each `[[agents]]` section defines a process to monitor:
+Guardian supports two identity modes for agents:
+
+**Comm-based (Phase 1/2)** — Identifies agents by process name. Simple but can be spoofed.
 
 ```toml
 [[agents]]
 name = "claude-code"
-process_name = "claude"
+process_name = "claude"         # matches /proc/PID/comm
 
 [agents.file_access]
 default = "deny"
@@ -206,15 +286,37 @@ allow = ["/home/user/project/**"]
 deny = ["/home/user/project/.env"]
 ```
 
+**Cgroup-based (Phase 3)** — Identifies agents by kernel cgroup ID. Cannot be spoofed. Requires launching via `guardian-launch`.
+
+```toml
+[[agents]]
+name = "aider"
+identity = "cgroup"            # no process_name needed
+
+[agents.file_access]
+default = "deny"
+allow = ["/home/user/project/**"]
+deny = ["/home/user/project/.env"]
+
+[agents.resources]             # optional resource limits
+memory_max = "4G"
+pids_max = 200
+cpu_max = "200000 100000"      # 2 CPU cores
+```
+
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | Yes | Human-readable name displayed in log output |
-| `process_name` | Yes | Process name to match (from `/proc/PID/comm`, max 15 characters) |
+| `process_name` | For comm-based | Process name to match (from `/proc/PID/comm`, max 15 characters) |
+| `identity` | No | `"comm"` (default) or `"cgroup"`. Determines how the agent is identified |
 | `file_access.default` | Yes | Default action when no pattern matches: `"allow"` or `"deny"` |
 | `file_access.allow` | Yes | List of path patterns that are allowed |
 | `file_access.deny` | Yes | List of path patterns that are denied |
+| `resources.memory_max` | No | Memory limit for cgroup agents (e.g., `"4G"`, `"512M"`) |
+| `resources.pids_max` | No | Max number of processes for cgroup agents |
+| `resources.cpu_max` | No | CPU bandwidth limit (e.g., `"200000 100000"` = 2 cores) |
 
-#### Finding the Process Name
+#### Finding the Process Name (comm-based agents)
 
 The `process_name` field must match what the kernel reports in `/proc/PID/comm`. To find it:
 
@@ -231,6 +333,25 @@ cat /proc/<PID>/comm
 ```
 
 Note: The kernel truncates process names to 15 characters. A process named `very-long-agent-name` becomes `very-long-agent` in `/proc/PID/comm`.
+
+### Cgroup-Based Agents (Phase 3)
+
+Cgroup-based agents are the recommended approach for production use. Instead of relying on the process name (which any process can spoof with a single syscall), Guardian assigns each agent a **kernel cgroup** — a process group that the kernel enforces and that no unprivileged process can escape.
+
+**When to use cgroup identity:**
+- Running untrusted or semi-trusted LLM agents
+- Running multiple agents that share the same binary (e.g., two Python agents)
+- Needing resource limits (memory, CPU, process count)
+- Wanting automatic child process tracking without relying on fork monitoring
+
+**How it works:**
+1. Define the agent in `config.toml` with `identity = "cgroup"`
+2. Start the Guardian daemon
+3. Launch the agent through `guardian-launch` — it creates a cgroup, registers with the daemon, and exec's the agent
+4. All processes the agent spawns inherit the cgroup automatically
+5. When the agent exits, the daemon cleans up the cgroup and BPF maps
+
+Existing comm-based configs continue to work unchanged. You can mix both types in the same config.
 
 ### File Access Policies
 
@@ -363,6 +484,133 @@ sudo journalctl -u guardian-shell -f   # View logs
 
 ---
 
+## guardian-launch: Launching Agents with Cgroup Isolation
+
+### What guardian-launch Does
+
+`guardian-launch` is a launcher binary that starts an LLM agent inside a dedicated Linux cgroup. It performs six steps in sequence:
+
+1. **Creates a cgroup** at `/sys/fs/cgroup/guardian/<agent-name>-<pid>/`
+2. **Enables controllers** (memory, PIDs, CPU) in the cgroup hierarchy
+3. **Sets resource limits** (memory cap, process count limit, CPU bandwidth)
+4. **Gets the cgroup ID** (inode number, which matches `bpf_get_current_cgroup_id()` in the kernel)
+5. **Registers with the Guardian daemon** via Unix socket IPC
+6. **exec()'s the agent command** — the launcher process replaces itself with the agent
+
+After step 6, the agent IS the process in the cgroup. There is no wrapper overhead. Every child process the agent spawns (bash, git, curl, pip, etc.) automatically inherits the same cgroup. No process can leave the cgroup without root privileges.
+
+### Why You Need It
+
+Without `guardian-launch`, Guardian identifies agents by their process name (`/proc/PID/comm`). This has three problems:
+
+**Problem 1: Process name spoofing.** Any process can change its own name:
+```python
+import ctypes
+libc = ctypes.CDLL("libc.so.6")
+libc.prctl(15, b"systemd\0")  # Now /proc/PID/comm says "systemd"
+```
+After this call, Guardian stops monitoring the agent. With cgroups, the identity is kernel-enforced and cannot be changed.
+
+**Problem 2: Same-binary ambiguity.** Two Python-based agents (e.g., Aider and OpenClaw) both appear as `python3` in `/proc/PID/comm`. Guardian can't tell them apart. With `guardian-launch`, each gets its own cgroup with separate policy rules.
+
+**Problem 3: No resource control.** A buggy or malicious agent could consume all system memory, fork-bomb the system, or hog the CPU. `guardian-launch` sets hard limits via cgroup controllers.
+
+### guardian-launch Usage
+
+```bash
+sudo guardian-launch [OPTIONS] -- <COMMAND> [ARGS...]
+```
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `--name <NAME>` | Agent name (must match a `[[agents]]` entry in config.toml) | `--name aider` |
+| `--memory <LIMIT>` | Memory limit | `--memory 4G`, `--memory 512M` |
+| `--pids <MAX>` | Max process count (prevents fork bombs) | `--pids 200` |
+| `--cpu <QUOTA>` | CPU bandwidth (`quota period` in microseconds) | `--cpu "200000 100000"` (= 2 cores) |
+| `--socket <PATH>` | Guardian daemon socket path | `--socket /run/guardian.sock` |
+
+**Examples:**
+
+```bash
+# Launch Aider with 4GB memory and 200 process limit
+sudo guardian-launch --name aider --memory 4G --pids 200 \
+    -- python3 -m aider
+
+# Launch a Node.js agent with 2 CPU cores
+sudo guardian-launch --name codex --memory 8G --cpu "200000 100000" \
+    -- npx @openai/codex
+
+# Launch with no resource limits (just cgroup identity)
+sudo guardian-launch --name my-agent \
+    -- ./my-agent --workspace /home/user/project
+```
+
+### Resource Limits
+
+Resource limits are enforced by the Linux kernel via cgroup v2 controllers:
+
+| Limit | Cgroup File | What Happens When Exceeded |
+|-------|-------------|---------------------------|
+| `--memory` | `memory.max` | Kernel OOM-kills processes in the cgroup |
+| `--pids` | `pids.max` | `fork()` returns EAGAIN — agent can't spawn more processes |
+| `--cpu` | `cpu.max` | Agent is throttled — still runs but at limited CPU bandwidth |
+
+**CPU limit format**: `"QUOTA PERIOD"` in microseconds. The ratio `QUOTA/PERIOD` gives the number of CPU cores. Examples:
+- `"100000 100000"` = 1 core (100% of one CPU)
+- `"200000 100000"` = 2 cores
+- `"50000 100000"` = 0.5 cores (half a CPU)
+
+---
+
+## guardian-ctl: Managing Running Agents
+
+`guardian-ctl` is a CLI tool that communicates with the running Guardian daemon to manage cgroup-based agents.
+
+### Listing Agents
+
+```bash
+sudo guardian-ctl list
+```
+
+Output:
+```
+NAME                 PROCS    CGROUP                                   ID       UPTIME
+--------------------------------------------------------------------------------------
+aider                3        guardian/aider-12345                      789456   32m 15s
+codex                1        guardian/codex-67890                      123789   5m 42s
+```
+
+### Stopping Agents
+
+```bash
+sudo guardian-ctl stop --name aider
+```
+
+This sends `SIGTERM` to every process in the agent's cgroup, then cleans up the cgroup directory and removes the agent from BPF maps.
+
+### Temporary Access Grants
+
+Sometimes an agent needs temporary access to a sensitive resource — for example, reading AWS credentials during a deployment, or accessing an SSH key for a git push.
+
+```bash
+# Grant access to AWS credentials for 5 minutes
+sudo guardian-ctl grant --name aider --path "/home/user/.aws/**" --duration 300
+
+# Grant access to SSH key for 60 seconds
+sudo guardian-ctl grant --name codex --path "/home/user/.ssh/id_rsa" --duration 60
+```
+
+After the duration expires, the allow rule is automatically removed from the kernel BPF maps. Access is blocked again without any manual intervention.
+
+**How temporary grants work internally:**
+1. `guardian-ctl` sends a grant request to the daemon via Unix socket
+2. The daemon adds the path to the ALLOW_EXACT or ALLOW_PREFIXES BPF map
+3. The daemon stores the grant with an expiry timestamp
+4. A background task checks every 5 seconds and removes expired grants
+5. Once removed from the BPF map, the kernel blocks access again immediately
+
+---
+
 ## Understanding the Output
 
 ### Startup Messages
@@ -400,11 +648,16 @@ Logged at `INFO` level when a file access matches an allow pattern:
 Logged at `WARN` level when a file access is denied by policy:
 
 ```
+# In monitor mode:
 [WARN  guardian] [DENY] agent='claude-code' pid=1234 uid=1000 file='/home/user/.ssh/id_rsa' mode=READ (monitoring mode - access was NOT actually blocked)
-[WARN  guardian] [DENY] agent='claude-code' pid=1234 uid=1000 file='/etc/shadow' mode=READ (monitoring mode - access was NOT actually blocked)
+
+# In enforce mode:
+[WARN  guardian] [DENY] agent='claude-code' pid=1234 uid=1000 file='/home/user/.ssh/id_rsa' mode=READ (BLOCKED)
 ```
 
-**Important:** In Phase 1 (current), `[DENY]` means the access *would be denied* under the policy, but the file access still succeeds. The agent is not actually blocked. This changes in Phase 2.
+**In monitor mode** (`mode = "monitor"`), `[DENY]` means the access *would be denied* under the policy, but the file access still succeeds. Use this to tune your policy.
+
+**In enforce mode** (`mode = "enforce"`), the kernel blocks the access — the agent's `open()` call returns `EACCES` (permission denied). The file is never opened.
 
 ### Event Fields
 
@@ -603,11 +856,15 @@ sudo RUST_LOG=info target/release/guardian --config strict.toml 2>&1 | grep DENY
 
 ## Real-World Examples
 
-### Monitoring Claude Code
+### Monitoring Claude Code (comm-based)
+
+Claude Code runs as a Node.js process. The simplest setup uses comm-based monitoring:
 
 ```toml
 [global]
 log_level = "info"
+mode = "enforce"
+socket_path = "/run/guardian.sock"
 
 [[agents]]
 name = "claude-code"
@@ -661,78 +918,294 @@ deny = [
 ]
 ```
 
-### Monitoring a Python Agent
+### Isolating Aider with Cgroups
 
+[Aider](https://github.com/paul-gauthier/aider) is a popular AI coding assistant that runs as a Python process. Since Python-based agents all show up as `python3` in `/proc/PID/comm`, cgroup isolation is the best way to monitor Aider without false positives from other Python processes.
+
+**Config (`config.toml`):**
 ```toml
+[global]
+log_level = "info"
+mode = "enforce"
+socket_path = "/run/guardian.sock"
+
 [[agents]]
-name = "autogpt"
-process_name = "python3"
+name = "aider"
+identity = "cgroup"
 
 [agents.file_access]
 default = "deny"
 allow = [
-    # Python and its packages
-    "/usr/lib/python3/**",
-    "/usr/lib64/python3/**",
-    "/home/user/.local/lib/python3/**",
-    "/home/user/venvs/autogpt/**",
+    # Aider workspace
+    "/home/user/projects/my-app/**",
 
-    # Agent workspace
-    "/home/user/autogpt-workspace/**",
+    # Python runtime
+    "/usr/lib/python3/**",
+    "/home/user/.local/lib/python3/**",
+    "/home/user/.virtualenvs/aider/**",
 
     # System libraries
     "/lib/**",
     "/lib64/**",
     "/usr/lib/**",
     "/etc/ld.so.cache",
-    "/usr/share/locale/**",
 
-    # Temp files
+    # Temp files and git
     "/tmp/**",
+    "/usr/bin/git",
+    "/usr/libexec/git-core/**",
 ]
 deny = [
     "/home/user/.ssh/**",
     "/home/user/.aws/**",
-    "/home/user/autogpt-workspace/.env",
+    "/home/user/projects/my-app/.env",
 ]
+
+[agents.resources]
+memory_max = "4G"
+pids_max = 200
 ```
 
-### Monitoring Multiple Agents
+**Launching:**
+```bash
+# Start Guardian daemon
+sudo RUST_LOG=info target/release/guardian --config config.toml
 
+# Launch Aider (in another terminal)
+sudo target/release/guardian-launch \
+    --name aider \
+    --memory 4G \
+    --pids 200 \
+    -- python3 -m aider --model claude-3.5-sonnet
+
+# Aider is now monitored. Every subprocess it spawns (git, shell commands,
+# pip installs) is automatically tracked under the same cgroup policy.
+```
+
+**Why this matters:** Aider frequently shells out to `git`, runs shell commands for testing, and may install Python packages. All of these child processes inherit the cgroup — Guardian monitors every single one with no extra configuration.
+
+### Running OpenClaw in a Sandbox
+
+[OpenClaw](https://github.com/openclaw-ai/openclaw) (and similar autonomous AI agents) can execute arbitrary code, browse the web, and interact with the filesystem. These agents need strict sandboxing because they operate with minimal human oversight.
+
+**Config:**
+```toml
+[[agents]]
+name = "openclaw"
+identity = "cgroup"
+
+[agents.file_access]
+default = "deny"
+allow = [
+    # Agent's dedicated workspace only
+    "/home/user/openclaw-workspace/**",
+    "/tmp/**",
+
+    # Python runtime
+    "/usr/lib/python3/**",
+    "/home/user/.local/lib/python3/**",
+
+    # System libraries
+    "/lib/**",
+    "/lib64/**",
+    "/usr/lib/**",
+    "/etc/ld.so.cache",
+
+    # Network (for API calls)
+    "/etc/ssl/**",
+    "/etc/resolv.conf",
+]
+deny = [
+    # All credentials — no exceptions
+    "/home/**/.ssh/**",
+    "/home/**/.aws/**",
+    "/home/**/.gnupg/**",
+    "/home/**/.config/gcloud/**",
+    "/home/**/.kube/**",
+
+    # No access to other projects
+    "/home/user/projects/**",
+
+    # No system modification
+    "/etc/shadow",
+    "/etc/sudoers",
+    "/var/run/docker.sock",
+
+    # No access to Guardian config
+    "/etc/guardian/**",
+]
+
+[agents.resources]
+memory_max = "2G"     # Tight memory limit
+pids_max = 100        # Prevent fork bombs
+cpu_max = "100000 100000"  # 1 CPU core max
+```
+
+**Launching:**
+```bash
+sudo target/release/guardian-launch \
+    --name openclaw \
+    --memory 2G \
+    --pids 100 \
+    --cpu "100000 100000" \
+    -- python3 -m openclaw --workspace /home/user/openclaw-workspace
+
+# If the agent needs temporary access to credentials for a deploy:
+sudo target/release/guardian-ctl grant \
+    --name openclaw \
+    --path "/home/user/.aws/credentials" \
+    --duration 120  # 2 minutes, then auto-revoked
+```
+
+### Securing OpenAI Codex CLI Agent
+
+[OpenAI Codex CLI](https://github.com/openai/codex) is a terminal-based coding agent that can read, write, and execute code. It runs as a Node.js process, similar to Claude Code, but with broader autonomous capabilities.
+
+**The challenge:** Codex runs as `node` in `/proc/PID/comm` — the same as any Node.js application on your system. Comm-based monitoring would catch every Node process, not just Codex.
+
+**Config:**
+```toml
+[[agents]]
+name = "codex"
+identity = "cgroup"
+
+[agents.file_access]
+default = "deny"
+allow = [
+    # Codex workspace
+    "/home/user/projects/current/**",
+
+    # Node.js runtime
+    "/home/user/.nvm/**",
+    "/home/user/.npm/**",
+    "/usr/lib/node_modules/**",
+
+    # System libraries
+    "/lib/**",
+    "/lib64/**",
+    "/usr/lib/**",
+    "/etc/ld.so.cache",
+
+    # Build tools
+    "/usr/bin/git",
+    "/usr/bin/make",
+    "/usr/bin/gcc",
+
+    # Temp and network
+    "/tmp/**",
+    "/etc/ssl/**",
+    "/etc/resolv.conf",
+    "/etc/hosts",
+]
+deny = [
+    "/home/user/.ssh/**",
+    "/home/user/.aws/**",
+    "/home/user/.gnupg/**",
+    "/home/user/projects/current/.env",
+    "/home/user/projects/current/**/*.key",
+    "/etc/shadow",
+]
+
+[agents.resources]
+memory_max = "8G"
+pids_max = 500
+cpu_max = "200000 100000"  # 2 cores
+```
+
+**Launching:**
+```bash
+sudo target/release/guardian-launch \
+    --name codex \
+    --memory 8G \
+    --pids 500 \
+    --cpu "200000 100000" \
+    -- npx @openai/codex
+
+# The agent can write code, run tests, use git — all within its allowed paths.
+# Any attempt to read SSH keys or AWS credentials is blocked at the kernel level.
+```
+
+### Multiple LLM Agents Side by Side
+
+A common scenario: you're running Aider on one project and Codex on another, simultaneously. Without cgroup isolation, both Python/Node processes would be indistinguishable or receive the same policy.
+
+**Config:**
 ```toml
 [global]
 log_level = "info"
+mode = "enforce"
+socket_path = "/run/guardian.sock"
 
-# Agent 1: Claude Code
+# Agent 1: Aider on project A (cgroup-based)
 [[agents]]
-name = "claude"
+name = "aider"
+identity = "cgroup"
+
+[agents.file_access]
+default = "deny"
+allow = [
+    "/home/user/projects/frontend/**",
+    "/usr/lib/python3/**",
+    "/home/user/.local/lib/python3/**",
+    "/lib/**",
+    "/lib64/**",
+    "/usr/lib/**",
+    "/tmp/**",
+]
+deny = [
+    "/home/user/projects/frontend/.env",
+    "/home/user/.ssh/**",
+]
+
+# Agent 2: Codex on project B (cgroup-based)
+[[agents]]
+name = "codex"
+identity = "cgroup"
+
+[agents.file_access]
+default = "deny"
+allow = [
+    "/home/user/projects/backend/**",
+    "/home/user/.nvm/**",
+    "/lib/**",
+    "/lib64/**",
+    "/usr/lib/**",
+    "/tmp/**",
+]
+deny = [
+    "/home/user/projects/backend/.env",
+    "/home/user/.ssh/**",
+]
+
+# Agent 3: Claude Code (comm-based — simple, no launcher needed)
+[[agents]]
+name = "claude-code"
 process_name = "claude"
 
 [agents.file_access]
 default = "deny"
-allow = ["/home/user/project-a/**", "/tmp/**", "/usr/lib/**", "/lib/**", "/lib64/**"]
-deny = ["/home/user/project-a/.env", "/home/user/.ssh/**"]
-
-# Agent 2: Aider (Python-based)
-[[agents]]
-name = "aider"
-process_name = "python3"
-
-[agents.file_access]
-default = "deny"
-allow = ["/home/user/project-b/**", "/tmp/**", "/usr/lib/**", "/lib/**", "/lib64/**"]
-deny = ["/home/user/project-b/.env", "/home/user/.ssh/**"]
-
-# Agent 3: Custom agent
-[[agents]]
-name = "custom-bot"
-process_name = "mybot"
-
-[agents.file_access]
-default = "deny"
-allow = ["/home/user/bot-workspace/**", "/tmp/**", "/usr/lib/**", "/lib/**", "/lib64/**"]
+allow = ["/home/user/projects/infra/**", "/tmp/**", "/usr/lib/**", "/lib/**", "/lib64/**"]
 deny = ["/home/user/.ssh/**", "/home/user/.aws/**"]
 ```
+
+**Launching (two terminals):**
+```bash
+# Terminal 1: Launch Aider on the frontend project
+sudo target/release/guardian-launch --name aider --memory 4G \
+    -- python3 -m aider --model claude-3.5-sonnet
+
+# Terminal 2: Launch Codex on the backend project
+sudo target/release/guardian-launch --name codex --memory 8G \
+    -- npx @openai/codex
+
+# Terminal 3: Claude Code runs directly (comm-based, no launcher needed)
+claude
+
+# Check all running agents:
+sudo target/release/guardian-ctl list
+```
+
+Each agent can only access its own project directory. Aider cannot read backend code, Codex cannot read frontend code, and neither can read SSH keys or cloud credentials.
 
 ### Strict Lockdown Policy
 
@@ -787,35 +1260,49 @@ deny = [
 ### Architecture Overview
 
 ```
- ┌─────────────────────────────────────────────────────────────┐
- │                       USER SPACE                             │
- │                                                              │
- │  config.toml ──→ [Config Parser] ──→ [Policy Engine]        │
- │                                            │                 │
- │                                    ┌───────┴───────┐        │
- │                                    │  eBPF Loader  │        │
- │                                    └───────┬───────┘        │
- │                                            │                 │
- │                             ┌──────────────┴──────────────┐ │
- │                             │   Async Event Processor     │ │
- │                             │   (one task per CPU core)   │ │
- │                             └──────────────┬──────────────┘ │
- │                                            │                 │
- │ ──── perf buffer ──────────────────────────┼──────────────── │
- │                                            │                 │
- │                       KERNEL SPACE         │                 │
- │                                            │                 │
- │           ┌────────────────────────────────┴──────┐         │
- │           │          eBPF Program                  │         │
- │           │   tracepoint/sys_enter_openat          │         │
- │           │                                        │         │
- │           │   1. Get process comm name             │         │
- │           │   2. Lookup in WATCHED_COMMS map       │         │
- │           │   3. If watched → capture event:       │         │
- │           │      - PID, UID, filename, flags       │         │
- │           │   4. Send to userspace via perf buffer │         │
- │           └────────────────────────────────────────┘         │
- └──────────────────────────────────────────────────────────────┘
+                        USER SPACE
+ ┌──────────────────────────────────────────────────────────────────┐
+ │                                                                  │
+ │   guardian-launch                    Guardian Daemon              │
+ │   ┌────────────────┐     IPC        ┌──────────────────────┐    │
+ │   │ 1. Create cgroup├──────────────>│ Unix socket listener │    │
+ │   │ 2. Set limits   │  register     │ /run/guardian.sock    │    │
+ │   │ 3. Register     │<─────────────┤                      │    │
+ │   │ 4. Move to cgrp │   ACK        │ Populates BPF maps:  │    │
+ │   │ 5. exec(agent)  │              │  WATCHED_CGROUPS     │    │
+ │   └────────────────┘              │  WATCHED_COMMS       │    │
+ │                                    │  ENFORCE_CGROUPS     │    │
+ │   guardian-ctl                      │  ALLOW/DENY rules    │    │
+ │   ┌────────────────┐     IPC        │                      │    │
+ │   │ list / stop /  ├──────────────>│ Background tasks:    │    │
+ │   │ grant          │               │  - Cgroup cleanup    │    │
+ │   └────────────────┘              │  - Grant expiry      │    │
+ │                                    │  - PID rescan        │    │
+ │   Cgroup Hierarchy:                └──────────┬───────────┘    │
+ │   /sys/fs/cgroup/guardian/                      │                │
+ │   ├── aider-1234/     ← PID 1234, 1235        │                │
+ │   └── codex-5678/     ← PID 5678              │                │
+ │                                                │                │
+ ├════════════════════════════════════════════════╪════════════════┤
+ │                                                │                │
+ │                        KERNEL SPACE            │                │
+ │                                                │                │
+ │   eBPF Programs                                │                │
+ │   ┌─────────────────────────────────────────────────────────┐  │
+ │   │ sys_enter_openat tracepoint:                            │  │
+ │   │   cgroup_id = bpf_get_current_cgroup_id()               │  │
+ │   │   if WATCHED_CGROUPS[cgroup_id]       ← Priority 1     │  │
+ │   │   OR WATCHED_TGIDS[tgid]              ← Priority 2     │  │
+ │   │   OR WATCHED_COMMS[comm]              ← Priority 3     │  │
+ │   │     → capture event, evaluate policy, set PENDING_DENY  │  │
+ │   │                                                          │  │
+ │   │ LSM file_open:                                           │  │
+ │   │   if PENDING_DENY[pid_tgid] → return -EACCES (blocked) │  │
+ │   │                                                          │  │
+ │   │ sched_process_fork: child inherits cgroup automatically  │  │
+ │   │ sched_process_exit: cleanup CHILD_PIDS                   │  │
+ │   └─────────────────────────────────────────────────────────┘  │
+ └──────────────────────────────────────────────────────────────────┘
 ```
 
 ### eBPF and Tracepoints
@@ -826,32 +1313,78 @@ deny = [
 - Cannot access invalid memory
 - Always terminates
 
-**Tracepoints** are static instrumentation points in the kernel. Guardian Shell hooks into `sys_enter_openat`, which fires every time any process on the system opens a file. The eBPF program runs at this point, checks if the process is one we're monitoring, and if so, captures the event.
+Guardian Shell uses multiple eBPF attachment points:
+- **`sys_enter_openat` tracepoint**: Fires on every file open — captures the event and evaluates policy
+- **`file_open` LSM hook**: Blocks denied access by returning `-EACCES` (enforce mode)
+- **`sched_process_fork`**: Tracks child processes spawned by monitored agents
+- **`sched_process_exit`**: Cleans up tracking data when processes exit
+- **`sys_enter_execve` tracepoint**: Monitors command execution by agents
 
-### Process Name Matching
+### 3-Tier Agent Identification
 
-Guardian Shell matches processes by their **comm name** — the process name stored in the kernel's task struct and visible at `/proc/PID/comm`.
+The eBPF program checks three levels of identity, from strongest to weakest:
 
-The matching happens directly inside the eBPF program in the kernel. When any process calls `openat()`:
+```
+1. CGROUP ID (Phase 3)    ← cannot be spoofed, kernel-enforced
+   bpf_get_current_cgroup_id() → lookup in WATCHED_CGROUPS map
 
-1. The eBPF program reads the calling process's comm name
-2. It looks up the name in the `WATCHED_COMMS` hash map
-3. If the name is there, it captures the event
-4. If not, it returns immediately (near-zero overhead)
+2. TGID / Child PID (Phase 2)  ← tracks process tree
+   WATCHED_TGIDS map + CHILD_PIDS map
 
-This approach catches even short-lived processes because the check happens during the syscall itself — the process cannot exit before the eBPF program runs.
+3. COMM NAME (Phase 1)   ← fallback, can be spoofed
+   bpf_get_current_comm() → lookup in WATCHED_COMMS map
+```
+
+If any tier matches, the process is monitored. Cgroup-based agents (launched via `guardian-launch`) are identified by tier 1 — the strongest identity that cannot be spoofed by any unprivileged process.
 
 ### Event Pipeline
 
 1. **Kernel**: Process calls `openat()` to open a file
 2. **Kernel**: `sys_enter_openat` tracepoint fires
-3. **Kernel**: eBPF program checks if process comm is in `WATCHED_COMMS`
-4. **Kernel**: If watched, eBPF captures PID, UID, filename, flags into a `FileAccessEvent`
-5. **Kernel**: Event is written to a per-CPU perf ring buffer
-6. **Userspace**: Async task reads event from perf buffer
-7. **Userspace**: Event is parsed and matched to an agent config by comm name
-8. **Userspace**: Policy engine evaluates file path against allow/deny rules
+3. **Kernel**: eBPF checks cgroup ID → TGID → comm name (3-tier identification)
+4. **Kernel**: If watched, evaluates deny/allow rules in-kernel
+5. **Kernel**: If denied in enforce mode, marks `PENDING_DENY` map
+6. **Kernel**: `file_open` LSM hook reads `PENDING_DENY` → returns `-EACCES` to block access
+7. **Kernel**: Event is written to per-CPU perf ring buffer
+8. **Userspace**: Async task reads event from perf buffer
 9. **Userspace**: Decision is logged as `[ALLOW]` or `[DENY]`
+
+---
+
+## LLM Agent Security: Why This Matters
+
+Modern LLM-based coding agents are powerful but fundamentally operate by executing code on your machine. Here's why Guardian Shell matters for each type of agent:
+
+### The Core Problem
+
+When you run an LLM agent, you're giving an AI system the ability to:
+- **Read any file** your user can access (SSH keys, cloud credentials, environment variables)
+- **Write and execute arbitrary code** (including malicious payloads)
+- **Spawn child processes** (curl, wget, shell scripts) that inherit the same privileges
+- **Exfiltrate data** by reading sensitive files and sending them to external APIs
+
+Most agents run as your user with your full permissions. There is no built-in sandbox.
+
+### Agent-Specific Risks
+
+| Agent | Runtime | Identity Problem | Resource Risk | Guardian Solution |
+|-------|---------|-----------------|---------------|-------------------|
+| **Claude Code** | Node.js (`node`) | Shares name with all Node apps | Moderate — well-behaved | Comm-based monitoring works; cgroup for strict isolation |
+| **Aider** | Python (`python3`) | Shares name with ALL Python scripts | Moderate — spawns git/shell | Cgroup isolation required to distinguish from other Python processes |
+| **OpenClaw** | Python (`python3`) | Same as Aider — indistinguishable | High — autonomous, runs arbitrary code | Cgroup isolation + strict resource limits essential |
+| **OpenAI Codex CLI** | Node.js (`node`) | Shares name with all Node apps | High — executes commands autonomously | Cgroup isolation to separate from other Node processes |
+| **AutoGPT / AgentGPT** | Python (`python3`) | Same binary as any Python script | Very high — fully autonomous with minimal oversight | Cgroup + tight memory/CPU/PID limits |
+| **Cursor Agent** | Electron (`electron`) | May share name with other Electron apps | Moderate | Comm-based works if unique; cgroup for certainty |
+
+### What Guardian Shell Provides
+
+1. **Visibility**: See every file access in real time — know exactly what the agent is doing
+2. **Enforcement**: Block unauthorized file access at the kernel level — the agent's `open()` call fails
+3. **Identity**: Unspoofable cgroup identity — the agent cannot disguise itself as another process
+4. **Isolation**: Each agent gets its own policy — Aider can't read Codex's project, and vice versa
+5. **Resource limits**: Prevent runaway agents from consuming all memory, CPU, or spawning thousands of processes
+6. **Temporary access**: Grant time-limited access to sensitive resources with automatic revocation
+7. **Zero overhead**: eBPF runs in the kernel — no process wrapping, no ptrace, no container
 
 ---
 
@@ -959,18 +1492,16 @@ cargo install bpf-linker
 
 ## Security Considerations
 
-### What Guardian Shell Protects Against (Phase 1)
+### What Guardian Shell Protects Against
 
 - **Visibility**: Real-time view of every file an LLM agent opens
 - **Audit trail**: Permanent log of all file access with PID, UID, path, and access mode
-- **Policy violation detection**: Immediate alerts when agents access files outside their scope
-- **Credential access detection**: Catch agents trying to read SSH keys, cloud credentials, or secrets
-
-### What It Does NOT Do Yet
-
-- **Block access**: Phase 1 is monitor-only. The agent still succeeds in opening the file, even if the log says `[DENY]`.
-- **Prevent execution**: Command execution (`execve`) is not monitored.
-- **Track child processes**: If a monitored agent spawns a child process with a different name, the child is not tracked.
+- **Kernel-level enforcement**: In enforce mode, denied file access is blocked by the kernel (the `open()` syscall returns EACCES)
+- **Unspoofable identity**: Cgroup-based agents cannot change or escape their identity
+- **Child process tracking**: All child processes (git, curl, shell commands) are automatically monitored
+- **Resource exhaustion prevention**: Memory, CPU, and process count limits via cgroups
+- **Credential access detection**: Catch and block agents trying to read SSH keys, cloud credentials, or secrets
+- **Temporary access control**: Time-limited grants with automatic revocation
 
 ### Best Practices
 
@@ -996,19 +1527,21 @@ cargo install bpf-linker
 
 | Limitation | Impact | Planned Fix |
 |-----------|--------|-------------|
-| **Monitor-only** | Logs violations but doesn't block access | Phase 2: LSM BPF hooks for kernel-level blocking |
-| **Process name spoofing** | Agent could call `prctl(PR_SET_NAME)` to change its comm | Phase 3: Cgroup-based identification |
-| **Relative paths** | If agent uses relative paths, pattern matching may fail | Phase 2: Full path resolution |
-| **Only hooks `openat()`** | Doesn't cover `open()`, `openat2()`, `readlink()`, `stat()` | Phase 2: Additional syscall hooks |
+| **Relative paths** | If agent uses relative paths, pattern matching may fail | Future: Full path resolution in eBPF |
+| **Only hooks `openat()`** | Doesn't cover `open()`, `openat2()`, `readlink()`, `stat()` | Future: Additional syscall hooks |
 | **x86_64 only** | Tracepoint offsets are hardcoded for x86_64 | Future: Architecture-agnostic offset reading |
-| **No child process tracking** | Child processes with different names aren't monitored | Phase 2: Process tree tracking via `execve` |
-| **No network monitoring** | Network access by agents is not tracked | Future phases |
+| **No network monitoring** | Network access by agents is not tracked | Phase 4: Network policy hooks |
+| **Exec monitoring is log-only** | Exec events are logged but not blocked | Future: Exec enforcement via LSM |
+| **Max 64 deny/allow rules** | Combined across all agents for BPF map size limits | Future: Larger maps or dynamic sizing |
+| **Enforcement requires CONFIG_BPF_LSM** | Kernel must have `CONFIG_BPF_LSM=y` and `bpf` in the LSM list | Falls back to monitor-only if unavailable |
+| **5-second grant/cleanup granularity** | Temporary grants and cgroup cleanup are checked every 5 seconds | Acceptable for most use cases |
+| **Comm-based agents still spoofable** | Process name can be changed via `prctl(PR_SET_NAME)` | Use cgroup-based identity for untrusted agents |
 
 ---
 
 ## Roadmap
 
-### Phase 1 (Current) - File Access Monitoring
+### Phase 1 - File Access Monitoring ✅
 - [x] eBPF tracepoint on `sys_enter_openat`
 - [x] Process identification by comm name
 - [x] TOML-based policy configuration
@@ -1016,23 +1549,30 @@ cargo install bpf-linker
 - [x] Real-time event logging with PID, UID, path, and access mode
 - [x] Per-CPU async event processing
 
-### Phase 2 - Kernel-Level Enforcement
-- [ ] LSM (Linux Security Module) BPF hooks for actual file access blocking
-- [ ] `sys_enter_execve` monitoring for command restrictions
-- [ ] Process tree tracking (automatically monitor child processes)
-- [ ] Full path resolution for relative paths
+### Phase 2 - Kernel-Level Enforcement ✅
+- [x] LSM (Linux Security Module) BPF hooks for actual file access blocking
+- [x] `sys_enter_execve` monitoring for command execution logging
+- [x] Process tree tracking via `sched_process_fork` / `sched_process_exit`
+- [x] Kernel-side policy evaluation with deny/allow rules in BPF maps
+- [x] Periodic PID rescanning via tokio interval
 
-### Phase 3 - Advanced Identity & Access
-- [ ] Cgroup-based agent identification (robust, not spoofable)
-- [ ] Launcher wrapper to automatically isolate agents in cgroups
-- [ ] Time-based access windows ("allow /etc/hosts for 5 minutes")
-- [ ] Interactive user consent flow for elevated permissions
+### Phase 3 - Cgroup Identity & Access Control ✅ (Current)
+- [x] Cgroup-based agent identification (kernel-enforced, unspoofable)
+- [x] `guardian-launch` — launcher that isolates agents in dedicated cgroups
+- [x] `guardian-ctl` — CLI for listing, stopping, and managing agents
+- [x] Resource limits (memory, CPU, PID count) via cgroup controllers
+- [x] Time-based access grants with automatic expiry
+- [x] 3-tier eBPF identification (cgroup → TGID → comm)
+- [x] Automatic cgroup lifecycle cleanup
+- [x] Unix socket IPC protocol for daemon communication
+- [x] Backward compatibility with Phase 1/2 comm-based configs
 
 ### Phase 4 - Alerting & Integration
 - [ ] Webhook alerts for policy violations
 - [ ] Slack/email notifications
 - [ ] Structured JSON logging for SIEM integration
 - [ ] Prometheus metrics export
+- [ ] Network access monitoring
 
 ### Phase 5 - Dashboard & UI
 - [ ] Web-based real-time monitoring dashboard

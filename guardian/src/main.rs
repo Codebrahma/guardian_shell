@@ -1,4 +1,5 @@
 mod config;
+mod ipc;
 
 use anyhow::{Context, Result};
 use aya::{
@@ -11,12 +12,14 @@ use bytes::BytesMut;
 use clap::Parser;
 use guardian_common::{ExecEvent, FileAccessEvent, MAX_FILENAME_LEN};
 use log::{debug, error, info, warn};
+use std::collections;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::{signal, time};
+use tokio::{signal, sync::Mutex, time};
 
 use crate::config::{check_exec_policy, check_file_policy, Config};
+use crate::ipc::{CgroupBpfMaps, IpcState, PolicyBpfMaps, SharedIpcState};
 
 // =============================================================================
 // Command-Line Arguments
@@ -36,6 +39,12 @@ struct Args {
 }
 
 // =============================================================================
+// Shared BPF Map Handle (for PID rescan)
+// =============================================================================
+
+type SharedBpfMap = Arc<std::sync::Mutex<HashMap<MapData, u32, u8>>>;
+
+// =============================================================================
 // Main Entry Point
 // =============================================================================
 
@@ -50,18 +59,32 @@ async fn main() -> Result<()> {
     let config = config::load_config(&args.config)?;
     let enforce_mode = config.global.mode == "enforce";
     let rescan_interval = config.global.pid_rescan_interval;
+    let socket_path = config.global.socket_path.clone();
+
+    let comm_agents: Vec<_> = config
+        .agents
+        .iter()
+        .filter(|a| a.effective_identity() == "comm")
+        .collect();
+    let cgroup_agents: Vec<_> = config
+        .agents
+        .iter()
+        .filter(|a| a.effective_identity() == "cgroup")
+        .collect();
 
     info!(
-        "Mode: {} | {} agent(s) configured | PID rescan: {}s",
+        "Mode: {} | {} agent(s) configured ({} comm, {} cgroup) | PID rescan: {}s",
         config.global.mode,
         config.agents.len(),
+        comm_agents.len(),
+        cgroup_agents.len(),
         rescan_interval
     );
     for agent in &config.agents {
         info!(
-            "  Agent '{}': process='{}', default={}, allow={}, deny={}, children={}",
+            "  Agent '{}': identity={}, default={}, allow={}, deny={}, children={}",
             agent.name,
-            agent.process_name,
+            agent.effective_identity(),
             agent.file_access.default,
             agent.file_access.allow.len(),
             agent.file_access.deny.len(),
@@ -75,6 +98,22 @@ async fn main() -> Result<()> {
                 exec.deny.len()
             );
         }
+        if let Some(res) = &agent.resources {
+            info!(
+                "    Resources: memory={}, pids={}, cpu={}",
+                res.memory_max.as_deref().unwrap_or("unlimited"),
+                res.pids_max
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "unlimited".to_string()),
+                res.cpu_max.as_deref().unwrap_or("unlimited"),
+            );
+        }
+    }
+    if !cgroup_agents.is_empty() {
+        info!(
+            "IPC socket: {} (for guardian-launch registrations)",
+            socket_path
+        );
     }
 
     // Step 2: Load eBPF Program
@@ -92,7 +131,6 @@ async fn main() -> Result<()> {
     }
 
     // Step 3: Load all eBPF programs into the kernel BEFORE taking maps.
-    // Programs reference maps by FD; take_map() invalidates those FDs.
     load_tracepoint(&mut bpf, "guardian_file_open")?;
     load_tracepoint(&mut bpf, "guardian_exec_monitor")?;
     load_tracepoint(&mut bpf, "guardian_fork_track")?;
@@ -107,15 +145,26 @@ async fn main() -> Result<()> {
     }
     info!("All eBPF programs loaded into kernel");
 
-    // Step 4: Populate BPF Maps (safe to take_map now that programs are loaded)
+    // Step 4: Populate BPF Maps
+
+    // 4a: Comm-based maps (Phase 1/2 compatibility)
     populate_watched_comms(&mut bpf, &config)?;
     let (watched_tgids_map, enforce_tgids_map) =
         populate_watched_tgids(&mut bpf, &config, enforce_mode)?;
 
-    if enforce_mode {
-        populate_enforcement_maps(&mut bpf, &config)?;
+    // 4b: Enforcement maps (deny/allow rules)
+    let policy_maps = if enforce_mode {
+        let maps = populate_enforcement_maps(&mut bpf, &config)?;
         info!("Enforcement maps populated");
-    }
+        Some(maps)
+    } else {
+        // Still need to take the maps even if not in enforce mode, to avoid
+        // issues with programs referencing them
+        None
+    };
+
+    // 4c: Cgroup maps (Phase 3 — taken for dynamic updates via IPC)
+    let cgroup_maps = take_cgroup_maps(&mut bpf)?;
 
     // Step 5: Attach eBPF Programs to hooks
     attach_tracepoint(&mut bpf, "guardian_file_open", "syscalls", "sys_enter_openat")?;
@@ -158,17 +207,37 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Step 5: Set Up Event Processing
+    // Step 6: Set Up Event Processing
     let cpus = online_cpus().map_err(|(msg, e)| anyhow::anyhow!("{}: {}", msg, e))?;
     info!("Setting up event readers for {} CPUs", cpus.len());
 
-    // 5a: File access event readers
     setup_file_event_readers(&mut bpf, &cpus, &config)?;
-
-    // 5b: Exec event readers
     setup_exec_event_readers(&mut bpf, &cpus, &config)?;
 
-    // Step 6: Periodic PID Rescanning - updates WATCHED_TGIDS and ENFORCE_TGIDS maps
+    // Step 7: Create shared IPC state
+    let ipc_state: SharedIpcState = Arc::new(Mutex::new(IpcState {
+        agents: collections::HashMap::new(),
+        grants: Vec::new(),
+        cgroup_maps,
+        policy_maps,
+        config: config.clone(),
+        enforce_mode,
+    }));
+
+    // Step 8: Start IPC server for guardian-launch registrations
+    let ipc_socket_path = socket_path.clone();
+    let ipc_state_clone = ipc_state.clone();
+    let ipc_handle = tokio::spawn(async move {
+        if let Err(e) = ipc::start_ipc_server(&ipc_socket_path, ipc_state_clone).await {
+            error!("IPC server error: {}", e);
+        }
+    });
+
+    // Step 9: Start cgroup cleanup task
+    let cleanup_state = ipc_state.clone();
+    let cleanup_handle = tokio::spawn(ipc::cgroup_cleanup_task(cleanup_state));
+
+    // Step 10: Periodic PID Rescanning (comm-based agents only)
     let rescan_config = config.clone();
     let rescan_watched = watched_tgids_map.clone();
     let rescan_enforce = enforce_tgids_map.clone();
@@ -177,7 +246,11 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
             for agent in &rescan_config.agents {
-                match find_pids_by_name(&agent.process_name) {
+                if agent.effective_identity() != "comm" {
+                    continue;
+                }
+                let process_name = agent.effective_process_name();
+                match find_pids_by_name(process_name) {
                     Ok(pids) if !pids.is_empty() => {
                         debug!(
                             "PID rescan: agent '{}' has {} active process(es): {:?}",
@@ -185,13 +258,11 @@ async fn main() -> Result<()> {
                             pids.len(),
                             pids
                         );
-                        // Update WATCHED_TGIDS map
                         if let Ok(mut map) = rescan_watched.lock() {
                             for pid in &pids {
                                 let _ = map.insert(*pid, 1, 0);
                             }
                         }
-                        // Update ENFORCE_TGIDS map
                         if let Some(ref enforce) = rescan_enforce {
                             if let Ok(mut map) = enforce.lock() {
                                 for pid in &pids {
@@ -214,13 +285,18 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Step 7: Wait for Shutdown
+    // Step 11: Wait for Shutdown
     info!("==========================================================");
     info!(
         "Guardian Shell is running ({} mode). Monitoring {} agent(s).",
         config.global.mode,
         config.agents.len()
     );
+    if !cgroup_agents.is_empty() {
+        info!(
+            "Cgroup agents: use 'guardian-launch --name <agent> -- <command>' to start"
+        );
+    }
     info!("Press Ctrl+C to stop.");
     info!("==========================================================");
 
@@ -229,6 +305,12 @@ async fn main() -> Result<()> {
         .context("Failed to listen for Ctrl+C signal")?;
 
     rescan_handle.abort();
+    ipc_handle.abort();
+    cleanup_handle.abort();
+
+    // Clean up IPC socket
+    let _ = std::fs::remove_file(&socket_path);
+
     info!("Shutting down Guardian Shell...");
     info!("eBPF programs detached. Monitoring stopped.");
 
@@ -244,18 +326,19 @@ fn populate_watched_comms(bpf: &mut Ebpf, config: &Config) -> Result<()> {
         HashMap::try_from(bpf.take_map("WATCHED_COMMS").context("WATCHED_COMMS map not found")?)?;
 
     for agent in &config.agents {
-        let comm_key = comm_to_key(&agent.process_name);
+        if agent.effective_identity() != "comm" {
+            continue;
+        }
+        let process_name = agent.effective_process_name();
+        let comm_key = comm_to_key(process_name);
         watched_comms
             .insert(comm_key, 1, 0)
-            .with_context(|| format!("Failed to insert comm '{}'", agent.process_name))?;
-        info!("Watching process name '{}'", agent.process_name);
+            .with_context(|| format!("Failed to insert comm '{}'", process_name))?;
+        info!("Watching process name '{}'", process_name);
     }
 
     Ok(())
 }
-
-/// Shared handle to BPF maps that need periodic updates.
-type SharedBpfMap = Arc<Mutex<HashMap<MapData, u32, u8>>>;
 
 fn populate_watched_tgids(
     bpf: &mut Ebpf,
@@ -274,7 +357,11 @@ fn populate_watched_tgids(
     };
 
     for agent in &config.agents {
-        let pids = find_pids_by_name(&agent.process_name).unwrap_or_default();
+        if agent.effective_identity() != "comm" {
+            continue;
+        }
+        let process_name = agent.effective_process_name();
+        let pids = find_pids_by_name(process_name).unwrap_or_default();
         for pid in &pids {
             watched_tgids.insert(*pid, 1, 0)?;
             if let Some(ref mut et) = enforce_tgids {
@@ -291,12 +378,12 @@ fn populate_watched_tgids(
         }
     }
 
-    let watched = Arc::new(Mutex::new(watched_tgids));
-    let enforce = enforce_tgids.map(|et| Arc::new(Mutex::new(et)));
+    let watched = Arc::new(std::sync::Mutex::new(watched_tgids));
+    let enforce = enforce_tgids.map(|et| Arc::new(std::sync::Mutex::new(et)));
     Ok((watched, enforce))
 }
 
-fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()> {
+fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<PolicyBpfMaps> {
     let mut enforce_comms: HashMap<MapData, [u8; 16], u8> =
         HashMap::try_from(bpf.take_map("ENFORCE_COMMS").context("ENFORCE_COMMS map not found")?)?;
 
@@ -319,31 +406,36 @@ fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()> {
     let mut allow_count = 0u32;
 
     for agent in &config.agents {
-        let comm_key = comm_to_key(&agent.process_name);
-        enforce_comms.insert(comm_key, 1, 0)?;
+        // Set up comm-based enforcement for comm agents
+        if agent.effective_identity() == "comm" {
+            let process_name = agent.effective_process_name();
+            let comm_key = comm_to_key(process_name);
+            enforce_comms.insert(comm_key, 1, 0)?;
 
-        let default_val = if agent.file_access.default == "deny" { 0u8 } else { 1u8 };
-        default_action.insert(comm_key, default_val, 0)?;
+            let default_val = if agent.file_access.default == "deny" {
+                0u8
+            } else {
+                1u8
+            };
+            default_action.insert(comm_key, default_val, 0)?;
+        }
 
-        // Insert deny rules
+        // Insert deny rules (shared across all agents)
         for pattern in &agent.file_access.deny {
             if pattern.ends_with("/**") {
-                // Prefix match: store with trailing '/' in LPM trie
                 let prefix = format!("{}/", &pattern[..pattern.len() - 3]);
                 let key = path_to_lpm_key(prefix.as_bytes());
                 deny_prefixes.insert(&key, 1, 0)?;
-                // Also add the directory itself as exact match
                 let exact = path_to_map_key(pattern[..pattern.len() - 3].as_bytes());
                 let _ = deny_exact.insert(exact, 1, 0);
             } else {
-                // Exact match
                 let key = path_to_map_key(pattern.as_bytes());
                 deny_exact.insert(key, 1, 0)?;
             }
             deny_count += 1;
         }
 
-        // Insert allow rules
+        // Insert allow rules (shared across all agents)
         for pattern in &agent.file_access.allow {
             if pattern.ends_with("/**") {
                 let prefix = format!("{}/", &pattern[..pattern.len() - 3]);
@@ -359,8 +451,40 @@ fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()> {
         }
     }
 
-    info!("Loaded {} deny rules, {} allow rules into BPF", deny_count, allow_count);
-    Ok(())
+    info!(
+        "Loaded {} deny rules, {} allow rules into BPF",
+        deny_count, allow_count
+    );
+
+    // Return map handles for dynamic updates (temporary grants)
+    Ok(PolicyBpfMaps {
+        allow_prefixes,
+        allow_exact,
+    })
+}
+
+/// Take cgroup-related BPF maps for dynamic updates via IPC.
+fn take_cgroup_maps(bpf: &mut Ebpf) -> Result<CgroupBpfMaps> {
+    let watched_cgroups: HashMap<MapData, u64, u8> = HashMap::try_from(
+        bpf.take_map("WATCHED_CGROUPS")
+            .context("WATCHED_CGROUPS map not found")?,
+    )?;
+
+    let enforce_cgroups: HashMap<MapData, u64, u8> = HashMap::try_from(
+        bpf.take_map("ENFORCE_CGROUPS")
+            .context("ENFORCE_CGROUPS map not found")?,
+    )?;
+
+    let cgroup_default_action: HashMap<MapData, u64, u8> = HashMap::try_from(
+        bpf.take_map("CGROUP_DEFAULT_ACTION")
+            .context("CGROUP_DEFAULT_ACTION map not found")?,
+    )?;
+
+    Ok(CgroupBpfMaps {
+        watched_cgroups,
+        enforce_cgroups,
+        cgroup_default_action,
+    })
 }
 
 fn path_to_lpm_key(path: &[u8]) -> Key<[u8; MAX_FILENAME_LEN]> {
@@ -540,12 +664,14 @@ fn setup_exec_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Re
 // =============================================================================
 
 fn find_agent_for_event<'a>(config: &'a Config, comm: &str) -> Option<&'a config::AgentConfig> {
-    // Try exact comm match first
-    if let Some(agent) = config.agents.iter().find(|a| a.process_name == comm) {
+    // Try exact comm match first (for comm-based agents)
+    if let Some(agent) = config.agents.iter().find(|a| {
+        a.effective_identity() == "comm" && a.effective_process_name() == comm
+    }) {
         return Some(agent);
     }
-    // Fall back to first agent for worker threads (e.g., "Bun Pool 0", "HeapHelper")
-    // These threads belong to a watched process but have different comm names
+    // For cgroup-based agents or worker threads, use first matching agent
+    // (cgroup identification is done in kernel, userspace just needs a policy)
     config.agents.first()
 }
 
@@ -554,7 +680,6 @@ fn process_file_event(event: &FileAccessEvent, config: &Config, enforce_mode: bo
     let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
     let access_mode = decode_open_flags(event.flags);
 
-    // Skip empty filenames (pipes, sockets, anonymous fds) — not real file accesses
     if filename.is_empty() {
         return;
     }

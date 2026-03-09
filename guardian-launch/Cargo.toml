@@ -1,0 +1,44 @@
+# =============================================================================
+# Guardian Launch - Agent Launcher with Cgroup Isolation
+# =============================================================================
+#
+# This binary launches LLM agents inside dedicated cgroups for robust,
+# unspoofable identification by the Guardian daemon.
+#
+# Usage:
+#   guardian-launch --name "aider" -- python3 -m aider
+#   guardian-launch --name "claude-code" --memory 4G --pids 200 -- claude
+#
+# What it does:
+#   1. Creates a cgroup: /sys/fs/cgroup/guardian/<name>-<pid>/
+#   2. Sets resource limits (optional): memory, PIDs, CPU
+#   3. Registers with the Guardian daemon via Unix socket IPC
+#   4. Moves itself into the cgroup
+#   5. exec() the agent command (agent inherits the cgroup)
+
+[package]
+name = "guardian-launch"
+version = "0.1.0"
+edition = "2021"
+description = "Launch LLM agents with cgroup isolation for Guardian Shell monitoring"
+
+[dependencies]
+# Shared IPC types
+guardian-common = { path = "../guardian-common", features = ["user"] }
+
+# CLI parsing
+clap = { version = "4", features = ["derive"] }
+
+# Serialization for IPC
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Unix-specific operations (for libc calls)
+libc = "0.2"

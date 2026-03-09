@@ -358,8 +358,10 @@ dependencies = [
  "clap",
  "env_logger",
  "guardian-common",
+ "libc",
  "log",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
 ]
@@ -369,6 +371,19 @@ name = "guardian-common"
 version = "0.1.0"
 dependencies = [
  "aya",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "guardian-ctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "guardian-common",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -377,6 +392,20 @@ version = "0.1.0"
 dependencies = [
  "aya-ebpf",
  "guardian-common",
+]
+
+[[package]]
+name = "guardian-launch"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "guardian-common",
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

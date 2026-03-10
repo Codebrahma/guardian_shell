@@ -8,20 +8,23 @@ on this project on a Linux machine.
 Guardian Shell is a Linux security tool that uses eBPF to monitor and restrict
 LLM agent activities. It's built with Rust and the Aya eBPF framework.
 
-**Current state: Phase 3 - Cgroup Identity + Guardian Launcher (compiled on Linux)**
+**Current state: Phase 4 - Alerting & Integration (compiled on Linux)**
 
-Phase 3 adds (on top of Phase 2):
-- **Cgroup-based agent identification**: `bpf_get_current_cgroup_id()` in eBPF for unspoofable identity
-- **Guardian Launcher** (`guardian-launch`): Creates cgroups, sets resource limits, registers with daemon
-- **Unix socket IPC**: Daemon accepts agent registrations from launcher at `/run/guardian.sock`
-- **Agent lifecycle management**: `guardian-ctl` CLI for list/stop/grant operations
-- **Time-based access windows**: Temporary grants with automatic expiry
-- **Resource limits**: Memory, PIDs, CPU limits via cgroup v2 controllers
-- **Backward compatibility**: Comm-based agents (Phase 1/2) still work alongside cgroup agents
+Phase 4 adds (on top of Phase 3):
+- **Structured JSON logging**: SIEM-compatible JSONL output with size-based rotation
+- **Webhook alerts**: HTTP POST to any endpoint (SIEM, PagerDuty, custom)
+- **Slack notifications**: Block Kit formatted messages with severity colors
+- **Email notifications**: Async SMTP via lettre with STARTTLS
+- **Prometheus metrics**: HTTP endpoint exposing event counters and alert stats
+- **Alert deduplication**: Hash-based suppression within configurable time windows
+- **Rate limiting**: Per-minute cap on dispatched alerts
+- **Config validation CLI**: `--validate-config` flag for pre-deployment checks
+- **SIGHUP config reload**: Reload agent policies without daemon restart
+- **Preset configurations**: minimal, recommended, strict, development templates
 
-Architecture: 3-tier identification in eBPF: cgroup ID (strongest) -> TGID/child PID -> comm name (fallback).
-The `guardian-launch` binary creates a cgroup, registers with the daemon via IPC, then exec's the agent.
-All child processes inherit the cgroup and are automatically monitored.
+Architecture: AlertManager runs as a tokio task, receives events via mpsc channel
+from per-CPU event processors. Prometheus metrics are updated synchronously for
+accuracy. Each output has independent severity filtering.
 
 ## Project Structure
 
@@ -46,8 +49,15 @@ guardian_shell/
 │   ├── Cargo.toml
 │   └── src/
 │       ├── main.rs             # Entry point, eBPF loading, event loop, IPC server
-│       ├── config.rs           # TOML parsing, policy engine, path matching
-│       └── ipc.rs              # IPC server, agent registration, cgroup lifecycle
+│       ├── config.rs           # TOML parsing, policy engine, alerting config
+│       ├── ipc.rs              # IPC server, agent registration, cgroup lifecycle
+│       └── alerting/           # Phase 4: Alerting & Integration
+│           ├── mod.rs          # AlertManager, AlertSender, dedup, dispatch
+│           ├── json_log.rs     # Structured JSONL logging with rotation
+│           ├── webhook.rs      # Generic HTTP POST webhook
+│           ├── slack.rs        # Slack Block Kit notifications
+│           ├── email.rs        # SMTP email alerts
+│           └── metrics.rs      # Prometheus metrics + HTTP server
 │
 ├── guardian-launch/            # Agent launcher with cgroup isolation (Phase 3)
 │   ├── Cargo.toml
@@ -56,6 +66,12 @@ guardian_shell/
 ├── guardian-ctl/               # CLI for managing agents (Phase 3)
 │   ├── Cargo.toml
 │   └── src/main.rs             # list/stop/grant commands
+│
+├── configs/                    # Preset configuration templates (Phase 4)
+│   ├── minimal.toml            # Bare minimum, monitor-only
+│   ├── recommended.toml        # Production defaults
+│   ├── strict.toml             # Maximum security
+│   └── development.toml        # Verbose debugging
 │
 └── xtask/                      # Build tooling
     ├── Cargo.toml
@@ -201,8 +217,15 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | Launcher + IPC registration | `guardian-launch` creates cgroup, registers with daemon via Unix socket, then exec's agent. Clean separation of concerns. |
 | Length-prefixed JSON IPC | Simple, debuggable protocol over Unix domain socket. Supports agent registration, listing, stopping, and temporary grants. |
 | Temporary grants with expiry | Allow rules added to BPF maps with automatic removal after duration. Enables time-bounded access to sensitive resources. |
+| Async alert dispatch | AlertManager runs as tokio task with mpsc channel. Event processors never block on I/O. |
+| Synchronous Prometheus metrics | Counters updated atomically in event processors. Accurate even when alert channel is full. |
+| Per-output severity filters | Webhook gets warnings, Slack/email get critical only. Reduces noise per channel. |
+| JSONL format (one JSON per line) | Easy to grep, tail, pipe to SIEM. No parser state between lines. Industry standard. |
+| Simple TCP metrics server | Avoids axum dependency for Phase 4. Serves Prometheus text format directly. |
+| Hash-based dedup | Same (agent, event_type, path, action) suppressed within window. Prevents alert storms. |
+| Preset config templates | Inspired by Falco: ship working configs for common scenarios. Reduces onboarding friction. |
 
-## Known Limitations (Phase 3)
+## Known Limitations (Phase 4)
 
 1. **Relative paths not resolved**: eBPF captures whatever path the syscall receives
 2. **Only hooks `openat`**: Doesn't cover `open` (rare on modern Linux), `openat2`,
@@ -217,6 +240,9 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 8. **Cgroup requires root**: Creating cgroups and running guardian-launch needs root
 9. **Cgroup v2 required**: Cgroup-based identification requires cgroup v2 (default on modern distros)
 10. **Process name still spoofable for comm-based agents**: Use cgroup identity for unspoofable identification
+11. **SIGHUP reload doesn't update alerting outputs**: Alerting config changes require daemon restart
+12. **No webhook retry logic**: Failed webhook/Slack/email sends are logged and dropped
+13. **Email password stored in plaintext config**: Use file permissions to protect config
 
 ## Build Notes
 
@@ -242,11 +268,16 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 - **3-tier eBPF identification**: cgroup ID → TGID → comm name (backward compatible)
 - **Cgroup lifecycle**: automatic cleanup when agent exits (cgroup becomes empty)
 
-### Phase 4: Alerting & Integration
-- Webhook alerts for policy violations
-- Slack/email notifications
-- Structured JSON logging for SIEM
-- Prometheus metrics export
+### Phase 4: Alerting & Integration ✅ DONE
+- **Structured JSON logging** with SIEM-compatible JSONL format and size-based rotation
+- **Webhook alerts** via HTTP POST with JSON payload and auth headers
+- **Slack notifications** with Block Kit formatting and severity-colored messages
+- **Email notifications** via async SMTP (lettre) with STARTTLS
+- **Prometheus metrics** on HTTP endpoint (file events, exec events, alerts sent/dropped)
+- **Alert dedup/throttling** with configurable time window and rate limits
+- **Config validation CLI** (`--validate-config`) for pre-deployment checks
+- **SIGHUP config reload** for hot-reloading agent policies
+- **Preset configs** in `configs/` (minimal, recommended, strict, development)
 
 ### Phase 5: Dashboard & UI
 - Web-based real-time dashboard
@@ -272,6 +303,10 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | log | 0.4 | Logging facade |
 | env_logger | 0.11 | Log output |
 | libc | 0.2 | Unix system calls (kill, etc.) |
+| reqwest | 0.12 | HTTP client for webhook/Slack alerts |
+| lettre | 0.11 | Async SMTP email transport |
+| chrono | 0.4 | ISO 8601 timestamps |
+| prometheus | 0.13 | Prometheus metrics counters + encoding |
 
 ## Code Quality Notes
 

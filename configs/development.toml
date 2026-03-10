@@ -1,0 +1,37 @@
+# Guardian Shell — Development Configuration
+# Permissive settings with verbose logging. Good for testing and debugging.
+
+[global]
+log_level = "debug"
+mode = "monitor"
+pid_rescan_interval = 2
+socket_path = "/run/guardian.sock"
+
+# --- Alerting (JSON to stdout for easy debugging) ---
+[alerting]
+min_severity = "info"
+dedup_window_seconds = 0
+rate_limit_per_minute = 10000
+
+[alerting.json_log]
+enabled = true
+# No path = stdout output (useful for development)
+
+[alerting.prometheus]
+enabled = true
+listen_address = "127.0.0.1:9090"
+endpoint = "/metrics"
+
+# --- Agent: permissive dev agent ---
+[[agents]]
+name = "dev-agent"
+process_name = "cat"
+watch_children = true
+
+[agents.file_access]
+default = "allow"
+allow = []
+deny = [
+    "/etc/shadow",
+    "/etc/gshadow",
+]

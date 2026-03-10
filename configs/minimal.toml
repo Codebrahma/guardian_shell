@@ -1,0 +1,18 @@
+# Guardian Shell — Minimal Configuration
+# Monitor-only mode, no alerting outputs. Good for quick testing.
+
+[global]
+log_level = "info"
+mode = "monitor"
+pid_rescan_interval = 5
+socket_path = "/run/guardian.sock"
+
+[[agents]]
+name = "test-cat"
+process_name = "cat"
+watch_children = true
+
+[agents.file_access]
+default = "deny"
+allow = ["/tmp/**"]
+deny = ["/etc/shadow"]

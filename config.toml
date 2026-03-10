@@ -69,6 +69,56 @@ allow = ["/usr/bin/**", "/usr/local/bin/**", "/bin/**"]
 deny = []
 
 # =============================================================================
+# Alerting & Integration (Phase 4)
+# All outputs are opt-in. Remove or comment sections you don't need.
+# =============================================================================
+[alerting]
+min_severity = "warning"         # Global filter: "info", "warning", "critical"
+dedup_window_seconds = 300       # Suppress duplicate alerts within this window
+rate_limit_per_minute = 100      # Max alerts dispatched per minute
+
+# --- Structured JSON Logging (SIEM-compatible, JSONL format) ---
+[alerting.json_log]
+enabled = true
+path = "/var/log/guardian/events.json"
+max_size_mb = 100                # Rotate when file exceeds this size
+max_files = 5                    # Keep this many rotated files
+
+# --- Webhook (HTTP POST with JSON payload) ---
+# [alerting.webhook]
+# enabled = true
+# url = "https://your-siem.example.com/api/events"
+# auth_header = "Bearer your-token-here"
+# min_severity = "warning"
+# # Optional custom headers:
+# # [alerting.webhook.headers]
+# # X-Source = "guardian-shell"
+
+# --- Slack Notifications ---
+# [alerting.slack]
+# enabled = true
+# webhook_url = "https://hooks.slack.com/services/T.../B.../xxx"
+# channel = "#security-alerts"
+# min_severity = "critical"
+
+# --- Email Notifications (SMTP) ---
+# [alerting.email]
+# enabled = true
+# smtp_host = "smtp.example.com"
+# smtp_port = 587
+# username = "alerts@example.com"
+# password = "your-smtp-password"
+# from = "guardian@example.com"
+# to = ["security-team@example.com", "oncall@example.com"]
+# min_severity = "critical"
+
+# --- Prometheus Metrics Endpoint ---
+[alerting.prometheus]
+enabled = true
+listen_address = "127.0.0.1:9090"
+endpoint = "/metrics"
+
+# =============================================================================
 # Cgroup-based agent (Phase 3 — unspoofable identity)
 # Launch with: guardian-launch --name "aider" -- python3 -m aider
 # =============================================================================

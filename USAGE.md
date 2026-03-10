@@ -2,12 +2,13 @@
 
 Guardian Shell is a Linux security tool that monitors and enforces file access policies for LLM agents (Claude Code, OpenAI Codex, Aider, OpenClaw, Cursor, etc.) using eBPF. It hooks into the kernel's file-open syscall, evaluates every file access against your policy rules in real time, and can block unauthorized access at the kernel level.
 
-**Current mode: Phase 3 — Cgroup Identity, Guardian Launcher & Time-Based Access**
+**Current mode: Phase 4 — Alerting, Integration & Observability**
 
-Guardian Shell now provides three layers of protection:
+Guardian Shell now provides four layers of protection:
 - **Phase 1**: Monitor-only file access logging via eBPF tracepoints
 - **Phase 2**: Kernel-level enforcement via LSM BPF hooks (blocks denied access)
 - **Phase 3**: Unspoofable cgroup-based agent identity, resource limits, launcher wrapper, and time-based access grants
+- **Phase 4**: Structured JSON logging, webhook/Slack/email alerts, Prometheus metrics, and config validation
 
 ---
 
@@ -35,18 +36,29 @@ Guardian Shell now provides three layers of protection:
    - [Listing Agents](#listing-agents)
    - [Stopping Agents](#stopping-agents)
    - [Temporary Access Grants](#temporary-access-grants)
-8. [Understanding the Output](#understanding-the-output)
+8. [Alerting & Integration (Phase 4)](#alerting--integration-phase-4)
+   - [Alerting Configuration](#alerting-configuration)
+   - [JSON Logging for SIEM](#json-logging-for-siem)
+   - [Webhook Alerts](#webhook-alerts)
+   - [Slack Notifications](#slack-notifications)
+   - [Email Notifications](#email-notifications)
+   - [Prometheus Metrics](#prometheus-metrics)
+   - [Alert Deduplication & Rate Limiting](#alert-deduplication--rate-limiting)
+   - [Config Validation](#config-validation)
+   - [Config Hot-Reload (SIGHUP)](#config-hot-reload-sighup)
+   - [Preset Configurations](#preset-configurations)
+9. [Understanding the Output](#understanding-the-output)
    - [Startup Messages](#startup-messages)
    - [ALLOW Events](#allow-events)
    - [DENY Events](#deny-events)
    - [Event Fields](#event-fields)
-9. [Writing Effective Policies](#writing-effective-policies)
-   - [Principle of Least Privilege](#principle-of-least-privilege)
-   - [Common Allow Patterns](#common-allow-patterns)
-   - [Recommended Deny Patterns](#recommended-deny-patterns)
-   - [Per-Agent Policies](#per-agent-policies)
-   - [Tuning Your Policy](#tuning-your-policy)
-10. [Real-World Examples](#real-world-examples)
+10. [Writing Effective Policies](#writing-effective-policies)
+    - [Principle of Least Privilege](#principle-of-least-privilege)
+    - [Common Allow Patterns](#common-allow-patterns)
+    - [Recommended Deny Patterns](#recommended-deny-patterns)
+    - [Per-Agent Policies](#per-agent-policies)
+    - [Tuning Your Policy](#tuning-your-policy)
+11. [Real-World Examples](#real-world-examples)
     - [Monitoring Claude Code (comm-based)](#monitoring-claude-code-comm-based)
     - [Isolating Aider with Cgroups](#isolating-aider-with-cgroups)
     - [Running OpenClaw in a Sandbox](#running-openclaw-in-a-sandbox)
@@ -54,16 +66,16 @@ Guardian Shell now provides three layers of protection:
     - [Multiple LLM Agents Side by Side](#multiple-llm-agents-side-by-side)
     - [Strict Lockdown Policy](#strict-lockdown-policy)
     - [Permissive Audit Policy](#permissive-audit-policy)
-11. [How It Works](#how-it-works)
+12. [How It Works](#how-it-works)
     - [Architecture Overview](#architecture-overview)
     - [eBPF and Tracepoints](#ebpf-and-tracepoints)
     - [3-Tier Agent Identification](#3-tier-agent-identification)
     - [Event Pipeline](#event-pipeline)
-12. [LLM Agent Security: Why This Matters](#llm-agent-security-why-this-matters)
-13. [Troubleshooting](#troubleshooting)
-14. [Security Considerations](#security-considerations)
-15. [Known Limitations](#known-limitations)
-16. [Roadmap](#roadmap)
+13. [LLM Agent Security: Why This Matters](#llm-agent-security-why-this-matters)
+14. [Troubleshooting](#troubleshooting)
+15. [Security Considerations](#security-considerations)
+16. [Known Limitations](#known-limitations)
+17. [Roadmap](#roadmap)
 
 ---
 
@@ -420,6 +432,7 @@ sudo target/release/guardian [OPTIONS]
 |--------|-------|---------|-------------|
 | `--config <PATH>` | `-c` | `config.toml` | Path to the TOML configuration file |
 | `--ebpf-program <PATH>` | | `target/bpfel-unknown-none/release/guardian-ebpf` | Path to the compiled eBPF binary |
+| `--validate-config` | | | Validate configuration and exit (Phase 4) |
 
 ### Log Levels
 
@@ -608,6 +621,255 @@ After the duration expires, the allow rule is automatically removed from the ker
 3. The daemon stores the grant with an expiry timestamp
 4. A background task checks every 5 seconds and removes expired grants
 5. Once removed from the BPF map, the kernel blocks access again immediately
+
+---
+
+## Alerting & Integration (Phase 4)
+
+Phase 4 adds structured logging, real-time notifications, and observability to Guardian Shell. All alerting is configured in the `[alerting]` section of your config file. The entire section is optional — existing configs work unchanged.
+
+### Alerting Configuration
+
+Add an `[alerting]` section to your `config.toml`:
+
+```toml
+[alerting]
+min_severity = "warning"         # Only alert on "warning" and "critical" events
+dedup_window_seconds = 300       # Suppress identical alerts within 5 minutes
+rate_limit_per_minute = 100      # Max 100 alerts per minute across all outputs
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `min_severity` | `"warning"` | Global filter: `"info"` (all events), `"warning"` (denials), `"critical"` (blocks only) |
+| `dedup_window_seconds` | `300` | Suppress repeated identical alerts within this window. Set to `0` to disable. |
+| `rate_limit_per_minute` | `100` | Cap total alert dispatches per minute (prevents storms) |
+
+**Severity levels:**
+
+| Level | When | Volume |
+|-------|------|--------|
+| `info` | File access allowed, exec allowed | High (every event) |
+| `warning` | File access denied in monitor mode, exec denied | Medium |
+| `critical` | File access blocked in enforce mode | Low (policy violations only) |
+
+### JSON Logging for SIEM
+
+Write structured JSON events to a file for ingestion by Elasticsearch, Splunk, Loki, or any SIEM:
+
+```toml
+[alerting.json_log]
+enabled = true
+path = "/var/log/guardian/events.json"  # Omit path for stdout output
+max_size_mb = 100                       # Rotate at 100 MB
+max_files = 5                           # Keep 5 rotated files
+```
+
+Each line is a self-contained JSON object (JSONL format):
+
+```json
+{"timestamp":"2026-03-10T14:30:00.123456Z","severity":"critical","event_type":"file_access","action":"blocked","agent":{"name":"claude-code","identity":"cgroup","pid":12345,"comm":"cat"},"file":{"path":"/etc/shadow","flags":"READ"},"policy":{"mode":"enforce"},"host":{"hostname":"myhost"}}
+```
+
+**Log rotation** happens automatically when the file exceeds `max_size_mb`. Files are rotated as `events.json.1`, `events.json.2`, etc., up to `max_files`.
+
+**Querying with jq:**
+
+```bash
+# Show all blocked events
+jq 'select(.action == "blocked")' /var/log/guardian/events.json
+
+# Count events per agent
+jq -s 'group_by(.agent.name) | map({agent: .[0].agent.name, count: length})' /var/log/guardian/events.json
+
+# Live tail of critical events
+tail -f /var/log/guardian/events.json | jq 'select(.severity == "critical")'
+```
+
+### Webhook Alerts
+
+Send alerts to any HTTP endpoint (SIEM, PagerDuty, custom API):
+
+```toml
+[alerting.webhook]
+enabled = true
+url = "https://siem.example.com/api/v1/events"
+auth_header = "Bearer your-api-token"    # Optional Authorization header
+min_severity = "warning"                  # Only send warnings and critical
+
+# Optional custom headers
+[alerting.webhook.headers]
+X-Source = "guardian-shell"
+X-Environment = "production"
+```
+
+The webhook sends an HTTP POST with a JSON body containing all event fields (timestamp, severity, agent, path, action, etc.). The request includes a 10-second timeout.
+
+### Slack Notifications
+
+Send richly-formatted alerts to a Slack channel:
+
+```toml
+[alerting.slack]
+enabled = true
+webhook_url = "https://hooks.slack.com/services/T.../B.../xxx"
+channel = "#security-alerts"     # Optional channel override
+min_severity = "critical"        # Only critical events
+```
+
+**Setting up Slack:**
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → Create New App
+2. Enable "Incoming Webhooks" → Add to Workspace
+3. Copy the webhook URL into `webhook_url`
+
+Messages use Slack Block Kit with a color-coded sidebar (red=critical, yellow=warning, blue=info) and structured fields showing agent name, event type, path, and PID.
+
+### Email Notifications
+
+Send email alerts via SMTP:
+
+```toml
+[alerting.email]
+enabled = true
+smtp_host = "smtp.gmail.com"
+smtp_port = 587                          # STARTTLS
+username = "alerts@example.com"
+password = "app-password-here"           # Use app password, not account password
+from = "Guardian Shell <guardian@example.com>"
+to = ["security-team@example.com", "oncall@example.com"]
+min_severity = "critical"
+```
+
+Emails include a structured plain-text body with severity, event type, agent, path, PID, and timestamp. The subject line includes the severity level and file path for quick scanning.
+
+**Gmail setup:** Use an [App Password](https://support.google.com/accounts/answer/185833) (not your Google account password). Enable 2-Step Verification first.
+
+**Security note:** The SMTP password is stored in plaintext in the config file. Protect the config with file permissions:
+```bash
+sudo chown root:root /etc/guardian/config.toml
+sudo chmod 600 /etc/guardian/config.toml
+```
+
+### Prometheus Metrics
+
+Expose event counters via an HTTP `/metrics` endpoint:
+
+```toml
+[alerting.prometheus]
+enabled = true
+listen_address = "127.0.0.1:9090"
+endpoint = "/metrics"
+```
+
+**Exposed metrics:**
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `guardian_guardian_file_events_total` | `agent`, `action` | Total file access events |
+| `guardian_guardian_exec_events_total` | `agent`, `action` | Total exec events |
+| `guardian_guardian_ebpf_events_lost_total` | — | Events lost from perf buffer |
+| `guardian_guardian_alerts_sent_total` | `output`, `status` | Alerts sent per output |
+| `guardian_guardian_alerts_dropped_total` | — | Alerts dropped (channel full) |
+
+**Querying:**
+
+```bash
+curl http://127.0.0.1:9090/metrics
+```
+
+**Grafana integration:** Add `http://guardian-host:9090` as a Prometheus data source, then create dashboards:
+
+```promql
+# Policy violations per minute
+rate(guardian_guardian_file_events_total{action="blocked"}[5m]) * 60
+
+# Alert delivery success rate
+sum(rate(guardian_guardian_alerts_sent_total{status="success"}[5m]))
+/ sum(rate(guardian_guardian_alerts_sent_total[5m]))
+```
+
+### Alert Deduplication & Rate Limiting
+
+Guardian Shell prevents alert storms with two mechanisms:
+
+**Deduplication:** If the same `(agent, event_type, path, action)` tuple fires again within `dedup_window_seconds`, the duplicate is suppressed. This prevents a polling loop hitting a denied path from generating thousands of identical alerts.
+
+**Rate limiting:** A sliding 1-minute window caps total alerts to `rate_limit_per_minute`. Once the cap is hit, remaining events in that minute are dropped (but still counted in Prometheus metrics).
+
+Both mechanisms apply globally before per-output dispatch. Prometheus counters are always updated regardless of dedup/rate limiting.
+
+### Config Validation
+
+Validate your config file without starting the daemon:
+
+```bash
+sudo target/release/guardian --config config.toml --validate-config
+```
+
+Output:
+```
+[INFO  guardian] Configuration is valid.
+[INFO  guardian] Alerting: configured
+[INFO  guardian]   JSON log: enabled
+[INFO  guardian]   Prometheus: enabled
+```
+
+Checks include:
+- TOML syntax and required fields
+- Valid severity values (`info`/`warning`/`critical`)
+- Enabled outputs have required fields (webhook URL, SMTP host, etc.)
+- URL format warnings (missing `http://` or `https://`)
+- Overly permissive allow patterns
+
+Useful in CI/CD pipelines and before deploying config changes.
+
+### Config Hot-Reload (SIGHUP)
+
+Reload agent policies without restarting the daemon:
+
+```bash
+sudo kill -HUP $(pidof guardian)
+```
+
+The daemon re-reads and validates the config file. On success:
+```
+[INFO  guardian] SIGHUP received — reloading configuration...
+[INFO  guardian] Configuration reloaded: 2 agent(s), mode=enforce
+```
+
+On failure (invalid config), the previous config is kept:
+```
+[ERROR guardian] Config reload failed (keeping previous config): ...
+```
+
+**What reloads:** Agent policies (file access, exec policies), agent list.
+
+**What requires restart:** Alerting output settings (URLs, credentials), enforcement mode, eBPF programs.
+
+### Preset Configurations
+
+Four ready-to-use configs are in `configs/`:
+
+```bash
+# Quick testing — monitor only, no alerting
+sudo target/release/guardian --config configs/minimal.toml
+
+# Production — enforce mode, JSON log + Prometheus
+sudo target/release/guardian --config configs/recommended.toml
+
+# Maximum security — enforce mode, all alerting outputs
+sudo target/release/guardian --config configs/strict.toml
+
+# Development — monitor mode, JSON to stdout, verbose
+sudo target/release/guardian --config configs/development.toml
+```
+
+| Preset | Mode | Default | Alerting | Use Case |
+|--------|------|---------|----------|----------|
+| `minimal.toml` | monitor | deny | None | Quick testing |
+| `recommended.toml` | enforce | deny | JSON log + Prometheus | Production |
+| `strict.toml` | enforce | deny | JSON log + Prometheus (+ commented webhook/Slack/email) | Maximum security |
+| `development.toml` | monitor | allow | JSON to stdout + Prometheus | Debugging |
 
 ---
 
@@ -1283,6 +1545,19 @@ deny = [
  │   ├── aider-1234/     ← PID 1234, 1235        │                │
  │   └── codex-5678/     ← PID 5678              │                │
  │                                                │                │
+ │   Alerting Subsystem (Phase 4):                │                │
+ │   ┌──────────────────────────────────────┐     │                │
+ │   │ Event Processors  ──► AlertSender    │     │                │
+ │   │   ├► Prometheus counters (sync)      │     │                │
+ │   │   └► mpsc channel ──► AlertManager   │     │                │
+ │   │        ├► JSON Log (file rotation)   │     │                │
+ │   │        ├► Webhook (HTTP POST)        │     │                │
+ │   │        ├► Slack (Block Kit)          │     │                │
+ │   │        └► Email (SMTP)              │     │                │
+ │   │                                      │     │                │
+ │   │ Prometheus HTTP: GET /metrics :9090  │     │                │
+ │   └──────────────────────────────────────┘     │                │
+ │                                                │                │
  ├════════════════════════════════════════════════╪════════════════┤
  │                                                │                │
  │                        KERNEL SPACE            │                │
@@ -1347,7 +1622,10 @@ If any tier matches, the process is monitored. Cgroup-based agents (launched via
 6. **Kernel**: `file_open` LSM hook reads `PENDING_DENY` → returns `-EACCES` to block access
 7. **Kernel**: Event is written to per-CPU perf ring buffer
 8. **Userspace**: Async task reads event from perf buffer
-9. **Userspace**: Decision is logged as `[ALLOW]` or `[DENY]`
+9. **Userspace**: Decision is logged as `[ALLOW]` or `[DENY]` (stderr)
+10. **Userspace** (Phase 4): AlertEvent is created and sent to AlertManager
+11. **Userspace** (Phase 4): Prometheus counters updated synchronously
+12. **Userspace** (Phase 4): AlertManager applies dedup/throttle → dispatches to JSON log, webhook, Slack, email
 
 ---
 
@@ -1384,7 +1662,9 @@ Most agents run as your user with your full permissions. There is no built-in sa
 4. **Isolation**: Each agent gets its own policy — Aider can't read Codex's project, and vice versa
 5. **Resource limits**: Prevent runaway agents from consuming all memory, CPU, or spawning thousands of processes
 6. **Temporary access**: Grant time-limited access to sensitive resources with automatic revocation
-7. **Zero overhead**: eBPF runs in the kernel — no process wrapping, no ptrace, no container
+7. **Alerting**: Real-time notifications via webhook, Slack, and email when policy violations occur
+8. **Observability**: Prometheus metrics for dashboards and alerting rules; structured JSON logs for SIEM
+9. **Zero overhead**: eBPF runs in the kernel — no process wrapping, no ptrace, no container
 
 ---
 
@@ -1521,6 +1801,14 @@ cargo install bpf-linker
 
 6. **Start Guardian before agents** — ensures no file access is missed
 
+7. **Enable structured logging** — JSON logs provide an audit trail for incident response and compliance
+
+8. **Set up critical alerts** — configure Slack or email for `critical` severity to get notified of enforcement actions in real time
+
+9. **Monitor Prometheus metrics** — track `alerts_dropped` and `events_lost` to ensure no events are silently dropped
+
+10. **Use `--validate-config` in CI/CD** — catch config errors before deploying to production
+
 ---
 
 ## Known Limitations
@@ -1536,6 +1824,9 @@ cargo install bpf-linker
 | **Enforcement requires CONFIG_BPF_LSM** | Kernel must have `CONFIG_BPF_LSM=y` and `bpf` in the LSM list | Falls back to monitor-only if unavailable |
 | **5-second grant/cleanup granularity** | Temporary grants and cgroup cleanup are checked every 5 seconds | Acceptable for most use cases |
 | **Comm-based agents still spoofable** | Process name can be changed via `prctl(PR_SET_NAME)` | Use cgroup-based identity for untrusted agents |
+| **SIGHUP doesn't reload alerting outputs** | Changing webhook URLs, Slack tokens, etc. requires daemon restart | Agent policies reload; output config requires restart |
+| **No webhook retry** | Failed webhook/Slack/email sends are logged and dropped | Monitor `alerts_sent{status="error"}` metric |
+| **Email password in plaintext** | SMTP password stored in config file | Protect config with `chmod 600` |
 
 ---
 
@@ -1556,7 +1847,7 @@ cargo install bpf-linker
 - [x] Kernel-side policy evaluation with deny/allow rules in BPF maps
 - [x] Periodic PID rescanning via tokio interval
 
-### Phase 3 - Cgroup Identity & Access Control ✅ (Current)
+### Phase 3 - Cgroup Identity & Access Control ✅
 - [x] Cgroup-based agent identification (kernel-enforced, unspoofable)
 - [x] `guardian-launch` — launcher that isolates agents in dedicated cgroups
 - [x] `guardian-ctl` — CLI for listing, stopping, and managing agents
@@ -1567,12 +1858,17 @@ cargo install bpf-linker
 - [x] Unix socket IPC protocol for daemon communication
 - [x] Backward compatibility with Phase 1/2 comm-based configs
 
-### Phase 4 - Alerting & Integration
-- [ ] Webhook alerts for policy violations
-- [ ] Slack/email notifications
-- [ ] Structured JSON logging for SIEM integration
-- [ ] Prometheus metrics export
-- [ ] Network access monitoring
+### Phase 4 - Alerting & Integration ✅ (Current)
+- [x] Structured JSON logging (JSONL) with size-based log rotation
+- [x] Webhook alerts (HTTP POST with JSON payload, auth headers, custom headers)
+- [x] Slack notifications (Block Kit formatting, severity-colored messages)
+- [x] Email notifications (async SMTP via STARTTLS)
+- [x] Prometheus metrics endpoint (file events, exec events, alerts sent/dropped)
+- [x] Alert deduplication (hash-based, configurable time window)
+- [x] Alert rate limiting (per-minute cap)
+- [x] Config validation CLI (`--validate-config`)
+- [x] Config hot-reload via SIGHUP signal
+- [x] Preset configuration templates (minimal, recommended, strict, development)
 
 ### Phase 5 - Dashboard & UI
 - [ ] Web-based real-time monitoring dashboard

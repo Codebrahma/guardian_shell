@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 // =============================================================================
@@ -10,6 +11,101 @@ use std::path::Path;
 pub struct Config {
     pub global: GlobalConfig,
     pub agents: Vec<AgentConfig>,
+    /// Phase 4: Alerting & integration configuration.
+    /// Optional — when absent, no alerting outputs are active.
+    #[serde(default)]
+    pub alerting: Option<AlertingConfig>,
+}
+
+// =============================================================================
+// Alerting Configuration (Phase 4)
+// =============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AlertingConfig {
+    /// Minimum severity for any alert output: "info", "warning", "critical".
+    /// Default: "warning"
+    pub min_severity: Option<String>,
+    /// Suppress duplicate alerts (same agent + event + path + action) within
+    /// this window. Default: 300 seconds.
+    pub dedup_window_seconds: Option<u64>,
+    /// Maximum alerts dispatched per minute across all outputs.
+    /// Default: 100
+    pub rate_limit_per_minute: Option<u32>,
+
+    pub json_log: Option<JsonLogConfig>,
+    pub webhook: Option<WebhookConfig>,
+    pub slack: Option<SlackConfig>,
+    pub email: Option<EmailConfig>,
+    pub prometheus: Option<PrometheusConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonLogConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// File path for JSONL output. If omitted, logs to stdout.
+    pub path: Option<String>,
+    /// Max file size in MB before rotation. Default: 100
+    pub max_size_mb: Option<u32>,
+    /// Max rotated files to keep. Default: 5
+    pub max_files: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Webhook endpoint URL (HTTP POST with JSON body).
+    pub url: Option<String>,
+    /// Optional Authorization header value (e.g. "Bearer token123").
+    pub auth_header: Option<String>,
+    /// Optional custom headers as key-value pairs.
+    pub headers: Option<HashMap<String, String>>,
+    /// Minimum severity for this output. Default: "warning"
+    pub min_severity: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SlackConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Slack incoming webhook URL.
+    pub webhook_url: Option<String>,
+    /// Optional channel override (only works with Slack apps, not incoming webhooks).
+    pub channel: Option<String>,
+    /// Minimum severity for this output. Default: "critical"
+    pub min_severity: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmailConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// SMTP server hostname.
+    pub smtp_host: Option<String>,
+    /// SMTP server port. Default: 587 (STARTTLS)
+    pub smtp_port: Option<u16>,
+    /// SMTP username for authentication.
+    pub username: Option<String>,
+    /// SMTP password for authentication.
+    pub password: Option<String>,
+    /// Sender email address.
+    pub from: Option<String>,
+    /// Recipient email addresses.
+    pub to: Option<Vec<String>>,
+    /// Minimum severity for this output. Default: "critical"
+    pub min_severity: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrometheusConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Address to bind the metrics HTTP server. Default: "127.0.0.1:9090"
+    pub listen_address: Option<String>,
+    /// URL path for the metrics endpoint. Default: "/metrics"
+    pub endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -219,6 +315,84 @@ fn validate_config(config: &Config) -> Result<()> {
                         agent.name,
                         other
                     );
+                }
+            }
+        }
+    }
+
+    // Validate alerting config
+    if let Some(ref alerting) = config.alerting {
+        validate_alerting_config(alerting)?;
+    }
+
+    Ok(())
+}
+
+fn validate_alerting_config(config: &AlertingConfig) -> Result<()> {
+    // Validate severity values
+    if let Some(ref sev) = config.min_severity {
+        match sev.as_str() {
+            "info" | "warning" | "critical" => {}
+            other => anyhow::bail!("Invalid alerting min_severity '{}'. Must be 'info', 'warning', or 'critical'", other),
+        }
+    }
+
+    // Validate webhook config
+    if let Some(ref wh) = config.webhook {
+        if wh.enabled {
+            if wh.url.as_ref().map(|u| u.is_empty()).unwrap_or(true) {
+                anyhow::bail!("Webhook is enabled but 'url' is not set");
+            }
+            if let Some(ref url) = wh.url {
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    log::warn!("Webhook URL does not start with http:// or https://: {}", url);
+                }
+            }
+        }
+        if let Some(ref sev) = wh.min_severity {
+            match sev.as_str() {
+                "info" | "warning" | "critical" => {}
+                other => anyhow::bail!("Invalid webhook min_severity '{}'", other),
+            }
+        }
+    }
+
+    // Validate Slack config
+    if let Some(ref slack) = config.slack {
+        if slack.enabled {
+            if slack.webhook_url.as_ref().map(|u| u.is_empty()).unwrap_or(true) {
+                anyhow::bail!("Slack is enabled but 'webhook_url' is not set");
+            }
+            if let Some(ref url) = slack.webhook_url {
+                if !url.starts_with("https://hooks.slack.com/") && !url.starts_with("https://") {
+                    log::warn!("Slack webhook URL doesn't look like a Slack webhook: {}", url);
+                }
+            }
+        }
+    }
+
+    // Validate email config
+    if let Some(ref email) = config.email {
+        if email.enabled {
+            if email.smtp_host.as_ref().map(|h| h.is_empty()).unwrap_or(true) {
+                anyhow::bail!("Email is enabled but 'smtp_host' is not set");
+            }
+            if email.from.as_ref().map(|f| f.is_empty()).unwrap_or(true) {
+                anyhow::bail!("Email is enabled but 'from' address is not set");
+            }
+            if email.to.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
+                anyhow::bail!("Email is enabled but 'to' addresses list is empty");
+            }
+        }
+    }
+
+    // Validate Prometheus config
+    if let Some(ref prom) = config.prometheus {
+        if prom.enabled {
+            if let Some(ref addr) = prom.listen_address {
+                // Basic validation: should contain a colon (host:port)
+                if !addr.contains(':') {
+                    log::warn!("Prometheus listen_address '{}' doesn't contain a port (expected host:port)", addr);
                 }
             }
         }

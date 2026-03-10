@@ -1,3 +1,4 @@
+mod alerting;
 mod config;
 mod ipc;
 
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::{signal, sync::Mutex, time};
 
+use crate::alerting::{Action, AlertEvent, AlertSender, EventType, Severity};
 use crate::config::{check_exec_policy, check_file_policy, Config};
 use crate::ipc::{CgroupBpfMaps, IpcState, PolicyBpfMaps, SharedIpcState};
 
@@ -36,6 +38,10 @@ struct Args {
         default_value = "target/bpfel-unknown-none/release/guardian-ebpf"
     )]
     ebpf_program: PathBuf,
+
+    /// Validate configuration and exit without starting the daemon.
+    #[arg(long)]
+    validate_config: bool,
 }
 
 // =============================================================================
@@ -57,6 +63,33 @@ async fn main() -> Result<()> {
     // Step 1: Load Configuration
     info!("Loading configuration from: {}", args.config.display());
     let config = config::load_config(&args.config)?;
+
+    // --validate-config: validate and exit
+    if args.validate_config {
+        info!("Configuration is valid.");
+        if let Some(ref alerting) = config.alerting {
+            info!("Alerting: configured");
+            if alerting.json_log.as_ref().map(|j| j.enabled).unwrap_or(false) {
+                info!("  JSON log: enabled");
+            }
+            if alerting.webhook.as_ref().map(|w| w.enabled).unwrap_or(false) {
+                info!("  Webhook: enabled");
+            }
+            if alerting.slack.as_ref().map(|s| s.enabled).unwrap_or(false) {
+                info!("  Slack: enabled");
+            }
+            if alerting.email.as_ref().map(|e| e.enabled).unwrap_or(false) {
+                info!("  Email: enabled");
+            }
+            if alerting.prometheus.as_ref().map(|p| p.enabled).unwrap_or(false) {
+                info!("  Prometheus: enabled");
+            }
+        } else {
+            info!("Alerting: not configured");
+        }
+        return Ok(());
+    }
+
     let enforce_mode = config.global.mode == "enforce";
     let rescan_interval = config.global.pid_rescan_interval;
     let socket_path = config.global.socket_path.clone();
@@ -207,14 +240,22 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Step 6: Set Up Event Processing
+    // Step 6: Initialize Alerting Subsystem (Phase 4)
+    let alert_tx = if let Some(ref alerting_config) = config.alerting {
+        info!("Starting alerting subsystem...");
+        alerting::start(alerting_config.clone()).await
+    } else {
+        AlertSender::noop()
+    };
+
+    // Step 7: Set Up Event Processing
     let cpus = online_cpus().map_err(|(msg, e)| anyhow::anyhow!("{}: {}", msg, e))?;
     info!("Setting up event readers for {} CPUs", cpus.len());
 
-    setup_file_event_readers(&mut bpf, &cpus, &config)?;
-    setup_exec_event_readers(&mut bpf, &cpus, &config)?;
+    setup_file_event_readers(&mut bpf, &cpus, &config, alert_tx.clone())?;
+    setup_exec_event_readers(&mut bpf, &cpus, &config, alert_tx.clone())?;
 
-    // Step 7: Create shared IPC state
+    // Step 8: Create shared IPC state
     let ipc_state: SharedIpcState = Arc::new(Mutex::new(IpcState {
         agents: collections::HashMap::new(),
         grants: Vec::new(),
@@ -224,7 +265,7 @@ async fn main() -> Result<()> {
         enforce_mode,
     }));
 
-    // Step 8: Start IPC server for guardian-launch registrations
+    // Step 9: Start IPC server for guardian-launch registrations
     let ipc_socket_path = socket_path.clone();
     let ipc_state_clone = ipc_state.clone();
     let ipc_handle = tokio::spawn(async move {
@@ -233,11 +274,11 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Step 9: Start cgroup cleanup task
+    // Step 10: Start cgroup cleanup task
     let cleanup_state = ipc_state.clone();
     let cleanup_handle = tokio::spawn(ipc::cgroup_cleanup_task(cleanup_state));
 
-    // Step 10: Periodic PID Rescanning (comm-based agents only)
+    // Step 11: Periodic PID Rescanning (comm-based agents only)
     let rescan_config = config.clone();
     let rescan_watched = watched_tgids_map.clone();
     let rescan_enforce = enforce_tgids_map.clone();
@@ -285,18 +326,54 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Step 11: Wait for Shutdown
+    // Step 12: Set up SIGHUP handler for config reload
+    let reload_config_path = args.config.clone();
+    let reload_ipc_state = ipc_state.clone();
+    let sighup_handle = tokio::spawn(async move {
+        let mut sighup =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to register SIGHUP handler: {}", e);
+                    return;
+                }
+            };
+        loop {
+            sighup.recv().await;
+            info!("SIGHUP received — reloading configuration...");
+            match config::load_config(&reload_config_path) {
+                Ok(new_config) => {
+                    let mut state = reload_ipc_state.lock().await;
+                    state.config = new_config.clone();
+                    info!(
+                        "Configuration reloaded: {} agent(s), mode={}",
+                        new_config.agents.len(),
+                        new_config.global.mode
+                    );
+                }
+                Err(e) => {
+                    error!("Config reload failed (keeping previous config): {}", e);
+                }
+            }
+        }
+    });
+
+    // Step 13: Wait for Shutdown
     info!("==========================================================");
     info!(
         "Guardian Shell is running ({} mode). Monitoring {} agent(s).",
         config.global.mode,
         config.agents.len()
     );
+    if config.alerting.is_some() {
+        info!("Alerting subsystem: active");
+    }
     if !cgroup_agents.is_empty() {
         info!(
             "Cgroup agents: use 'guardian-launch --name <agent> -- <command>' to start"
         );
     }
+    info!("Send SIGHUP to reload configuration.");
     info!("Press Ctrl+C to stop.");
     info!("==========================================================");
 
@@ -307,6 +384,7 @@ async fn main() -> Result<()> {
     rescan_handle.abort();
     ipc_handle.abort();
     cleanup_handle.abort();
+    sighup_handle.abort();
 
     // Clean up IPC socket
     let _ = std::fs::remove_file(&socket_path);
@@ -570,7 +648,12 @@ fn attach_lsm(bpf: &mut Ebpf) -> Result<()> {
 // Event Processing Setup
 // =============================================================================
 
-fn setup_file_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Result<()> {
+fn setup_file_event_readers(
+    bpf: &mut Ebpf,
+    cpus: &[u32],
+    config: &Config,
+    alert_tx: AlertSender,
+) -> Result<()> {
     let mut perf_array = AsyncPerfEventArray::try_from(
         bpf.take_map("EVENTS")
             .context("EVENTS map not found")?,
@@ -583,6 +666,7 @@ fn setup_file_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Re
 
         let config = config.clone();
         let enforce_mode = config.global.mode == "enforce";
+        let alert_tx = alert_tx.clone();
 
         tokio::spawn(async move {
             let mut buffers = (0..10)
@@ -600,13 +684,14 @@ fn setup_file_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Re
 
                 if events.lost > 0 {
                     warn!("Lost {} file events on CPU {}", events.lost, cpu_id);
+                    alert_tx.metrics.events_lost.inc_by(events.lost as u64);
                 }
 
                 for i in 0..events.read {
                     let event = unsafe {
                         (buffers[i].as_ptr() as *const FileAccessEvent).read_unaligned()
                     };
-                    process_file_event(&event, &config, enforce_mode);
+                    process_file_event(&event, &config, enforce_mode, &alert_tx);
                 }
             }
         });
@@ -615,7 +700,12 @@ fn setup_file_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Re
     Ok(())
 }
 
-fn setup_exec_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Result<()> {
+fn setup_exec_event_readers(
+    bpf: &mut Ebpf,
+    cpus: &[u32],
+    config: &Config,
+    alert_tx: AlertSender,
+) -> Result<()> {
     let mut perf_array = AsyncPerfEventArray::try_from(
         bpf.take_map("EXEC_EVENTS")
             .context("EXEC_EVENTS map not found")?,
@@ -627,6 +717,7 @@ fn setup_exec_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Re
             .with_context(|| format!("Failed to open exec perf buffer for CPU {}", cpu_id))?;
 
         let config = config.clone();
+        let alert_tx = alert_tx.clone();
 
         tokio::spawn(async move {
             let mut buffers = (0..10)
@@ -644,13 +735,14 @@ fn setup_exec_event_readers(bpf: &mut Ebpf, cpus: &[u32], config: &Config) -> Re
 
                 if events.lost > 0 {
                     warn!("Lost {} exec events on CPU {}", events.lost, cpu_id);
+                    alert_tx.metrics.events_lost.inc_by(events.lost as u64);
                 }
 
                 for i in 0..events.read {
                     let event = unsafe {
                         (buffers[i].as_ptr() as *const ExecEvent).read_unaligned()
                     };
-                    process_exec_event(&event, &config);
+                    process_exec_event(&event, &config, &alert_tx);
                 }
             }
         });
@@ -675,7 +767,12 @@ fn find_agent_for_event<'a>(config: &'a Config, comm: &str) -> Option<&'a config
     config.agents.first()
 }
 
-fn process_file_event(event: &FileAccessEvent, config: &Config, enforce_mode: bool) {
+fn process_file_event(
+    event: &FileAccessEvent,
+    config: &Config,
+    enforce_mode: bool,
+    alert_tx: &AlertSender,
+) {
     let filename = std::str::from_utf8(event.filename_bytes()).unwrap_or("<invalid-utf8>");
     let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
     let access_mode = decode_open_flags(event.flags);
@@ -691,6 +788,15 @@ fn process_file_event(event: &FileAccessEvent, config: &Config, enforce_mode: bo
             let allowed = check_file_policy(&agent.file_access, filename);
             let mode_tag = if enforce_mode { "ENFORCE" } else { "MONITOR" };
 
+            let (severity, action) = if allowed {
+                (Severity::Info, Action::Allow)
+            } else if enforce_mode {
+                (Severity::Critical, Action::Blocked)
+            } else {
+                (Severity::Warning, Action::Deny)
+            };
+
+            // Existing log output
             if allowed {
                 debug!(
                     "[ALLOW] agent='{}' pid={} comm='{}' file='{}' mode={}",
@@ -707,6 +813,21 @@ fn process_file_event(event: &FileAccessEvent, config: &Config, enforce_mode: bo
                     mode_tag, agent.name, event.tgid, comm, filename, access_mode
                 );
             }
+
+            // Send to alerting subsystem
+            alert_tx.send(AlertEvent {
+                timestamp: chrono::Utc::now(),
+                severity,
+                event_type: EventType::FileAccess,
+                action,
+                agent_name: agent.name.clone(),
+                pid: event.tgid,
+                comm: comm.to_string(),
+                path: filename.to_string(),
+                access_mode: access_mode.clone(),
+                identity_method: agent.effective_identity().to_string(),
+                policy_mode: mode_tag.to_lowercase(),
+            });
         }
         None => {
             debug!(
@@ -717,7 +838,7 @@ fn process_file_event(event: &FileAccessEvent, config: &Config, enforce_mode: bo
     }
 }
 
-fn process_exec_event(event: &ExecEvent, config: &Config) {
+fn process_exec_event(event: &ExecEvent, config: &Config, alert_tx: &AlertSender) {
     let filename = std::str::from_utf8(event.filename_bytes()).unwrap_or("<invalid-utf8>");
     let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
 
@@ -728,6 +849,12 @@ fn process_exec_event(event: &ExecEvent, config: &Config) {
             let allowed = match &agent.exec_policy {
                 Some(policy) => check_exec_policy(policy, filename),
                 None => true,
+            };
+
+            let (severity, action) = if allowed {
+                (Severity::Info, Action::Allow)
+            } else {
+                (Severity::Warning, Action::Deny)
             };
 
             if allowed {
@@ -741,6 +868,20 @@ fn process_exec_event(event: &ExecEvent, config: &Config) {
                     agent.name, event.tgid, comm, filename
                 );
             }
+
+            alert_tx.send(AlertEvent {
+                timestamp: chrono::Utc::now(),
+                severity,
+                event_type: EventType::ExecAttempt,
+                action,
+                agent_name: agent.name.clone(),
+                pid: event.tgid,
+                comm: comm.to_string(),
+                path: filename.to_string(),
+                access_mode: String::new(),
+                identity_method: agent.effective_identity().to_string(),
+                policy_mode: config.global.mode.clone(),
+            });
         }
         None => {
             debug!(

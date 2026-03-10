@@ -9,7 +9,7 @@ use log::{error, info, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 // =============================================================================
 // Alert Event Types
@@ -120,18 +120,26 @@ impl AlertEvent {
 // =============================================================================
 
 /// Clonable handle for sending alert events to the AlertManager.
-/// Also holds a reference to Prometheus metrics for synchronous updates.
+/// Also holds a reference to Prometheus metrics for synchronous updates
+/// and an optional broadcast channel for the dashboard SSE stream.
 #[derive(Clone)]
 pub struct AlertSender {
     tx: mpsc::Sender<AlertEvent>,
     pub metrics: Arc<metrics::AlertMetrics>,
+    event_bus: Option<broadcast::Sender<AlertEvent>>,
 }
 
 impl AlertSender {
     /// Send an alert event. Updates metrics synchronously, then queues
     /// the event for async processing by the AlertManager.
+    /// Also broadcasts to the dashboard SSE stream if connected.
     pub fn send(&self, event: AlertEvent) {
         self.metrics.record_event(&event);
+
+        // Broadcast to dashboard SSE subscribers (ignore if no receivers)
+        if let Some(ref bus) = self.event_bus {
+            let _ = bus.send(event.clone());
+        }
 
         // Non-blocking send: if the channel is full, drop the event
         // (the metric was already recorded)
@@ -140,12 +148,24 @@ impl AlertSender {
         }
     }
 
+    /// Attach a broadcast sender for the dashboard event bus.
+    pub fn with_event_bus(mut self, bus: broadcast::Sender<AlertEvent>) -> Self {
+        self.event_bus = Some(bus);
+        self
+    }
+
+    /// Get a reference to the event bus sender (for dashboard state).
+    pub fn event_bus(&self) -> Option<&broadcast::Sender<AlertEvent>> {
+        self.event_bus.as_ref()
+    }
+
     /// Create a no-op sender that only tracks metrics (no alerting outputs).
     pub fn noop() -> Self {
         let (tx, _rx) = mpsc::channel(1);
         AlertSender {
             tx,
             metrics: Arc::new(metrics::AlertMetrics::new()),
+            event_bus: None,
         }
     }
 }
@@ -423,5 +443,6 @@ pub async fn start(config: AlertingConfig) -> AlertSender {
     AlertSender {
         tx,
         metrics: alert_metrics,
+        event_bus: None,
     }
 }

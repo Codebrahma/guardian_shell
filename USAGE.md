@@ -2,13 +2,14 @@
 
 Guardian Shell is a Linux security tool that monitors and enforces file access policies for LLM agents (Claude Code, OpenAI Codex, Aider, OpenClaw, Cursor, etc.) using eBPF. It hooks into the kernel's file-open syscall, evaluates every file access against your policy rules in real time, and can block unauthorized access at the kernel level.
 
-**Current mode: Phase 4 — Alerting, Integration & Observability**
+**Current mode: Phase 5 — Dashboard, UI & Full Application Control**
 
-Guardian Shell now provides four layers of protection:
+Guardian Shell now provides five layers of protection:
 - **Phase 1**: Monitor-only file access logging via eBPF tracepoints
 - **Phase 2**: Kernel-level enforcement via LSM BPF hooks (blocks denied access)
 - **Phase 3**: Unspoofable cgroup-based agent identity, resource limits, launcher wrapper, and time-based access grants
 - **Phase 4**: Structured JSON logging, webhook/Slack/email alerts, Prometheus metrics, and config validation
+- **Phase 5**: Web dashboard with real-time event streaming, policy editor, agent management, and full application control
 
 ---
 
@@ -47,18 +48,26 @@ Guardian Shell now provides four layers of protection:
    - [Config Validation](#config-validation)
    - [Config Hot-Reload (SIGHUP)](#config-hot-reload-sighup)
    - [Preset Configurations](#preset-configurations)
-9. [Understanding the Output](#understanding-the-output)
+9. [Web Dashboard (Phase 5)](#web-dashboard-phase-5)
+   - [Enabling the Dashboard](#enabling-the-dashboard)
+   - [Dashboard Pages](#dashboard-pages)
+   - [Live Event Stream (SSE)](#live-event-stream-sse)
+   - [Managing Agents from Dashboard](#managing-agents-from-dashboard)
+   - [Editing Policies from Dashboard](#editing-policies-from-dashboard)
+   - [Configuring Alerts from Dashboard](#configuring-alerts-from-dashboard)
+   - [Dashboard Security](#dashboard-security)
+10. [Understanding the Output](#understanding-the-output)
    - [Startup Messages](#startup-messages)
    - [ALLOW Events](#allow-events)
    - [DENY Events](#deny-events)
    - [Event Fields](#event-fields)
-10. [Writing Effective Policies](#writing-effective-policies)
+11. [Writing Effective Policies](#writing-effective-policies)
     - [Principle of Least Privilege](#principle-of-least-privilege)
     - [Common Allow Patterns](#common-allow-patterns)
     - [Recommended Deny Patterns](#recommended-deny-patterns)
     - [Per-Agent Policies](#per-agent-policies)
     - [Tuning Your Policy](#tuning-your-policy)
-11. [Real-World Examples](#real-world-examples)
+12. [Real-World Examples](#real-world-examples)
     - [Monitoring Claude Code (comm-based)](#monitoring-claude-code-comm-based)
     - [Isolating Aider with Cgroups](#isolating-aider-with-cgroups)
     - [Running OpenClaw in a Sandbox](#running-openclaw-in-a-sandbox)
@@ -66,7 +75,7 @@ Guardian Shell now provides four layers of protection:
     - [Multiple LLM Agents Side by Side](#multiple-llm-agents-side-by-side)
     - [Strict Lockdown Policy](#strict-lockdown-policy)
     - [Permissive Audit Policy](#permissive-audit-policy)
-12. [How It Works](#how-it-works)
+13. [How It Works](#how-it-works)
     - [Architecture Overview](#architecture-overview)
     - [eBPF and Tracepoints](#ebpf-and-tracepoints)
     - [3-Tier Agent Identification](#3-tier-agent-identification)
@@ -869,7 +878,189 @@ sudo target/release/guardian --config configs/development.toml
 | `minimal.toml` | monitor | deny | None | Quick testing |
 | `recommended.toml` | enforce | deny | JSON log + Prometheus | Production |
 | `strict.toml` | enforce | deny | JSON log + Prometheus (+ commented webhook/Slack/email) | Maximum security |
-| `development.toml` | monitor | allow | JSON to stdout + Prometheus | Debugging |
+| `development.toml` | monitor | allow | JSON to stdout + Prometheus + Dashboard | Debugging |
+
+---
+
+## Web Dashboard (Phase 5)
+
+Guardian Shell includes an embedded web dashboard that provides full application control from your browser — real-time event monitoring, agent management, policy editing, and alert configuration.
+
+### Enabling the Dashboard
+
+Add a `[dashboard]` section to your config:
+
+```toml
+[dashboard]
+enabled = true
+listen_address = "127.0.0.1:8080"   # default
+```
+
+The dashboard starts as an additional tokio task inside the daemon. No separate process, no additional binary — it's part of the same `guardian` executable.
+
+```bash
+# Start the daemon (dashboard starts automatically)
+sudo RUST_LOG=info target/release/guardian --config config.toml
+
+# Open in browser
+xdg-open http://127.0.0.1:8080
+```
+
+On startup you'll see:
+
+```
+[INFO  guardian] Starting dashboard on http://127.0.0.1:8080
+[INFO  guardian::dashboard] Dashboard available at http://127.0.0.1:8080
+```
+
+### Dashboard Pages
+
+The dashboard has six pages accessible from the sidebar navigation:
+
+| Page | Path | Description |
+|------|------|-------------|
+| **Overview** | `/` | Status cards (mode, agents, events, blocked) + recent events via SSE |
+| **Live Events** | `/events` | Full real-time event stream with severity/action filtering |
+| **Agents** | `/agents` | Configured agents table + active cgroup agents with stop/grant |
+| **Policy Editor** | `/policy` | Per-agent file access and exec policy editing |
+| **Alert Config** | `/alerts` | Toggle and configure all alerting outputs |
+| **Metrics** | `/metrics` | Prometheus metrics endpoint (text format) |
+
+#### Overview Page
+
+The landing page shows four auto-refreshing status cards:
+- **Mode**: `enforce` (red) or `monitor` (blue)
+- **Configured Agents**: Total count with active cgroup count
+- **File Events**: Total file events from Prometheus counters
+- **Blocked**: Total blocked events (enforce mode)
+
+Below the cards, a live event table shows the last 50 events via SSE — events appear instantly as they occur, with no page refresh needed.
+
+#### Live Events Page
+
+A full-screen real-time event feed with client-side filtering:
+
+- **Severity filter**: All / Info / Warning / Critical
+- **Action filter**: All / Allow / Deny / Blocked
+- **Clear button**: Reset the event buffer
+- **Event counter**: Shows total buffered events
+
+Each event row shows: timestamp (ms precision), severity, agent name, event type, action, PID, comm, path, and access mode. The page buffers up to 500 events client-side.
+
+### Live Event Stream (SSE)
+
+The dashboard uses **Server-Sent Events (SSE)** for real-time event delivery. Events flow from the eBPF kernel hook through the alerting pipeline to your browser:
+
+```
+eBPF event → perf buffer → event processor → AlertSender.send()
+                                                  │
+                                                  ├─► broadcast channel ──► SSE endpoint
+                                                  │                            │
+                                                  │                     EventSource (browser)
+                                                  │
+                                                  └─► mpsc channel ──► AlertManager
+```
+
+The SSE endpoint is at `/events/stream`. Each event is sent as a JSON-encoded `AlertEvent`:
+
+```
+event: event
+data: {"timestamp":"2026-03-10T14:30:00Z","severity":"critical","event_type":"file_access","action":"blocked","agent_name":"claude-code","pid":12345,"comm":"cat","path":"/etc/shadow","access_mode":"READ","identity_method":"cgroup","policy_mode":"enforce"}
+```
+
+Heartbeats are sent every 15 seconds to keep connections alive through proxies. If a client falls behind, missed events are silently skipped (no backpressure on event producers).
+
+You can also consume the SSE stream programmatically:
+
+```bash
+# Watch events via curl
+curl -N http://127.0.0.1:8080/events/stream
+
+# Parse with jq
+curl -sN http://127.0.0.1:8080/events/stream | \
+  grep '^data:' | sed 's/^data: //' | jq .
+```
+
+### Managing Agents from Dashboard
+
+The **Agents** page (`/agents`) shows two tables:
+
+**Configured Agents** — all agents from `config.toml`:
+- Name, identity method (comm/cgroup), default action, rule counts, exec policy status
+
+**Active Cgroup Agents** — agents registered via `guardian-launch`:
+- Name, cgroup path, cgroup ID, process count, uptime
+- **Stop** button: sends SIGTERM to all processes in the cgroup (with confirmation dialog)
+- **Grant** button: opens a form to grant temporary access to a path with a duration in seconds
+
+These actions are equivalent to `guardian-ctl stop` and `guardian-ctl grant` but accessible from the browser.
+
+### Editing Policies from Dashboard
+
+The **Policy Editor** page (`/policy`) provides a visual editor for each agent's security policy:
+
+- Accordion view — one collapsible section per agent
+- **File Access Policy**: default action dropdown, allow rules textarea, deny rules textarea
+- **Exec Policy**: default action, allow/deny rules (if configured)
+- **Save** button per agent
+
+When you save:
+1. The in-memory config is updated immediately
+2. The full config is written to disk as valid TOML
+3. A success/error notification appears
+
+**Important**: Policy changes affect the userspace config (monitor-mode decisions) immediately. To apply changes to kernel-side BPF enforcement maps, click **Reload Config** in the sidebar or restart the daemon.
+
+### Configuring Alerts from Dashboard
+
+The **Alert Config** page (`/alerts`) lets you configure all alerting outputs:
+
+**Global Settings:**
+- Minimum severity (info / warning / critical)
+- Dedup window (seconds)
+- Rate limit (alerts per minute)
+
+**Output Channels** (each with an enable toggle):
+- **JSON Log**: file path
+- **Webhook**: endpoint URL
+- **Slack**: webhook URL
+- **Email**: SMTP host
+- **Prometheus**: listen address
+
+Changes are saved to the config file on disk. Note: alerting output changes (webhook URLs, SMTP settings, etc.) require a daemon restart to take effect because the `AlertManager` and its connections are initialized once at startup.
+
+### Dashboard Security
+
+The dashboard listens on **localhost only** (`127.0.0.1:8080`) by default. It has **no authentication** — anyone who can reach the port has full control.
+
+**For remote access**, use a reverse proxy with authentication:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name guardian.internal;
+
+    auth_basic "Guardian Shell";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        # Required for SSE
+        proxy_set_header Connection '';
+        proxy_http_version 1.1;
+        chunked_transfer_encoding off;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+}
+```
+
+**Best practices:**
+- Never bind the dashboard to `0.0.0.0` without authentication
+- Use TLS for remote access (nginx/caddy handles this)
+- The config file should be owned by root with `chmod 600` (the dashboard can write to it)
+- The dashboard provides the same level of control as `guardian-ctl` + editing `config.toml`
 
 ---
 
@@ -1549,13 +1740,23 @@ deny = [
  │   ┌──────────────────────────────────────┐     │                │
  │   │ Event Processors  ──► AlertSender    │     │                │
  │   │   ├► Prometheus counters (sync)      │     │                │
+ │   │   ├► broadcast channel ──► SSE ──────┼─────┼─► Browser      │
  │   │   └► mpsc channel ──► AlertManager   │     │                │
  │   │        ├► JSON Log (file rotation)   │     │                │
  │   │        ├► Webhook (HTTP POST)        │     │                │
  │   │        ├► Slack (Block Kit)          │     │                │
  │   │        └► Email (SMTP)              │     │                │
- │   │                                      │     │                │
- │   │ Prometheus HTTP: GET /metrics :9090  │     │                │
+ │   └──────────────────────────────────────┘     │                │
+ │                                                │                │
+ │   Dashboard (Phase 5):                         │                │
+ │   ┌──────────────────────────────────────┐     │                │
+ │   │ axum HTTP :8080                      │     │                │
+ │   │   /          Overview + SSE events   │     │                │
+ │   │   /events    Live event stream       │     │                │
+ │   │   /agents    Agent mgmt (stop/grant) │     │                │
+ │   │   /policy    Policy editor           │     │                │
+ │   │   /alerts    Alert config            │     │                │
+ │   │   /metrics   Prometheus endpoint     │     │                │
  │   └──────────────────────────────────────┘     │                │
  │                                                │                │
  ├════════════════════════════════════════════════╪════════════════┤
@@ -1626,6 +1827,7 @@ If any tier matches, the process is monitored. Cgroup-based agents (launched via
 10. **Userspace** (Phase 4): AlertEvent is created and sent to AlertManager
 11. **Userspace** (Phase 4): Prometheus counters updated synchronously
 12. **Userspace** (Phase 4): AlertManager applies dedup/throttle → dispatches to JSON log, webhook, Slack, email
+13. **Userspace** (Phase 5): AlertEvent broadcast to SSE subscribers → delivered to dashboard in browser
 
 ---
 
@@ -1664,7 +1866,8 @@ Most agents run as your user with your full permissions. There is no built-in sa
 6. **Temporary access**: Grant time-limited access to sensitive resources with automatic revocation
 7. **Alerting**: Real-time notifications via webhook, Slack, and email when policy violations occur
 8. **Observability**: Prometheus metrics for dashboards and alerting rules; structured JSON logs for SIEM
-9. **Zero overhead**: eBPF runs in the kernel — no process wrapping, no ptrace, no container
+9. **Web dashboard**: Real-time event monitoring, policy editing, agent management, and alert configuration from a browser
+10. **Zero overhead**: eBPF runs in the kernel — no process wrapping, no ptrace, no container
 
 ---
 
@@ -1809,6 +2012,10 @@ cargo install bpf-linker
 
 10. **Use `--validate-config` in CI/CD** — catch config errors before deploying to production
 
+11. **Secure the dashboard** — bind to localhost only; use a reverse proxy with auth for remote access
+
+12. **Use the dashboard for incident response** — the live events page with filtering makes it easy to investigate policy violations in real time
+
 ---
 
 ## Known Limitations
@@ -1827,6 +2034,10 @@ cargo install bpf-linker
 | **SIGHUP doesn't reload alerting outputs** | Changing webhook URLs, Slack tokens, etc. requires daemon restart | Agent policies reload; output config requires restart |
 | **No webhook retry** | Failed webhook/Slack/email sends are logged and dropped | Monitor `alerts_sent{status="error"}` metric |
 | **Email password in plaintext** | SMTP password stored in config file | Protect config with `chmod 600` |
+| **Dashboard has no authentication** | Anyone who can reach the port has full control | Bind to localhost; use reverse proxy with auth |
+| **Dashboard CDN dependency** | First load requires internet for TailwindCSS/htmx/Alpine.js | Bundle libraries locally via rust-embed |
+| **Policy edits don't update BPF maps** | Kernel enforcement rules unchanged until reload | Use "Reload Config" button or SIGHUP |
+| **Config comments lost on dashboard save** | TOML write-back removes original comments | Use version control for config files |
 
 ---
 
@@ -1858,7 +2069,7 @@ cargo install bpf-linker
 - [x] Unix socket IPC protocol for daemon communication
 - [x] Backward compatibility with Phase 1/2 comm-based configs
 
-### Phase 4 - Alerting & Integration ✅ (Current)
+### Phase 4 - Alerting & Integration ✅
 - [x] Structured JSON logging (JSONL) with size-based log rotation
 - [x] Webhook alerts (HTTP POST with JSON payload, auth headers, custom headers)
 - [x] Slack notifications (Block Kit formatting, severity-colored messages)
@@ -1870,8 +2081,15 @@ cargo install bpf-linker
 - [x] Config hot-reload via SIGHUP signal
 - [x] Preset configuration templates (minimal, recommended, strict, development)
 
-### Phase 5 - Dashboard & UI
-- [ ] Web-based real-time monitoring dashboard
-- [ ] Visual policy editor
-- [ ] Agent activity timeline and replay
-- [ ] Alert management and incident response
+### Phase 5 - Dashboard & UI ✅ (Current)
+- [x] Embedded web dashboard (axum + htmx + Alpine.js + TailwindCSS)
+- [x] Real-time event streaming via SSE (Server-Sent Events)
+- [x] Live event feed with severity/action filtering
+- [x] Agent management UI (view, stop cgroup agents, grant temporary access)
+- [x] Visual policy editor (per-agent file access and exec rules)
+- [x] Alert configuration editor (all outputs togglable from browser)
+- [x] Auto-refreshing status overview (mode, agents, events, blocked)
+- [x] Config write-back (save changes to disk as TOML)
+- [x] Config reload from dashboard (no SIGHUP needed)
+- [x] Prometheus metrics integrated into dashboard server
+- [x] Single binary deployment (templates compiled in, static files embedded)

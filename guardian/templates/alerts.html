@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Alert Configuration{% endblock %}
+{% block nav_alerts %}nav-active{% endblock %}
+
+{% block content %}
+<h2 class="text-xl font-semibold text-gray-800 mb-4">Alert Configuration</h2>
+<p class="text-sm text-gray-500 mb-4">Configure alerting outputs. Changes are saved to disk. Restart daemon to apply output changes.</p>
+
+<form hx-put="/api/alerts" hx-target="#toast" hx-swap="innerHTML">
+  <!-- Global Settings -->
+  <div class="bg-white rounded-lg shadow p-4 mb-4">
+    <h3 class="text-sm font-medium text-gray-700 mb-3">Global Settings</h3>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div>
+        <label class="block text-xs text-gray-500 mb-1">Min Severity</label>
+        <select name="min_severity" class="w-full text-sm border border-gray-300 rounded px-2 py-1">
+          <option value="info" {% if min_severity == "info" %}selected{% endif %}>info</option>
+          <option value="warning" {% if min_severity == "warning" %}selected{% endif %}>warning</option>
+          <option value="critical" {% if min_severity == "critical" %}selected{% endif %}>critical</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1">Dedup Window (seconds)</label>
+        <input name="dedup_window_seconds" type="number" value="{{ dedup_window }}" min="0" class="w-full text-sm border border-gray-300 rounded px-2 py-1">
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1">Rate Limit (per minute)</label>
+        <input name="rate_limit_per_minute" type="number" value="{{ rate_limit }}" min="1" class="w-full text-sm border border-gray-300 rounded px-2 py-1">
+      </div>
+    </div>
+  </div>
+
+  <!-- Output Channels -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <!-- JSON Log -->
+    <div class="bg-white rounded-lg shadow p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-medium text-gray-700">JSON Log</h3>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="json_enabled" value="true" {% if json_enabled %}checked{% endif %} class="rounded">
+          Enabled
+        </label>
+      </div>
+      <label class="block text-xs text-gray-500 mb-1">File Path (empty = stdout)</label>
+      <input name="json_path" value="{{ json_path }}" placeholder="/var/log/guardian/events.json" class="w-full text-sm border border-gray-300 rounded px-2 py-1">
+    </div>
+
+    <!-- Webhook -->
+    <div class="bg-white rounded-lg shadow p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-medium text-gray-700">Webhook</h3>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="webhook_enabled" value="true" {% if webhook_enabled %}checked{% endif %} class="rounded">
+          Enabled
+        </label>
+      </div>
+      <label class="block text-xs text-gray-500 mb-1">URL</label>
+      <input name="webhook_url" value="{{ webhook_url }}" placeholder="https://siem.example.com/api/events" class="w-full text-sm border border-gray-300 rounded px-2 py-1">
+    </div>
+
+    <!-- Slack -->
+    <div class="bg-white rounded-lg shadow p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-medium text-gray-700">Slack</h3>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="slack_enabled" value="true" {% if slack_enabled %}checked{% endif %} class="rounded">
+          Enabled
+        </label>
+      </div>
+      <label class="block text-xs text-gray-500 mb-1">Webhook URL</label>
+      <input name="slack_url" value="{{ slack_url }}" placeholder="https://hooks.slack.com/services/..." class="w-full text-sm border border-gray-300 rounded px-2 py-1">
+    </div>
+
+    <!-- Email -->
+    <div class="bg-white rounded-lg shadow p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-medium text-gray-700">Email</h3>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="email_enabled" value="true" {% if email_enabled %}checked{% endif %} class="rounded">
+          Enabled
+        </label>
+      </div>
+      <label class="block text-xs text-gray-500 mb-1">SMTP Host</label>
+      <input name="email_host" value="{{ email_host }}" placeholder="smtp.example.com" class="w-full text-sm border border-gray-300 rounded px-2 py-1">
+    </div>
+
+    <!-- Prometheus -->
+    <div class="bg-white rounded-lg shadow p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-medium text-gray-700">Prometheus</h3>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="prometheus_enabled" value="true" {% if prometheus_enabled %}checked{% endif %} class="rounded">
+          Enabled
+        </label>
+      </div>
+      <label class="block text-xs text-gray-500 mb-1">Listen Address</label>
+      <input name="prometheus_addr" value="{{ prometheus_addr }}" placeholder="127.0.0.1:9090" class="w-full text-sm border border-gray-300 rounded px-2 py-1">
+    </div>
+  </div>
+
+  <div class="mt-4 flex justify-end">
+    <button type="submit" class="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">
+      Save Alert Config
+    </button>
+  </div>
+</form>
+{% endblock %}

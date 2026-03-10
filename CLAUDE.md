@@ -8,23 +8,21 @@ on this project on a Linux machine.
 Guardian Shell is a Linux security tool that uses eBPF to monitor and restrict
 LLM agent activities. It's built with Rust and the Aya eBPF framework.
 
-**Current state: Phase 4 - Alerting & Integration (compiled on Linux)**
+**Current state: Phase 5 - Dashboard & UI (compiled on Linux)**
 
-Phase 4 adds (on top of Phase 3):
-- **Structured JSON logging**: SIEM-compatible JSONL output with size-based rotation
-- **Webhook alerts**: HTTP POST to any endpoint (SIEM, PagerDuty, custom)
-- **Slack notifications**: Block Kit formatted messages with severity colors
-- **Email notifications**: Async SMTP via lettre with STARTTLS
-- **Prometheus metrics**: HTTP endpoint exposing event counters and alert stats
-- **Alert deduplication**: Hash-based suppression within configurable time windows
-- **Rate limiting**: Per-minute cap on dispatched alerts
-- **Config validation CLI**: `--validate-config` flag for pre-deployment checks
-- **SIGHUP config reload**: Reload agent policies without daemon restart
-- **Preset configurations**: minimal, recommended, strict, development templates
+Phase 5 adds (on top of Phase 4):
+- **Web dashboard**: Real-time embedded dashboard with axum + htmx + Alpine.js + TailwindCSS
+- **Live event stream**: SSE-powered real-time event feed with severity/action filtering
+- **Agent management UI**: View configured agents, stop cgroup agents, grant temporary access
+- **Policy editor**: Edit file access and exec policies per agent from the browser
+- **Alert config editor**: Configure all alerting outputs (JSON, webhook, Slack, email, Prometheus)
+- **Status overview**: Auto-refreshing cards showing mode, agent count, event totals, blocked count
+- **Config write-back**: Dashboard saves config changes to disk as valid TOML
+- **Config reload**: Reload config from dashboard without SIGHUP
 
-Architecture: AlertManager runs as a tokio task, receives events via mpsc channel
-from per-CPU event processors. Prometheus metrics are updated synchronously for
-accuracy. Each output has independent severity filtering.
+Architecture: Dashboard runs as an additional axum HTTP server (tokio task) on port 8080.
+SSE events are broadcast via `tokio::sync::broadcast` channel from the existing AlertSender.
+Templates use askama (compile-time checked). Static files embedded via rust-embed for single binary.
 
 ## Project Structure
 
@@ -47,17 +45,36 @@ guardian_shell/
 │
 ├── guardian/                   # Userspace daemon
 │   ├── Cargo.toml
+│   ├── askama.toml             # Template config
+│   ├── templates/              # Phase 5: Askama HTML templates
+│   │   ├── base.html           # Base layout (nav, head, TailwindCSS/htmx/Alpine.js)
+│   │   ├── index.html          # Dashboard overview with status cards + recent events
+│   │   ├── events.html         # Live SSE event stream with filtering
+│   │   ├── agents.html         # Agent management (list, stop, grant)
+│   │   ├── policy.html         # Policy editor (per-agent allow/deny rules)
+│   │   └── alerts.html         # Alert configuration editor
+│   ├── static/                 # Phase 5: Static assets (embedded via rust-embed)
+│   │   ├── app.js              # Custom JavaScript
+│   │   └── app.css             # Custom CSS
 │   └── src/
 │       ├── main.rs             # Entry point, eBPF loading, event loop, IPC server
-│       ├── config.rs           # TOML parsing, policy engine, alerting config
+│       ├── config.rs           # TOML parsing, policy engine, alerting + dashboard config
 │       ├── ipc.rs              # IPC server, agent registration, cgroup lifecycle
-│       └── alerting/           # Phase 4: Alerting & Integration
-│           ├── mod.rs          # AlertManager, AlertSender, dedup, dispatch
-│           ├── json_log.rs     # Structured JSONL logging with rotation
-│           ├── webhook.rs      # Generic HTTP POST webhook
-│           ├── slack.rs        # Slack Block Kit notifications
-│           ├── email.rs        # SMTP email alerts
-│           └── metrics.rs      # Prometheus metrics + HTTP server
+│       ├── alerting/           # Phase 4: Alerting & Integration
+│       │   ├── mod.rs          # AlertManager, AlertSender, dedup, dispatch, broadcast
+│       │   ├── json_log.rs     # Structured JSONL logging with rotation
+│       │   ├── webhook.rs      # Generic HTTP POST webhook
+│       │   ├── slack.rs        # Slack Block Kit notifications
+│       │   ├── email.rs        # SMTP email alerts
+│       │   └── metrics.rs      # Prometheus metrics + HTTP server
+│       └── dashboard/          # Phase 5: Web Dashboard
+│           ├── mod.rs          # Axum router, static file handler, server startup
+│           ├── state.rs        # DashboardState (shared refs to IPC, alerts, event bus)
+│           └── routes/
+│               ├── mod.rs      # Route module declarations
+│               ├── pages.rs    # Page handlers (/, /agents, /policy, /alerts, /events)
+│               ├── api.rs      # API handlers (stop, grant, policy update, alerts, reload)
+│               └── sse.rs      # SSE event stream endpoint
 │
 ├── guardian-launch/            # Agent launcher with cgroup isolation (Phase 3)
 │   ├── Cargo.toml
@@ -224,8 +241,14 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | Simple TCP metrics server | Avoids axum dependency for Phase 4. Serves Prometheus text format directly. |
 | Hash-based dedup | Same (agent, event_type, path, action) suppressed within window. Prevents alert storms. |
 | Preset config templates | Inspired by Falco: ship working configs for common scenarios. Reduces onboarding friction. |
+| axum + htmx + Alpine.js | Server-rendered HTML with htmx for partial updates, Alpine.js for client-side filtering. No JS build step. ~30KB total frontend. |
+| askama templates | Compile-time template checking catches errors at build time. Zero-allocation rendering. |
+| rust-embed for static files | Single binary deployment. No external file dependencies. |
+| broadcast channel for SSE | Standard tokio pattern. Lagged SSE clients skip events rather than blocking producers. |
+| Manual TOML serialization | Preserves readable config format. serde_toml round-trips lose comments and ordering. |
+| Dashboard behind `enabled` flag | Zero overhead when disabled. No axum server spawned. |
 
-## Known Limitations (Phase 4)
+## Known Limitations (Phase 5)
 
 1. **Relative paths not resolved**: eBPF captures whatever path the syscall receives
 2. **Only hooks `openat`**: Doesn't cover `open` (rare on modern Linux), `openat2`,
@@ -243,6 +266,10 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 11. **SIGHUP reload doesn't update alerting outputs**: Alerting config changes require daemon restart
 12. **No webhook retry logic**: Failed webhook/Slack/email sends are logged and dropped
 13. **Email password stored in plaintext config**: Use file permissions to protect config
+14. **Dashboard policy changes don't update BPF maps**: Policy edits update userspace config and disk; BPF enforcement maps require daemon restart or SIGHUP
+15. **Config write-back loses comments**: Dashboard saves config as clean TOML, original comments are removed
+16. **Dashboard has no authentication**: Bind to localhost only; use a reverse proxy for remote access with auth
+17. **TailwindCSS/htmx/Alpine.js loaded from CDN**: Dashboard requires internet access for first load (or bundle locally)
 
 ## Build Notes
 
@@ -279,11 +306,16 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 - **SIGHUP config reload** for hot-reloading agent policies
 - **Preset configs** in `configs/` (minimal, recommended, strict, development)
 
-### Phase 5: Dashboard & UI
-- Web-based real-time dashboard
-- Visual policy editor
-- Agent activity timeline
-- Alert management
+### Phase 5: Dashboard & UI ✅ DONE
+- **Web dashboard** embedded in guardian binary (axum + htmx + Alpine.js + TailwindCSS)
+- **Live event stream** via SSE with severity/action filtering
+- **Agent management**: view configured agents, stop cgroup agents, grant temporary access
+- **Policy editor**: edit file access and exec rules per agent, save to disk
+- **Alert configuration**: toggle and configure all alerting outputs from browser
+- **Status overview**: auto-refreshing mode/agent/event/blocked cards
+- **Config reload**: reload config from dashboard UI
+- **Prometheus metrics** endpoint integrated into dashboard server (`/metrics`)
+- **Single binary**: templates compiled in, static files embedded via rust-embed
 
 ## Dependency Versions
 
@@ -307,13 +339,19 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | lettre | 0.11 | Async SMTP email transport |
 | chrono | 0.4 | ISO 8601 timestamps |
 | prometheus | 0.13 | Prometheus metrics counters + encoding |
+| axum | 0.8 | HTTP framework for dashboard |
+| askama | 0.12 | Compile-time HTML templates |
+| askama_axum | 0.4 | Askama + axum integration |
+| rust-embed | 8 | Embed static files in binary |
+| tower-http | 0.6 | HTTP middleware (CORS) |
+| tokio-stream | 0.1 | Stream adapters for SSE broadcast |
 
 ## Code Quality Notes
 
 - All source files have extensive inline comments explaining eBPF concepts,
   Rust patterns, and security rationale - the user is learning all three simultaneously
-- `guardian/src/config.rs` has 6 unit tests covering path matching and policy evaluation
-- `guardian/src/main.rs` has 3 unit tests for flag decoding
+- `guardian/src/config.rs` has 10 unit tests covering path matching, policy evaluation, and identity
+- `guardian/src/main.rs` has 4 unit tests for flag decoding and comm conversion
 - The tests in `guardian/` can only run on Linux (aya dependency)
 - `guardian-common` tests pass on any platform
 

@@ -7,6 +7,10 @@ mode = "monitor"
 pid_rescan_interval = 2
 socket_path = "/run/guardian.sock"
 
+[dashboard]
+enabled = true
+listen_address = "127.0.0.1:8080"
+
 # --- Alerting (JSON to stdout for easy debugging) ---
 [alerting]
 min_severity = "info"

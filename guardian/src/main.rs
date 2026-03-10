@@ -1,5 +1,6 @@
 mod alerting;
 mod config;
+mod dashboard;
 mod ipc;
 
 use anyhow::{Context, Result};
@@ -17,7 +18,7 @@ use std::collections;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::{signal, sync::Mutex, time};
+use tokio::{signal, sync::Mutex, sync::broadcast, time};
 
 use crate::alerting::{Action, AlertEvent, AlertSender, EventType, Severity};
 use crate::config::{check_exec_policy, check_file_policy, Config};
@@ -241,11 +242,13 @@ async fn main() -> Result<()> {
     }
 
     // Step 6: Initialize Alerting Subsystem (Phase 4)
+    let (event_bus_tx, _event_bus_rx) = broadcast::channel::<AlertEvent>(1024);
     let alert_tx = if let Some(ref alerting_config) = config.alerting {
         info!("Starting alerting subsystem...");
         alerting::start(alerting_config.clone()).await
+            .with_event_bus(event_bus_tx.clone())
     } else {
-        AlertSender::noop()
+        AlertSender::noop().with_event_bus(event_bus_tx.clone())
     };
 
     // Step 7: Set Up Event Processing
@@ -264,6 +267,30 @@ async fn main() -> Result<()> {
         config: config.clone(),
         enforce_mode,
     }));
+
+    // Step 8b: Start Dashboard (Phase 5)
+    let dashboard_handle = if config
+        .dashboard
+        .as_ref()
+        .map(|d| d.enabled)
+        .unwrap_or(false)
+    {
+        let listen_addr = config
+            .dashboard
+            .as_ref()
+            .and_then(|d| d.listen_address.clone())
+            .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+        let dash_state = Arc::new(dashboard::DashboardState {
+            ipc_state: ipc_state.clone(),
+            alert_sender: alert_tx.clone(),
+            event_bus: event_bus_tx.clone(),
+            config_path: args.config.clone(),
+        });
+        info!("Starting dashboard on http://{}", listen_addr);
+        Some(tokio::spawn(dashboard::start(dash_state, listen_addr)))
+    } else {
+        None
+    };
 
     // Step 9: Start IPC server for guardian-launch registrations
     let ipc_socket_path = socket_path.clone();
@@ -368,6 +395,9 @@ async fn main() -> Result<()> {
     if config.alerting.is_some() {
         info!("Alerting subsystem: active");
     }
+    if config.dashboard.as_ref().map(|d| d.enabled).unwrap_or(false) {
+        info!("Dashboard: active");
+    }
     if !cgroup_agents.is_empty() {
         info!(
             "Cgroup agents: use 'guardian-launch --name <agent> -- <command>' to start"
@@ -385,6 +415,9 @@ async fn main() -> Result<()> {
     ipc_handle.abort();
     cleanup_handle.abort();
     sighup_handle.abort();
+    if let Some(h) = dashboard_handle {
+        h.abort();
+    }
 
     // Clean up IPC socket
     let _ = std::fs::remove_file(&socket_path);

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block nav_index %}nav-active{% endblock %}
+
+{% block content %}
+<h2 class="text-xl font-semibold text-gray-800 mb-4">Dashboard Overview</h2>
+
+<!-- Status Cards (auto-refresh every 5s) -->
+<div id="status-cards"
+     hx-get="/api/status"
+     hx-trigger="load, every 5s"
+     hx-swap="innerHTML">
+  <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+    <div class="bg-white rounded-lg shadow p-4 animate-pulse"><div class="h-12 bg-gray-200 rounded"></div></div>
+    <div class="bg-white rounded-lg shadow p-4 animate-pulse"><div class="h-12 bg-gray-200 rounded"></div></div>
+    <div class="bg-white rounded-lg shadow p-4 animate-pulse"><div class="h-12 bg-gray-200 rounded"></div></div>
+    <div class="bg-white rounded-lg shadow p-4 animate-pulse"><div class="h-12 bg-gray-200 rounded"></div></div>
+  </div>
+</div>
+
+<!-- Recent Events via SSE -->
+<div class="mt-6" x-data="recentEvents()">
+  <h3 class="text-lg font-medium text-gray-700 mb-3">Recent Events</h3>
+  <div class="bg-white rounded-lg shadow overflow-hidden">
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Time</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Severity</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Agent</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Type</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Action</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Path</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-200">
+        <template x-for="ev in events" :key="ev.id">
+          <tr class="hover:bg-gray-50 text-sm">
+            <td class="px-4 py-1.5 text-gray-600 whitespace-nowrap text-xs" x-text="formatTime(ev.timestamp)"></td>
+            <td class="px-4 py-1.5">
+              <span class="text-xs font-medium"
+                    :class="{'severity-info': ev.severity==='info', 'severity-warning': ev.severity==='warning', 'severity-critical': ev.severity==='critical'}"
+                    x-text="ev.severity"></span>
+            </td>
+            <td class="px-4 py-1.5 text-gray-700 text-sm" x-text="ev.agent_name"></td>
+            <td class="px-4 py-1.5 text-gray-600 text-xs" x-text="ev.event_type"></td>
+            <td class="px-4 py-1.5">
+              <span class="text-xs font-medium"
+                    :class="{'action-allow': ev.action==='allow', 'action-deny': ev.action==='deny', 'action-blocked': ev.action==='blocked'}"
+                    x-text="ev.action"></span>
+            </td>
+            <td class="px-4 py-1.5 text-gray-700 text-xs font-mono truncate max-w-md" x-text="ev.path" :title="ev.path"></td>
+          </tr>
+        </template>
+        <tr x-show="events.length === 0">
+          <td colspan="6" class="px-4 py-3 text-gray-400 text-sm text-center">Waiting for events...</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+function recentEvents() {
+  return {
+    events: [],
+    nextId: 0,
+    init() {
+      const sse = new EventSource('/events/stream');
+      sse.addEventListener('event', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          data.id = this.nextId++;
+          this.events.unshift(data);
+          if (this.events.length > 50) this.events.pop();
+        } catch(err) {}
+      });
+    },
+    formatTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      return d.toLocaleTimeString() + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    }
+  };
+}
+</script>
+{% endblock %}

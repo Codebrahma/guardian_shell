@@ -15,6 +15,9 @@ pub struct Config {
     /// Optional — when absent, no alerting outputs are active.
     #[serde(default)]
     pub alerting: Option<AlertingConfig>,
+    /// Phase 5: Web dashboard configuration.
+    #[serde(default)]
+    pub dashboard: Option<DashboardConfig>,
 }
 
 // =============================================================================
@@ -106,6 +109,18 @@ pub struct PrometheusConfig {
     pub listen_address: Option<String>,
     /// URL path for the metrics endpoint. Default: "/metrics"
     pub endpoint: Option<String>,
+}
+
+// =============================================================================
+// Dashboard Configuration (Phase 5)
+// =============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DashboardConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// HTTP listen address for the dashboard. Default: "127.0.0.1:8080"
+    pub listen_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

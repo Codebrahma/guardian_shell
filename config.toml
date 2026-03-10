@@ -5,6 +5,13 @@ pid_rescan_interval = 5
 socket_path = "/run/guardian.sock"
 
 # =============================================================================
+# Web Dashboard (Phase 5)
+# =============================================================================
+[dashboard]
+enabled = true
+listen_address = "127.0.0.1:8080"
+
+# =============================================================================
 # Comm-based agent (Phase 1/2 backward compatible)
 # Identified by process name — works without guardian-launch
 # =============================================================================

@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Live Events{% endblock %}
+{% block nav_events %}nav-active{% endblock %}
+
+{% block content %}
+<div x-data="eventFilter()">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="text-xl font-semibold text-gray-800">Live Events</h2>
+    <div class="flex items-center gap-3">
+      <select x-model="severityFilter" class="text-sm border border-gray-300 rounded px-2 py-1">
+        <option value="">All Severities</option>
+        <option value="info">Info</option>
+        <option value="warning">Warning</option>
+        <option value="critical">Critical</option>
+      </select>
+      <select x-model="actionFilter" class="text-sm border border-gray-300 rounded px-2 py-1">
+        <option value="">All Actions</option>
+        <option value="allow">Allow</option>
+        <option value="deny">Deny</option>
+        <option value="blocked">Blocked</option>
+      </select>
+      <button @click="clearEvents()" class="text-sm text-gray-500 hover:text-gray-700 px-2 py-1 border border-gray-300 rounded">
+        Clear
+      </button>
+      <span class="text-xs text-gray-400" x-text="events.length + ' events'"></span>
+    </div>
+  </div>
+
+  <div class="bg-white rounded-lg shadow overflow-hidden">
+    <div class="overflow-y-auto" style="max-height: 75vh;">
+      <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50 sticky top-0">
+          <tr>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Timestamp</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Severity</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Agent</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Type</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Action</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">PID</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Comm</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Path</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Mode</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-200">
+          <template x-for="ev in filteredEvents" :key="ev.id">
+            <tr class="hover:bg-gray-50 text-sm">
+              <td class="px-4 py-1.5 text-gray-600 whitespace-nowrap text-xs" x-text="formatTime(ev.timestamp)"></td>
+              <td class="px-4 py-1.5 whitespace-nowrap">
+                <span class="text-xs font-medium"
+                      :class="{'severity-info': ev.severity==='info', 'severity-warning': ev.severity==='warning', 'severity-critical': ev.severity==='critical'}"
+                      x-text="ev.severity"></span>
+              </td>
+              <td class="px-4 py-1.5 text-gray-700" x-text="ev.agent_name"></td>
+              <td class="px-4 py-1.5 text-gray-600 text-xs" x-text="ev.event_type"></td>
+              <td class="px-4 py-1.5 whitespace-nowrap">
+                <span class="text-xs font-medium"
+                      :class="{'action-allow': ev.action==='allow', 'action-deny': ev.action==='deny', 'action-blocked': ev.action==='blocked'}"
+                      x-text="ev.action"></span>
+              </td>
+              <td class="px-4 py-1.5 text-gray-500 text-xs" x-text="ev.pid"></td>
+              <td class="px-4 py-1.5 text-gray-600 text-xs" x-text="ev.comm"></td>
+              <td class="px-4 py-1.5 text-gray-700 text-xs font-mono truncate max-w-xs" x-text="ev.path" :title="ev.path"></td>
+              <td class="px-4 py-1.5 text-gray-500 text-xs" x-text="ev.access_mode"></td>
+            </tr>
+          </template>
+          <tr x-show="events.length === 0">
+            <td colspan="9" class="px-4 py-6 text-center text-gray-400 text-sm">Waiting for events...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+function eventFilter() {
+  return {
+    events: [],
+    severityFilter: '',
+    actionFilter: '',
+    nextId: 0,
+    init() {
+      const sse = new EventSource('/events/stream');
+      sse.addEventListener('event', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          data.id = this.nextId++;
+          this.events.unshift(data);
+          if (this.events.length > 500) this.events.pop();
+        } catch(err) {}
+      });
+    },
+    get filteredEvents() {
+      return this.events.filter(ev => {
+        if (this.severityFilter && ev.severity !== this.severityFilter) return false;
+        if (this.actionFilter && ev.action !== this.actionFilter) return false;
+        return true;
+      });
+    },
+    formatTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      return d.toLocaleTimeString() + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    },
+    clearEvents() { this.events = []; }
+  };
+}
+</script>
+{% endblock %}

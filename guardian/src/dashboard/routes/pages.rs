@@ -1,0 +1,231 @@
+use askama::Template;
+use axum::extract::State;
+use axum::response::Html;
+use prometheus::core::Collector;
+use std::sync::Arc;
+
+use crate::dashboard::DashboardState;
+
+// =============================================================================
+// Template Structs
+// =============================================================================
+
+#[derive(Template)]
+#[template(path = "index.html")]
+#[allow(dead_code)]
+struct IndexTemplate {
+    mode: String,
+    agent_count: usize,
+    active_cgroup_agents: usize,
+    file_events: u64,
+    blocked_events: u64,
+}
+
+#[derive(Template)]
+#[template(path = "agents.html")]
+#[allow(dead_code)]
+struct AgentsTemplate {
+    config_agents: Vec<AgentInfo>,
+    cgroup_agents: Vec<CgroupAgentInfo>,
+}
+
+#[allow(dead_code)]
+struct AgentInfo {
+    name: String,
+    identity: String,
+    default_action: String,
+    allow_count: usize,
+    deny_count: usize,
+    has_exec_policy: bool,
+}
+
+#[allow(dead_code)]
+struct CgroupAgentInfo {
+    name: String,
+    cgroup_path: String,
+    cgroup_id: u64,
+    num_processes: u32,
+    uptime_secs: u64,
+}
+
+#[derive(Template)]
+#[template(path = "policy.html")]
+#[allow(dead_code)]
+struct PolicyTemplate {
+    agents: Vec<PolicyAgentInfo>,
+}
+
+#[allow(dead_code)]
+struct PolicyAgentInfo {
+    name: String,
+    identity: String,
+    default_action: String,
+    allow_rules: Vec<String>,
+    deny_rules: Vec<String>,
+    exec_default: Option<String>,
+    exec_allow: Vec<String>,
+    exec_deny: Vec<String>,
+}
+
+#[derive(Template)]
+#[template(path = "alerts.html")]
+#[allow(dead_code)]
+struct AlertsTemplate {
+    min_severity: String,
+    dedup_window: u64,
+    rate_limit: u32,
+    json_enabled: bool,
+    json_path: String,
+    webhook_enabled: bool,
+    webhook_url: String,
+    slack_enabled: bool,
+    slack_url: String,
+    email_enabled: bool,
+    email_host: String,
+    prometheus_enabled: bool,
+    prometheus_addr: String,
+}
+
+#[derive(Template)]
+#[template(path = "events.html")]
+struct EventsTemplate;
+
+// =============================================================================
+// Page Handlers
+// =============================================================================
+
+pub async fn index(
+    State(state): State<Arc<DashboardState>>,
+) -> Html<String> {
+    let ipc = state.ipc_state.lock().await;
+    let metrics = &state.alert_sender.metrics;
+
+    // Gather metric totals
+    let file_events = metrics.file_events.collect().iter().fold(0u64, |acc, mf| {
+        acc + mf.get_metric().iter().fold(0u64, |a, m| a + m.get_counter().get_value() as u64)
+    });
+    let blocked_events = {
+        let mut count = 0u64;
+        for mf in metrics.file_events.collect().iter() {
+            for m in mf.get_metric() {
+                for lp in m.get_label() {
+                    if lp.get_name() == "action" && lp.get_value() == "blocked" {
+                        count += m.get_counter().get_value() as u64;
+                    }
+                }
+            }
+        }
+        count
+    };
+
+    let tmpl = IndexTemplate {
+        mode: ipc.config.global.mode.clone(),
+        agent_count: ipc.config.agents.len(),
+        active_cgroup_agents: ipc.agents.len(),
+        file_events,
+        blocked_events,
+    };
+
+    Html(tmpl.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+pub async fn agents(
+    State(state): State<Arc<DashboardState>>,
+) -> Html<String> {
+    let ipc = state.ipc_state.lock().await;
+
+    let config_agents: Vec<AgentInfo> = ipc
+        .config
+        .agents
+        .iter()
+        .map(|a| AgentInfo {
+            name: a.name.clone(),
+            identity: a.effective_identity().to_string(),
+            default_action: a.file_access.default.clone(),
+            allow_count: a.file_access.allow.len(),
+            deny_count: a.file_access.deny.len(),
+            has_exec_policy: a.exec_policy.is_some(),
+        })
+        .collect();
+
+    let cgroup_agents: Vec<CgroupAgentInfo> = ipc
+        .agents
+        .values()
+        .map(|a| {
+            let procs_path = format!("/sys/fs/cgroup/{}/cgroup.procs", a.cgroup_path);
+            let num_processes = std::fs::read_to_string(&procs_path)
+                .map(|c| c.lines().filter(|l| !l.trim().is_empty()).count() as u32)
+                .unwrap_or(0);
+            CgroupAgentInfo {
+                name: a.name.clone(),
+                cgroup_path: a.cgroup_path.clone(),
+                cgroup_id: a.cgroup_id,
+                num_processes,
+                uptime_secs: a.registered_at.elapsed().as_secs(),
+            }
+        })
+        .collect();
+
+    let tmpl = AgentsTemplate {
+        config_agents,
+        cgroup_agents,
+    };
+
+    Html(tmpl.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+pub async fn policy(
+    State(state): State<Arc<DashboardState>>,
+) -> Html<String> {
+    let ipc = state.ipc_state.lock().await;
+
+    let agents: Vec<PolicyAgentInfo> = ipc
+        .config
+        .agents
+        .iter()
+        .map(|a| PolicyAgentInfo {
+            name: a.name.clone(),
+            identity: a.effective_identity().to_string(),
+            default_action: a.file_access.default.clone(),
+            allow_rules: a.file_access.allow.clone(),
+            deny_rules: a.file_access.deny.clone(),
+            exec_default: a.exec_policy.as_ref().map(|e| e.default.clone()),
+            exec_allow: a.exec_policy.as_ref().map(|e| e.allow.clone()).unwrap_or_default(),
+            exec_deny: a.exec_policy.as_ref().map(|e| e.deny.clone()).unwrap_or_default(),
+        })
+        .collect();
+
+    let tmpl = PolicyTemplate { agents };
+
+    Html(tmpl.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+pub async fn alerts(
+    State(state): State<Arc<DashboardState>>,
+) -> Html<String> {
+    let ipc = state.ipc_state.lock().await;
+    let alerting = ipc.config.alerting.as_ref();
+
+    let tmpl = AlertsTemplate {
+        min_severity: alerting.and_then(|a| a.min_severity.clone()).unwrap_or_else(|| "warning".to_string()),
+        dedup_window: alerting.and_then(|a| a.dedup_window_seconds).unwrap_or(300),
+        rate_limit: alerting.and_then(|a| a.rate_limit_per_minute).unwrap_or(100),
+        json_enabled: alerting.and_then(|a| a.json_log.as_ref().map(|j| j.enabled)).unwrap_or(false),
+        json_path: alerting.and_then(|a| a.json_log.as_ref().and_then(|j| j.path.clone())).unwrap_or_default(),
+        webhook_enabled: alerting.and_then(|a| a.webhook.as_ref().map(|w| w.enabled)).unwrap_or(false),
+        webhook_url: alerting.and_then(|a| a.webhook.as_ref().and_then(|w| w.url.clone())).unwrap_or_default(),
+        slack_enabled: alerting.and_then(|a| a.slack.as_ref().map(|s| s.enabled)).unwrap_or(false),
+        slack_url: alerting.and_then(|a| a.slack.as_ref().and_then(|s| s.webhook_url.clone())).unwrap_or_default(),
+        email_enabled: alerting.and_then(|a| a.email.as_ref().map(|e| e.enabled)).unwrap_or(false),
+        email_host: alerting.and_then(|a| a.email.as_ref().and_then(|e| e.smtp_host.clone())).unwrap_or_default(),
+        prometheus_enabled: alerting.and_then(|a| a.prometheus.as_ref().map(|p| p.enabled)).unwrap_or(false),
+        prometheus_addr: alerting.and_then(|a| a.prometheus.as_ref().and_then(|p| p.listen_address.clone())).unwrap_or_default(),
+    };
+
+    Html(tmpl.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+pub async fn events() -> Html<String> {
+    let tmpl = EventsTemplate;
+    Html(tmpl.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}

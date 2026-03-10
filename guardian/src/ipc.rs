@@ -463,3 +463,16 @@ fn path_to_map_key(path: &[u8]) -> [u8; MAX_FILENAME_LEN] {
     key[..len].copy_from_slice(&path[..len]);
     key
 }
+
+// Public wrappers for dashboard API access
+pub fn cleanup_agent_pub(state: &mut IpcState, agent_name: &str) {
+    cleanup_agent(state, agent_name);
+}
+
+pub fn path_to_lpm_key_pub(path: &[u8]) -> Key<[u8; MAX_FILENAME_LEN]> {
+    path_to_lpm_key(path)
+}
+
+pub fn path_to_map_key_pub(path: &[u8]) -> [u8; MAX_FILENAME_LEN] {
+    path_to_map_key(path)
+}

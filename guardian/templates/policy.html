@@ -1,74 +1,78 @@
 {% extends "base.html" %}
-{% block title %}Policy Editor{% endblock %}
+{% block title %}Policy{% endblock %}
 {% block nav_policy %}nav-active{% endblock %}
 
 {% block content %}
-<h2 class="text-xl font-semibold text-gray-800 mb-4">Policy Editor</h2>
-<p class="text-sm text-gray-500 mb-4">Edit file access and exec policies per agent. Changes are saved to the config file on disk.</p>
+<h2 class="section-title">Policy Editor</h2>
+<p class="section-desc">Edit file access and exec policies per agent. Changes are saved to the config file on disk.</p>
 
 {% for agent in agents %}
-<div class="mb-6 bg-white rounded-lg shadow" x-data="{ open: {% if loop.first %}true{% else %}false{% endif %} }">
-  <button @click="open = !open" class="w-full flex items-center justify-between px-4 py-3 text-left border-b border-gray-200">
-    <div>
-      <span class="font-medium text-gray-800">{{ agent.name }}</span>
-      <span class="ml-2 px-2 py-0.5 rounded text-xs {% if agent.identity == "cgroup" %}bg-purple-100 text-purple-700{% else %}bg-gray-100 text-gray-700{% endif %}">{{ agent.identity }}</span>
-      <span class="ml-2 text-xs text-gray-500">default: {{ agent.default_action }}</span>
+<div class="card accordion" x-data="{ open: {% if loop.first %}true{% else %}false{% endif %} }">
+  <button @click="open = !open" class="accordion-header">
+    <div class="accordion-agent-info">
+      <span class="accordion-agent-name">{{ agent.name }}</span>
+      <span class="badge {% if agent.identity == "cgroup" %}badge-purple{% else %}badge-gray{% endif %}">{{ agent.identity }}</span>
+      <span class="badge {% if agent.default_action == "deny" %}badge-critical{% else %}badge-success{% endif %}">{{ agent.default_action }}</span>
     </div>
-    <svg class="w-5 h-5 text-gray-400 transition-transform" :class="open && 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <svg class="accordion-chevron" :class="open && 'open'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
     </svg>
   </button>
 
-  <div x-show="open" x-cloak class="p-4">
+  <div x-show="open" x-cloak class="accordion-body">
     <form hx-put="/api/policy/{{ agent.name }}" hx-target="#toast" hx-swap="innerHTML">
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="grid-2">
         <!-- File Access Policy -->
         <div>
-          <h4 class="text-sm font-medium text-gray-700 mb-2">File Access Policy</h4>
-
-          <label class="block text-xs text-gray-500 mb-1">Default Action</label>
-          <select name="default_action" class="w-full text-sm border border-gray-300 rounded px-2 py-1 mb-3">
-            <option value="deny" {% if agent.default_action == "deny" %}selected{% endif %}>deny</option>
-            <option value="allow" {% if agent.default_action == "allow" %}selected{% endif %}>allow</option>
-          </select>
-
-          <label class="block text-xs text-gray-500 mb-1">Allow Rules (one per line)</label>
-          <textarea name="allow_rules" rows="8" class="w-full text-xs font-mono border border-gray-300 rounded px-2 py-1 mb-3">{% for rule in agent.allow_rules %}{{ rule }}
+          <h4 class="section-subtitle">File Access Policy</h4>
+          <div class="form-group">
+            <label>Default Action</label>
+            <select name="default_action">
+              <option value="deny" {% if agent.default_action == "deny" %}selected{% endif %}>deny</option>
+              <option value="allow" {% if agent.default_action == "allow" %}selected{% endif %}>allow</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Allow Rules (one per line)</label>
+            <textarea name="allow_rules" rows="8" class="font-mono">{% for rule in agent.allow_rules %}{{ rule }}
 {% endfor %}</textarea>
-
-          <label class="block text-xs text-gray-500 mb-1">Deny Rules (one per line)</label>
-          <textarea name="deny_rules" rows="6" class="w-full text-xs font-mono border border-gray-300 rounded px-2 py-1">{% for rule in agent.deny_rules %}{{ rule }}
+          </div>
+          <div class="form-group">
+            <label>Deny Rules (one per line)</label>
+            <textarea name="deny_rules" rows="6" class="font-mono">{% for rule in agent.deny_rules %}{{ rule }}
 {% endfor %}</textarea>
+          </div>
         </div>
 
         <!-- Exec Policy -->
         <div>
-          <h4 class="text-sm font-medium text-gray-700 mb-2">Exec Policy</h4>
-
+          <h4 class="section-subtitle">Exec Policy</h4>
           {% if agent.exec_default.is_some() %}
-          <label class="block text-xs text-gray-500 mb-1">Default Action</label>
-          <select name="exec_default" class="w-full text-sm border border-gray-300 rounded px-2 py-1 mb-3">
-            <option value="deny" {% if agent.exec_default.as_deref() == Some("deny") %}selected{% endif %}>deny</option>
-            <option value="allow" {% if agent.exec_default.as_deref() == Some("allow") %}selected{% endif %}>allow</option>
-          </select>
-
-          <label class="block text-xs text-gray-500 mb-1">Allow Rules (one per line)</label>
-          <textarea name="exec_allow" rows="6" class="w-full text-xs font-mono border border-gray-300 rounded px-2 py-1 mb-3">{% for rule in agent.exec_allow %}{{ rule }}
+          <div class="form-group">
+            <label>Default Action</label>
+            <select name="exec_default">
+              <option value="deny" {% if agent.exec_default.as_deref() == Some("deny") %}selected{% endif %}>deny</option>
+              <option value="allow" {% if agent.exec_default.as_deref() == Some("allow") %}selected{% endif %}>allow</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Allow Rules (one per line)</label>
+            <textarea name="exec_allow" rows="6" class="font-mono">{% for rule in agent.exec_allow %}{{ rule }}
 {% endfor %}</textarea>
-
-          <label class="block text-xs text-gray-500 mb-1">Deny Rules (one per line)</label>
-          <textarea name="exec_deny" rows="4" class="w-full text-xs font-mono border border-gray-300 rounded px-2 py-1">{% for rule in agent.exec_deny %}{{ rule }}
+          </div>
+          <div class="form-group">
+            <label>Deny Rules (one per line)</label>
+            <textarea name="exec_deny" rows="4" class="font-mono">{% for rule in agent.exec_deny %}{{ rule }}
 {% endfor %}</textarea>
+          </div>
           {% else %}
-          <p class="text-sm text-gray-400 mt-6">No exec policy configured for this agent. All exec is allowed.</p>
+          <p class="text-muted mt-lg text-sm">No exec policy configured for this agent. All exec is allowed.</p>
           {% endif %}
         </div>
       </div>
 
-      <div class="mt-4 flex justify-end">
-        <button type="submit" class="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">
-          Save Policy
-        </button>
+      <div class="flex justify-end mt-md">
+        <button type="submit" class="btn btn-primary">Save Policy</button>
       </div>
     </form>
   </div>
@@ -76,8 +80,8 @@
 {% endfor %}
 
 {% if agents.is_empty() %}
-<div class="bg-white rounded-lg shadow p-6 text-center text-gray-400">
-  No agents configured. Add agents to your config.toml file.
+<div class="card card-padded">
+  <p class="empty-state">No agents configured. Add agents to your config.toml file.</p>
 </div>
 {% endif %}
 {% endblock %}

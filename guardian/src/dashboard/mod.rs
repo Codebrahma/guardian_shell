@@ -1,3 +1,4 @@
+pub mod db;
 mod routes;
 mod state;
 
@@ -23,6 +24,8 @@ pub fn router(state: Arc<DashboardState>) -> Router {
         .route("/policy", get(routes::pages::policy))
         .route("/alerts", get(routes::pages::alerts))
         .route("/events", get(routes::pages::events))
+        // JSON API endpoints
+        .route("/api/events", get(routes::api::query_events))
         // htmx API endpoints
         .route("/api/agents/{name}/stop", post(routes::api::stop_agent))
         .route("/api/agents/{name}/grant", post(routes::api::grant_access))

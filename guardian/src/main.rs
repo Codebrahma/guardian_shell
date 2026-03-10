@@ -268,7 +268,7 @@ async fn main() -> Result<()> {
         enforce_mode,
     }));
 
-    // Step 8b: Start Dashboard (Phase 5)
+    // Step 8b: Start Dashboard (Phase 5) with SQLite event storage
     let dashboard_handle = if config
         .dashboard
         .as_ref()
@@ -280,11 +280,59 @@ async fn main() -> Result<()> {
             .as_ref()
             .and_then(|d| d.listen_address.clone())
             .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+        let db_path = config
+            .dashboard
+            .as_ref()
+            .and_then(|d| d.db_path.clone())
+            .unwrap_or_else(|| "/var/lib/guardian/events.db".to_string());
+
+        let db = Arc::new(
+            dashboard::db::EventDb::open(&db_path)
+                .expect("Failed to open event database"),
+        );
+
+        // Spawn background DB writer: subscribes to broadcast and persists events
+        let db_writer = db.clone();
+        let mut db_rx = event_bus_tx.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match db_rx.recv().await {
+                    Ok(event) => {
+                        if let Err(e) = db_writer.insert_event(&event) {
+                            warn!("Failed to write event to DB: {}", e);
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("DB writer lagged, missed {} events", n);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
+        // Spawn daily DB pruning task (keep 30 days of events)
+        let db_pruner = db.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(86400));
+            loop {
+                interval.tick().await;
+                match db_pruner.prune_old_events(30) {
+                    Ok(n) => {
+                        if n > 0 {
+                            info!("Pruned {} old events from DB", n);
+                        }
+                    }
+                    Err(e) => warn!("DB prune failed: {}", e),
+                }
+            }
+        });
+
         let dash_state = Arc::new(dashboard::DashboardState {
             ipc_state: ipc_state.clone(),
             alert_sender: alert_tx.clone(),
             event_bus: event_bus_tx.clone(),
             config_path: args.config.clone(),
+            db,
         });
         info!("Starting dashboard on http://{}", listen_addr);
         Some(tokio::spawn(dashboard::start(dash_state, listen_addr)))

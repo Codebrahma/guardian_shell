@@ -24,16 +24,17 @@ Phase 5 solves all five by embedding a web dashboard directly into the guardian 
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `guardian/src/dashboard/mod.rs` | 73 | Axum router, static file handler via rust-embed, server startup |
-| `guardian/src/dashboard/state.rs` | 12 | `DashboardState` struct: shared refs to IPC state, alert sender, event bus |
+| `guardian/src/dashboard/mod.rs` | 84 | Axum router, static file handler via rust-embed, server startup |
+| `guardian/src/dashboard/state.rs` | 16 | `DashboardState` struct: shared refs to IPC state, alert sender, event bus, SQLite DB |
+| `guardian/src/dashboard/db.rs` | 200 | SQLite event store: schema, insert, query with filters, pagination, pruning |
 | `guardian/src/dashboard/routes/mod.rs` | 3 | Route sub-module declarations |
 | `guardian/src/dashboard/routes/pages.rs` | 188 | Full page handlers with askama template rendering for all 5 pages |
-| `guardian/src/dashboard/routes/api.rs` | 394 | API handlers: stop/grant agents, policy CRUD, alert config, config reload, Prometheus |
-| `guardian/src/dashboard/routes/sse.rs` | 30 | SSE endpoint via tokio broadcast channel for real-time event streaming |
+| `guardian/src/dashboard/routes/api.rs` | 420 | API handlers: stop/grant agents, policy CRUD, alert config, config reload, Prometheus, event query |
+| `guardian/src/dashboard/routes/sse.rs` | 35 | Resilient SSE endpoint with lag event forwarding via tokio broadcast channel |
 | `guardian/askama.toml` | 2 | Askama template directory configuration |
 | `guardian/templates/base.html` | 62 | Base layout: sidebar navigation, TailwindCSS/htmx/Alpine.js CDN links, toast area |
-| `guardian/templates/index.html` | 73 | Overview page: auto-refreshing status cards + SSE recent events table |
-| `guardian/templates/events.html` | 85 | Live event feed: Alpine.js-driven with severity/action filtering, auto-scroll |
+| `guardian/templates/index.html` | 105 | Overview page: auto-refreshing status cards + SSE recent events with reconnection |
+| `guardian/templates/events.html` | 200 | Events page: Live + History tabs, SSE with reconnection, SQLite-backed history with pagination |
 | `guardian/templates/agents.html` | 95 | Agent management: configured agents table + active cgroup agents with stop/grant |
 | `guardian/templates/policy.html` | 82 | Policy editor: accordion per agent, editable allow/deny/exec rules |
 | `guardian/templates/alerts.html` | 100 | Alert config: global settings + per-output toggle and field editing |
@@ -44,9 +45,9 @@ Phase 5 solves all five by embedding a web dashboard directly into the guardian 
 
 | File | What Changed |
 |------|-------------|
-| `guardian/Cargo.toml` | Added `axum` 0.8, `askama` 0.12, `askama_axum` 0.4, `rust-embed` 8, `tower` 0.5, `tower-http` 0.6, `tokio-stream` 0.1 |
-| `guardian/src/main.rs` | Added `mod dashboard`, created `broadcast::channel` for SSE, spawned dashboard tokio task, added dashboard handle to shutdown cleanup |
-| `guardian/src/config.rs` | Added `DashboardConfig` struct with `enabled` and `listen_address` fields. Added `dashboard` field to `Config`. |
+| `guardian/Cargo.toml` | Added `axum` 0.8, `askama` 0.12, `askama_axum` 0.4, `rust-embed` 8, `tower` 0.5, `tower-http` 0.6, `tokio-stream` 0.1, `rusqlite` 0.31 (bundled) |
+| `guardian/src/main.rs` | Added `mod dashboard`, created `broadcast::channel` for SSE, spawned dashboard tokio task, spawned DB writer task and daily pruning task, added dashboard handle to shutdown cleanup |
+| `guardian/src/config.rs` | Added `DashboardConfig` struct with `enabled`, `listen_address`, and `db_path` fields. Added `dashboard` field to `Config`. |
 | `guardian/src/alerting/mod.rs` | Extended `AlertSender` with `event_bus: Option<broadcast::Sender<AlertEvent>>`, added `with_event_bus()` builder method. `send()` now broadcasts to SSE clients before queuing to AlertManager. |
 | `guardian/src/ipc.rs` | Added public wrapper functions (`cleanup_agent_pub`, `path_to_lpm_key_pub`, `path_to_map_key_pub`) for dashboard API access |
 | `config.toml` | Added `[dashboard]` section with `enabled = true` and `listen_address` |
@@ -103,7 +104,18 @@ Phase 5 solves all five by embedding a web dashboard directly into the guardian 
  │   │   ├► ipc_state (SharedIpcState)      │     │                │
  │   │   ├► alert_sender (AlertSender)      │     │                │
  │   │   ├► event_bus (broadcast::Sender)   │     │                │
- │   │   └► config_path (PathBuf)           │     │                │
+ │   │   ├► config_path (PathBuf)           │     │                │
+ │   │   └► db (Arc<EventDb>)              │     │                │
+ │   └──────────────────────────────────────┘     │                │
+ │                                                │                │
+ │   SQLite Event Store:                          │                │
+ │   ┌──────────────────────────────────────┐     │                │
+ │   │ /var/lib/guardian/events.db          │     │                │
+ │   │   ├► events table (all fields)      │     │                │
+ │   │   ├► Indexes: timestamp, severity,  │     │                │
+ │   │   │  agent_name, action             │     │                │
+ │   │   ├► WAL mode (concurrent R/W)      │     │                │
+ │   │   └► Auto-prune after 30 days       │     │                │
  │   └──────────────────────────────────────┘     │                │
  │                                                │                │
  ├════════════════════════════════════════════════╪════════════════┤
@@ -120,15 +132,20 @@ eBPF event  →  per-CPU perf reader  →  process_file_event()
                                            ├─► AlertSender.send()
                                            │     │
                                            │     ├─► Prometheus counter (atomic)
-                                           │     ├─► broadcast::channel  ──► SSE subscribers
+                                           │     ├─► broadcast::channel
                                            │     │         │
-                                           │     │         ├─► /events/stream endpoint
+                                           │     │         ├─► SSE subscribers (/events/stream)
                                            │     │         │     │
                                            │     │         │     └─► EventSource (browser)
                                            │     │         │           ├─► Overview recent events
-                                           │     │         │           └─► Live events page
+                                           │     │         │           └─► Live events tab
                                            │     │         │
-                                           │     │         └─► (lagged clients skip events)
+                                           │     │         ├─► DB writer task ──► SQLite
+                                           │     │         │     └─► events table (persistent)
+                                           │     │         │           └─► /api/events (history queries)
+                                           │     │         │                 └─► History tab (browser)
+                                           │     │         │
+                                           │     │         └─► (lagged clients receive "lag" SSE event)
                                            │     │
                                            │     └─► mpsc channel  ──► AlertManager
                                            │           └─► JSON/webhook/Slack/email
@@ -140,7 +157,9 @@ eBPF event  →  per-CPU perf reader  →  process_file_event()
 
 **Embedded server, not standalone.** The dashboard runs inside the guardian daemon as a tokio task — no separate process, no separate binary, no IPC overhead. It shares the same `SharedIpcState` that the IPC server uses, and the same `AlertSender` metrics that event processors use.
 
-**Broadcast channel for fan-out.** `tokio::sync::broadcast` is designed for multi-consumer scenarios. Each SSE client subscribes and gets its own receiver. If a client falls behind, the `BroadcastStream` adapter handles the `Lagged` error by skipping missed events — no backpressure, no blocking of event producers.
+**Broadcast channel for fan-out.** `tokio::sync::broadcast` is designed for multi-consumer scenarios. Each SSE client subscribes and gets its own receiver. A dedicated DB writer task also subscribes, persisting every event to SQLite. If a client falls behind, the `BroadcastStream` adapter handles the `Lagged` error by sending a `"lag"` SSE event to the client — no backpressure, no blocking of event producers, and the client knows events were missed.
+
+**SQLite for event persistence.** All events are stored in a local SQLite database (WAL mode for concurrent reads/writes). This enables historical queries via the `/api/events` endpoint and the History tab. A background pruning task removes events older than 30 days to prevent unbounded growth. The `rusqlite` crate with the `bundled` feature compiles SQLite from source — no system library dependency.
 
 **Server-rendered HTML with htmx.** Full pages are rendered server-side by askama templates. Interactive updates (status cards, agent stop, policy save) use htmx for partial page swaps. This avoids a separate JavaScript build process, npm, webpack, or any Node.js tooling. The entire frontend is `<30KB` of CDN-loaded libraries.
 
@@ -162,17 +181,24 @@ The landing page provides a quick system health snapshot.
 - **File Events**: Total file access events from Prometheus counter
 - **Blocked**: Total blocked events (enforce mode) in red
 
-**Recent Events** (SSE via Alpine.js `EventSource`):
+**Recent Events** (SSE via Alpine.js `EventSource` with auto-reconnection):
 - Last 50 events, most recent first
 - Color-coded severity and action columns
 - Auto-updates as events arrive — no polling, no page refresh
+- Green/red "Live" / "Reconnecting..." connection status indicator
+- Automatic reconnection with exponential backoff on disconnect
 
-### 2. Live Events (`/events`)
+### 2. Events (`/events`)
 
-Full-screen real-time event feed with advanced filtering.
+Dual-mode event viewer with **Live** and **History** tabs.
+
+#### Live Tab
+Real-time event feed via SSE with resilient reconnection.
 
 **Features:**
-- SSE connection to `/events/stream` for zero-latency event delivery
+- SSE connection to `/events/stream` with automatic reconnection (exponential backoff, 1s → 30s max)
+- Green/red connection status indicator ("Connected" / "Reconnecting...")
+- Missed-events counter (shown when broadcast channel lag occurs)
 - Alpine.js-driven severity filter dropdown (All / Info / Warning / Critical)
 - Action filter dropdown (All / Allow / Deny / Blocked)
 - Clear button to reset the event list
@@ -180,7 +206,19 @@ Full-screen real-time event feed with advanced filtering.
 - Scrollable table with 500-event client-side buffer
 - Full event details: timestamp (ms precision), severity, agent, type, action, PID, comm, path, access mode
 
-**Client-side filtering:** Events are stored in an Alpine.js reactive array. Filters use `x-show` computed properties — filtering is instant with no server round-trip.
+**Client-side filtering:** Events are stored in an Alpine.js reactive array. Filters use computed properties — filtering is instant with no server round-trip.
+
+**Reconnection logic:** The `EventSource` has `onopen`, `onerror`, and `lag` event handlers. On disconnect, the connection is closed and a reconnect is scheduled with exponential backoff (capped at 30s). On successful reconnect, the backoff resets to 1s.
+
+#### History Tab
+SQLite-backed event history with server-side filtering and pagination.
+
+**Features:**
+- Search form: agent name, path contains, event type dropdown
+- Server-side filtering via `GET /api/events` query parameters
+- Pagination with Previous/Next buttons, showing "X-Y of Z"
+- Same table layout as Live tab for visual consistency
+- Severity and action filters shared with Live tab (applied both client-side and server-side)
 
 ### 3. Agents (`/agents`)
 
@@ -233,56 +271,93 @@ Form-based alerting output editor.
 
 ### Server Side (`dashboard/routes/sse.rs`)
 
+The SSE stream uses `map` (not `filter_map`) so that broadcast lag errors become real SSE events instead of being silently dropped. This prevents the stream from appearing frozen when the client falls behind.
+
 ```rust
 pub async fn event_stream(
     State(state): State<Arc<DashboardState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.event_bus.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|result| match result {
+    let stream = BroadcastStream::new(rx).map(|result| match result {
         Ok(event) => {
             let json = serde_json::to_string(&event).unwrap_or_default();
-            Some(Ok(Event::default().event("event").data(json)))
+            Ok(Event::default().event("event").data(json))
         }
-        Err(_) => None, // Lagged — skip missed events
+        Err(BroadcastStreamRecvError::Lagged(n)) => {
+            // BroadcastStream internally resubscribes after lag.
+            // Send a "lag" event so the client knows events were missed.
+            let msg = format!("{{\"missed\": {}}}", n);
+            Ok(Event::default().event("lag").data(msg))
+        }
     });
 
     Sse::new(stream).keep_alive(
         KeepAlive::new()
-            .interval(Duration::from_secs(15))
+            .interval(Duration::from_secs(5))
             .text("heartbeat"),
     )
 }
 ```
 
-### Client Side (Alpine.js `EventSource`)
+**Key fix:** The previous implementation used `filter_map` which mapped lag errors to `None` (silently skipping them). While `BroadcastStream` internally resubscribes after a `Lagged` error, if many lags happened in succession the client would see no data, appearing frozen. By using `map` and converting lags to actual `"lag"` SSE events, the stream stays active and the client is informed.
+
+### Client Side (Alpine.js `EventSource` with Reconnection)
 
 ```javascript
-init() {
-    const sse = new EventSource('/events/stream');
-    sse.addEventListener('event', (e) => {
+connect() {
+    if (this.sse) { this.sse.close(); this.sse = null; }
+    this.sse = new EventSource('/events/stream');
+
+    this.sse.onopen = () => {
+        this.connected = true;
+        this.retryDelay = 1000;  // Reset backoff on success
+    };
+
+    this.sse.addEventListener('event', (e) => {
         const data = JSON.parse(e.data);
         data.id = this.nextId++;
         this.events.unshift(data);
         if (this.events.length > 500) this.events.pop();
     });
+
+    this.sse.addEventListener('lag', (e) => {
+        const data = JSON.parse(e.data);
+        this.missedEvents += data.missed;
+    });
+
+    this.sse.onerror = () => {
+        this.connected = false;
+        this.sse.close(); this.sse = null;
+        // Exponential backoff: 1s → 2s → 4s → ... → 30s max
+        const delay = Math.min(this.retryDelay, 30000);
+        this.retryDelay = Math.min(this.retryDelay * 2, 30000);
+        setTimeout(() => this.connect(), delay);
+    };
 }
 ```
 
+**Reconnection strategy:** The native `EventSource` has built-in reconnection, but it is unreliable across browsers and doesn't support backoff. Our implementation closes the connection on error and manually reconnects with exponential backoff (1s doubling up to 30s max). The UI shows a red "Reconnecting..." indicator during disconnection.
+
 ### SSE Protocol
 
-The SSE stream sends events in the standard format:
+The SSE stream sends two event types:
 
 ```
 event: event
-data: {"timestamp":"2026-03-10T14:30:00Z","severity":"critical","event_type":"file_access","action":"blocked","agent_name":"claude-code","pid":12345,"comm":"cat","path":"/etc/shadow","access_mode":"READ","identity_method":"cgroup","policy_mode":"enforce"}
+data: {"timestamp":"2026-03-10T14:30:00Z","severity":"critical",...}
+
+event: lag
+data: {"missed": 42}
 
 :heartbeat
 
 event: event
-data: {"timestamp":"2026-03-10T14:30:01Z","severity":"info","event_type":"file_access","action":"allow","agent_name":"claude-code","pid":12345,"comm":"cat","path":"/tmp/test.txt","access_mode":"READ","identity_method":"cgroup","policy_mode":"enforce"}
+data: {"timestamp":"2026-03-10T14:30:01Z","severity":"info",...}
 ```
 
-Each `event:` line names the SSE event type (matched by `addEventListener`). Each `data:` line contains the full `AlertEvent` serialized as JSON. Heartbeats (`:heartbeat` comments) are sent every 15 seconds to keep the connection alive through proxies and load balancers.
+- **`event`**: Normal alert event, full `AlertEvent` as JSON
+- **`lag`**: Broadcast channel overflow notification, tells client how many events were missed
+- **`:heartbeat`**: SSE comment sent every 5 seconds to keep the connection alive through proxies
 
 ---
 
@@ -309,6 +384,12 @@ Each `event:` line names the SSE event type (matched by `addEventListener`). Eac
 | PUT | `/api/alerts` | `min_severity`, `dedup_*`, `rate_*`, output fields (form) | Update alerting config | HTML partial (toast) |
 | POST | `/api/config/reload` | — | Reload config from disk | HTML partial (toast) |
 | GET | `/metrics` | — | Prometheus metrics | `text/plain` (Prometheus format) |
+
+### JSON API Routes
+
+| Method | Path | Parameters | Description | Response |
+|--------|------|-----------|-------------|----------|
+| GET | `/api/events` | `severity`, `action`, `agent_name`, `event_type`, `path_contains`, `limit`, `offset` (query) | Query historical events from SQLite | JSON: `{ events: [...], total, limit, offset }` |
 
 ### SSE Route
 
@@ -345,6 +426,105 @@ When the dashboard saves policy or alert changes, it writes the full config back
 - **Comments are lost.** The original TOML comments are not preserved. The output is clean, machine-generated TOML.
 - **Policy changes don't update BPF maps.** File access rules that are enforced in-kernel via BPF maps are populated at daemon startup. Dashboard edits update the userspace config (affecting monitor-mode decisions) and disk. To apply changes to kernel enforcement, use "Reload Config" or restart the daemon.
 - **Alerting output changes require restart.** The `AlertManager` and its output connections (webhook client, SMTP transport) are initialized once at startup. Changing URLs or credentials via the dashboard saves to disk but requires a daemon restart to take effect.
+
+---
+
+## SQLite Event Store
+
+### Overview
+
+All alert events are persisted to a local SQLite database, enabling historical queries, audit trails, and the History tab on the events page. The database is created automatically on first startup.
+
+### Schema
+
+```sql
+CREATE TABLE events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,         -- ISO 8601 (RFC 3339)
+    severity TEXT NOT NULL,          -- "info", "warning", "critical"
+    event_type TEXT NOT NULL,        -- "file_access", "exec_attempt"
+    action TEXT NOT NULL,            -- "allow", "deny", "blocked"
+    agent_name TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    comm TEXT NOT NULL,
+    path TEXT NOT NULL,
+    access_mode TEXT NOT NULL DEFAULT '',
+    identity_method TEXT NOT NULL DEFAULT '',
+    policy_mode TEXT NOT NULL DEFAULT ''
+);
+
+-- Indexes for common query patterns
+CREATE INDEX idx_events_timestamp ON events(timestamp DESC);
+CREATE INDEX idx_events_severity ON events(severity);
+CREATE INDEX idx_events_agent ON events(agent_name);
+CREATE INDEX idx_events_action ON events(action);
+```
+
+### Configuration
+
+```toml
+[dashboard]
+enabled = true
+listen_address = "127.0.0.1:8080"
+db_path = "/var/lib/guardian/events.db"    # Optional, this is the default
+```
+
+### Data Flow
+
+1. **eBPF event** arrives via perf buffer → `process_file_event()` → `AlertSender.send()`
+2. **Broadcast channel** fans out to all subscribers (SSE clients + DB writer)
+3. **DB writer task** (dedicated tokio task) receives events and calls `EventDb::insert_event()`
+4. **SQLite** stores the event with WAL mode (concurrent reads during writes)
+5. **History queries** via `GET /api/events` call `EventDb::query_events()` with filters
+6. **Daily pruning** task calls `EventDb::prune_old_events(30)` to remove events older than 30 days
+
+### Query API
+
+`GET /api/events` accepts these query parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `severity` | string | Filter by severity: `info`, `warning`, `critical` |
+| `action` | string | Filter by action: `allow`, `deny`, `blocked` |
+| `agent_name` | string | Filter by exact agent name |
+| `event_type` | string | Filter by type: `file_access`, `exec_attempt` |
+| `path_contains` | string | Substring match on path (SQL `LIKE %...%`) |
+| `limit` | u32 | Max results (default: 100, max: 1000) |
+| `offset` | u32 | Skip N results for pagination |
+
+**Response:**
+
+```json
+{
+  "events": [
+    {
+      "id": 42,
+      "timestamp": "2026-03-10T14:30:00+00:00",
+      "severity": "critical",
+      "event_type": "file_access",
+      "action": "blocked",
+      "agent_name": "claude-code",
+      "pid": 12345,
+      "comm": "cat",
+      "path": "/etc/shadow",
+      "access_mode": "READ",
+      "identity_method": "cgroup",
+      "policy_mode": "enforce"
+    }
+  ],
+  "total": 1847,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+### Performance Considerations
+
+- **WAL mode** enables concurrent readers during writes — the DB writer never blocks API queries
+- **`std::sync::Mutex`** (not `tokio::Mutex`) wraps the connection because all operations are sub-millisecond
+- **Indexed columns** (timestamp, severity, agent, action) ensure fast filtered queries
+- **Single-row inserts** are adequate for typical event rates (hundreds/sec). For higher throughput, batch inserts could be added
+- **30-day retention** with automatic pruning prevents unbounded disk growth
 
 ---
 
@@ -398,6 +578,7 @@ Askama is a compile-time template engine for Rust, inspired by Jinja2.
 | `tower` | 0.5 | — | Service trait (required by axum) |
 | `tower-http` | 0.6 | `cors` | CORS middleware for dashboard |
 | `tokio-stream` | 0.1 | `sync` | `BroadcastStream` adapter for SSE |
+| `rusqlite` | 0.31 | `bundled` | Embedded SQLite database for event persistence |
 
 ---
 
@@ -410,7 +591,12 @@ Askama is a compile-time template engine for Rust, inspired by Jinja2.
 | **askama over tera/handlebars** | Compile-time checking catches template errors at build time. Zero-allocation rendering. Jinja2-like syntax is familiar to most developers. |
 | **CDN for frontend libraries** | Avoids 200MB+ of node_modules. No npm, no webpack, no build pipeline for JavaScript. Guardian Shell is a security tool — keeping the build simple reduces supply chain risk. |
 | **rust-embed for static files** | Embeds files at compile time. The binary is fully self-contained — `scp` it to any machine and it works. No `static/` directory to manage. |
-| **broadcast channel for SSE** | `tokio::sync::broadcast` is designed for multi-consumer fan-out. The `BroadcastStream` adapter handles lagged clients gracefully (skips events rather than blocking). |
+| **broadcast channel for SSE** | `tokio::sync::broadcast` is designed for multi-consumer fan-out. The `BroadcastStream` adapter handles lagged clients by sending `"lag"` SSE events (not silently dropping). |
+| **SQLite for event persistence** | Embedded database with zero external dependencies (`bundled` feature). WAL mode enables concurrent reads during writes. `std::sync::Mutex` wrapping is safe because all DB operations are sub-millisecond. |
+| **Dedicated DB writer task** | A separate tokio task subscribes to the broadcast channel and writes events to SQLite. This decouples persistence from the event hot path — DB latency never affects SSE or alerting. |
+| **Exponential backoff reconnection** | Client-side `EventSource` reconnection uses 1s → 2s → 4s → ... → 30s backoff. Prevents thundering herd on server restart. Resets on successful connect. |
+| **`map` over `filter_map` for SSE lag** | Using `map` converts lag errors into real `"lag"` SSE events. The previous `filter_map` approach silently dropped them as `None`, making the stream appear frozen under load. |
+| **30-day event retention** | Background pruning task runs daily, deleting events older than 30 days. Prevents unbounded disk growth while keeping useful audit history. |
 | **No authentication** | The dashboard listens on localhost by default. For remote access, use a reverse proxy (nginx, caddy) with authentication. Adding auth to the daemon itself would add complexity without solving the common case. |
 | **Manual TOML serializer** | `toml::to_string` (via serde) produces valid but ugly TOML — arrays on single lines, no comments, inconsistent formatting. The manual serializer produces human-readable output with proper indentation and array formatting. |
 | **htmx for partial updates** | Status cards auto-refresh via `hx-trigger="every 5s"`. Agent stop/grant actions swap single table rows. No full page reloads except navigation. |
@@ -443,7 +629,8 @@ This implementation was informed by analysis of several open-source security and
 |---------|---------|---------|---------|---------|---------|
 | **Output** | stderr | stderr | stderr | JSON + webhook + Slack + email | **+ Web dashboard** |
 | **Metrics** | None | None | None | Prometheus | Prometheus **+ dashboard cards** |
-| **Real-time view** | `tail -f` stderr | `tail -f` stderr | `tail -f` stderr | `jq` on JSON log | **SSE event stream** |
+| **Event persistence** | None | None | None | JSON log file | **SQLite database** |
+| **Real-time view** | `tail -f` stderr | `tail -f` stderr | `tail -f` stderr | `jq` on JSON log | **SSE event stream + History tab** |
 | **Agent management** | Edit config | Edit config | `guardian-ctl` CLI | `guardian-ctl` CLI | **+ Web UI stop/grant** |
 | **Policy editing** | Edit TOML | Edit TOML | Edit TOML | Edit TOML + `--validate-config` | **+ Visual editor** |
 | **Alert config** | N/A | N/A | N/A | Edit TOML | **+ Web form** |
@@ -524,7 +711,7 @@ cargo build --package guardian            # debug: OK
 cargo build --package guardian --release  # release: OK
 ```
 
-Only pre-existing warnings (unused enum variants, unused function from earlier phases).
+Zero warnings.
 
 ### Manual Dashboard Testing
 
@@ -544,9 +731,27 @@ cat /etc/shadow            # Should show as DENY/BLOCKED
 
 The dashboard should show:
 - Status cards with mode, agent count, event counts
-- Recent events appearing in real-time via SSE
+- Recent events appearing in real-time via SSE with green "Live" indicator
 - Navigation to all pages
 - Functional policy editor and alert configuration forms
+
+**Testing SSE resilience:**
+1. Open the Events page → Live tab should show green "Connected"
+2. Restart the daemon → UI should show red "Reconnecting..." then auto-reconnect
+3. Generate many events rapidly → any lag shows "(N missed)" counter
+4. Switch to History tab → events from SQLite should appear with pagination
+
+**Testing History queries:**
+```bash
+# Query all events (JSON API)
+curl http://127.0.0.1:8080/api/events
+
+# Filter by severity
+curl "http://127.0.0.1:8080/api/events?severity=critical&limit=10"
+
+# Search by path
+curl "http://127.0.0.1:8080/api/events?path_contains=/etc&action=blocked"
+```
 
 ---
 
@@ -592,6 +797,14 @@ server {
 - The API validates policy rules before saving (empty/invalid rules are filtered)
 - The "Reload Config" button re-validates the config from disk before applying
 
+### SQLite Database Security
+
+- The DB file (`/var/lib/guardian/events.db`) is created by the daemon running as root
+- It contains a full audit trail of all file access events (paths, PIDs, agent names)
+- The `/api/events` endpoint exposes this data without authentication — bind to localhost
+- WAL mode creates additional `-wal` and `-shm` files alongside the main DB
+- For sensitive environments, ensure the DB directory has restrictive permissions (`chmod 700`)
+
 ### CDN Dependencies
 
 The dashboard loads TailwindCSS, htmx, and Alpine.js from CDN. For air-gapped or high-security environments:
@@ -612,6 +825,7 @@ The dashboard loads TailwindCSS, htmx, and Alpine.js from CDN. For air-gapped or
 | **Policy edits don't update BPF maps** | Kernel enforcement rules unchanged until restart | Use "Reload Config" button or send SIGHUP |
 | **Config comments lost on save** | Original TOML comments removed by write-back | Maintain comments in a separate file or use version control |
 | **Alerting changes need restart** | Output connections (SMTP, webhook) initialized once | Restart daemon after changing alert output config |
-| **No event persistence** | SSE events are ephemeral — page refresh clears them | Use JSON log file for persistent audit trail |
-| **500-event client buffer** | Only last 500 events visible in events page | Older events are in JSON log; adjust buffer in JavaScript |
+| **500-event live buffer** | Only last 500 events visible in Live tab | Switch to History tab for full SQLite-backed event archive |
+| **DB path needs writable directory** | SQLite DB at `/var/lib/guardian/events.db` requires the directory to exist and be writable | Configure `db_path` in `[dashboard]` config, or ensure `/var/lib/guardian/` exists |
 | **No mobile responsive design** | Dashboard designed for desktop browsers | Use on desktop or laptop screens |
+| **SQLite single-process only** | Only one guardian daemon can write to a given DB file at a time | Use separate `db_path` per daemon instance |

@@ -47,6 +47,7 @@ impl std::fmt::Display for Severity {
 /// Types of events that can trigger alerts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum EventType {
     FileAccess,
     ExecAttempt,
@@ -155,6 +156,7 @@ impl AlertSender {
     }
 
     /// Get a reference to the event bus sender (for dashboard state).
+    #[allow(dead_code)]
     pub fn event_bus(&self) -> Option<&broadcast::Sender<AlertEvent>> {
         self.event_bus.as_ref()
     }

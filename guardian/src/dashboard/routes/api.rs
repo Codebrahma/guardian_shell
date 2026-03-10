@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::{Html, IntoResponse};
 use axum::Form;
 use log::{error, info};
@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::config;
 use crate::dashboard::DashboardState;
+use crate::dashboard::db::EventFilter;
 
 // =============================================================================
 // Status Summary (htmx polling target)
@@ -41,33 +42,33 @@ pub async fn status_summary(
         .map(|m| m.get_counter().get_value() as u64)
         .sum();
 
-    let mode_class = if ipc.config.global.mode == "enforce" {
-        "bg-red-100 text-red-800"
+    let mode_badge = if ipc.config.global.mode == "enforce" {
+        "badge-mode-enforce"
     } else {
-        "bg-blue-100 text-blue-800"
+        "badge-mode-monitor"
     };
 
     Html(format!(
-        r#"<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-sm text-gray-500">Mode</div>
-    <div class="mt-1"><span class="px-2 py-1 rounded text-sm font-medium {}">{}</span></div>
+        r#"<div class="grid-4">
+  <div class="stat-card">
+    <div class="stat-label">Mode</div>
+    <div style="margin-top: 8px;"><span class="badge {}">{}</span></div>
   </div>
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-sm text-gray-500">Configured Agents</div>
-    <div class="text-2xl font-bold mt-1">{}</div>
-    <div class="text-xs text-gray-400">{} active cgroup</div>
+  <div class="stat-card">
+    <div class="stat-label">Configured Agents</div>
+    <div class="stat-value">{}</div>
+    <div class="stat-sub">{} active cgroup</div>
   </div>
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-sm text-gray-500">File Events</div>
-    <div class="text-2xl font-bold mt-1">{}</div>
+  <div class="stat-card">
+    <div class="stat-label">File Events</div>
+    <div class="stat-value">{}</div>
   </div>
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-sm text-gray-500">Blocked</div>
-    <div class="text-2xl font-bold mt-1 text-red-600">{}</div>
+  <div class="stat-card">
+    <div class="stat-label">Blocked</div>
+    <div class="stat-value" style="color: var(--danger);">{}</div>
   </div>
 </div>"#,
-        mode_class,
+        mode_badge,
         ipc.config.global.mode,
         ipc.config.agents.len(),
         ipc.agents.len(),
@@ -90,7 +91,7 @@ pub async fn stop_agent(
         Some(a) => a.clone(),
         None => {
             return Html(format!(
-                r#"<div class="text-red-600 text-sm">Agent '{}' not found</div>"#,
+                r#"<div class="toast-error">Agent '{}' not found</div>"#,
                 name
             ));
         }
@@ -118,8 +119,8 @@ pub async fn stop_agent(
     info!("Dashboard: stopped agent '{}' ({} processes killed)", name, killed);
 
     Html(format!(
-        r#"<tr class="bg-gray-50">
-  <td class="px-4 py-2 text-gray-400" colspan="5">Agent '{}' stopped ({} processes terminated)</td>
+        r#"<tr>
+  <td colspan="6" style="text-align: center; padding: 16px; color: var(--text-muted);">Agent '{}' stopped ({} processes terminated)</td>
 </tr>"#,
         name, killed
     ))
@@ -143,7 +144,7 @@ pub async fn grant_access(
         || ipc.config.agents.iter().any(|a| a.name == name);
     if !exists {
         return Html(format!(
-            r#"<div class="text-red-600 text-sm">Agent '{}' not found</div>"#,
+            r#"<div class="toast-error">Agent '{}' not found</div>"#,
             name
         ));
     }
@@ -176,9 +177,7 @@ pub async fn grant_access(
     );
 
     Html(format!(
-        r#"<div class="bg-green-100 text-green-800 px-3 py-2 rounded text-sm">
-  Granted '{}' access to '{}' for {}s
-</div>"#,
+        r#"<div class="toast-success">Granted '{}' access to '{}' for {}s</div>"#,
         name, form.path, form.duration
     ))
 }
@@ -208,7 +207,7 @@ pub async fn update_policy(
         Some(a) => a,
         None => {
             return Html(format!(
-                r#"<div class="text-red-600 text-sm">Agent '{}' not found</div>"#,
+                r#"<div class="toast-error">Agent '{}' not found</div>"#,
                 agent_name
             ));
         }
@@ -262,15 +261,13 @@ pub async fn update_policy(
 
     if let Err(e) = write_config_toml(&config_path, &config) {
         return Html(format!(
-            r#"<div class="text-red-600 text-sm">Policy updated in memory but failed to write config: {}</div>"#,
+            r#"<div class="toast-error">Policy updated in memory but failed to write config: {}</div>"#,
             e
         ));
     }
 
     Html(format!(
-        r#"<div class="bg-green-100 text-green-800 px-3 py-2 rounded text-sm">
-  Policy for '{}' saved. Config written to disk. Send SIGHUP or use reload to apply to BPF maps.
-</div>"#,
+        r#"<div class="toast-success">Policy for '{}' saved. Config written to disk. Send SIGHUP or use reload to apply to BPF maps.</div>"#,
         agent_name
     ))
 }
@@ -399,14 +396,12 @@ pub async fn update_alerts(
 
     if let Err(e) = write_config_toml(&config_path, &config) {
         return Html(format!(
-            r#"<div class="text-red-600 text-sm">Alert config updated in memory but failed to write: {}</div>"#,
+            r#"<div class="toast-error">Alert config updated in memory but failed to write: {}</div>"#,
             e
         ));
     }
 
-    Html(r#"<div class="bg-green-100 text-green-800 px-3 py-2 rounded text-sm">
-  Alerting configuration saved. Note: changes to alerting outputs take effect on next daemon restart.
-</div>"#.to_string())
+    Html(r#"<div class="toast-success">Alerting configuration saved. Note: changes to alerting outputs take effect on next daemon restart.</div>"#.to_string())
 }
 
 // =============================================================================
@@ -426,9 +421,7 @@ pub async fn reload_config(
                 new_config.global.mode
             );
             Html(format!(
-                r#"<div class="bg-green-100 text-green-800 px-3 py-2 rounded text-sm">
-  Config reloaded: {} agent(s), mode={}
-</div>"#,
+                r#"<div class="toast-success">Config reloaded: {} agent(s), mode={}</div>"#,
                 new_config.agents.len(),
                 new_config.global.mode
             ))
@@ -436,7 +429,7 @@ pub async fn reload_config(
         Err(e) => {
             error!("Dashboard: config reload failed: {}", e);
             Html(format!(
-                r#"<div class="text-red-600 text-sm">Reload failed: {}</div>"#,
+                r#"<div class="toast-error">Reload failed: {}</div>"#,
                 e
             ))
         }
@@ -462,6 +455,31 @@ pub async fn prometheus_metrics(
         )],
         body,
     )
+}
+
+// =============================================================================
+// Historical Events Query (from SQLite)
+// =============================================================================
+
+pub async fn query_events(
+    State(state): State<Arc<DashboardState>>,
+    Query(filter): Query<EventFilter>,
+) -> impl IntoResponse {
+    let count = state.db.count_events(&filter).unwrap_or(0);
+    match state.db.query_events(&filter) {
+        Ok(events) => axum::Json(serde_json::json!({
+            "events": events,
+            "total": count,
+            "limit": filter.limit.unwrap_or(100),
+            "offset": filter.offset.unwrap_or(0),
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database error: {}", e),
+        )
+            .into_response(),
+    }
 }
 
 // =============================================================================
@@ -495,6 +513,9 @@ fn write_config_toml(
         out.push_str(&format!("enabled = {}\n", dash.enabled));
         if let Some(ref addr) = dash.listen_address {
             out.push_str(&format!("listen_address = \"{}\"\n", addr));
+        }
+        if let Some(ref db) = dash.db_path {
+            out.push_str(&format!("db_path = \"{}\"\n", db));
         }
         out.push_str("\n");
     }

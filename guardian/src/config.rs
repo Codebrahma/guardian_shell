@@ -121,6 +121,8 @@ pub struct DashboardConfig {
     pub enabled: bool,
     /// HTTP listen address for the dashboard. Default: "127.0.0.1:8080"
     pub listen_address: Option<String>,
+    /// Path to SQLite database for event storage. Default: "/var/lib/guardian/events.db"
+    pub db_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -473,6 +475,7 @@ fn path_matches(path: &str, pattern: &str) -> bool {
 // =============================================================================
 
 /// Convert a path pattern string into a PolicyRule for kernel-side enforcement.
+#[allow(dead_code)]
 pub fn pattern_to_policy_rule(pattern: &str) -> guardian_common::PolicyRule {
     let mut rule = guardian_common::PolicyRule {
         path_prefix: [0u8; guardian_common::MAX_FILENAME_LEN],

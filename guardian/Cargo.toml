@@ -76,3 +76,4 @@ rust-embed = "8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+rusqlite = { version = "0.31", features = ["bundled"] }

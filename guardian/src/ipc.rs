@@ -442,6 +442,7 @@ fn count_cgroup_processes(cgroup_path: &str) -> u32 {
 }
 
 /// Get the cgroup ID (inode number) for a cgroup path.
+#[allow(dead_code)]
 pub fn get_cgroup_id(cgroup_path: &str) -> Result<u64> {
     use std::os::unix::fs::MetadataExt;
     let full_path = format!("/sys/fs/cgroup/{}", cgroup_path);

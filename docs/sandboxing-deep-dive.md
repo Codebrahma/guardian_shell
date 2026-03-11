@@ -65,6 +65,545 @@ How do different security mechanisms handle this?
 | `chown` | Changes file ownership (user and group) |
 | POSIX ACLs | Extends permissions to specific additional users/groups |
 
+Before we discuss why they fail for AI agents, let's understand each
+mechanism properly — including the special bits (SUID, SGID, sticky) and
+ACLs that are referenced throughout this document.
+
+### 2.1 Unix File Permissions (chmod / chown) — The Basics
+
+Every file and directory in Linux has three sets of permission bits and
+an owner:
+
+```
+$ ls -la /home/dev/project/.env
+-rw-r----- 1 dev project-dev 256 Mar 10 14:30 .env
+│├─┤├─┤├─┤   │   │
+││  │  │     │   └── group owner
+││  │  │     └────── user owner
+││  │  └── others:  r-- (read only)    ← everyone else
+││  └───── group:   r-- (read only)    ← members of 'project-dev'
+│└──────── user:    rw- (read+write)   ← the owner 'dev'
+└───────── file type: - (regular file)
+```
+
+**The three permission types:**
+
+| Symbol | On a file | On a directory |
+|--------|-----------|---------------|
+| `r` (read) | Can read the file's contents | Can list the directory's entries (`ls`) |
+| `w` (write) | Can modify the file's contents | Can create, delete, or rename files inside |
+| `x` (execute) | Can run the file as a program | Can enter the directory (`cd`) and access files inside |
+
+**chmod uses octal numbers or symbolic notation:**
+
+```bash
+# Octal notation: each digit is r(4) + w(2) + x(1)
+chmod 750 script.sh
+#     7 = rwx (owner: read+write+execute)
+#     5 = r-x (group: read+execute)
+#     0 = --- (others: nothing)
+
+# Symbolic notation:
+chmod u+x script.sh      # add execute for user (owner)
+chmod g-w config.toml     # remove write for group
+chmod o=r public.html     # set others to read-only
+chmod a+r README.md       # add read for all (user+group+others)
+```
+
+**chown changes who owns the file:**
+
+```bash
+chown dev:project-dev .env     # set owner=dev, group=project-dev
+chown dev .env                 # change owner only
+chown :project-dev .env        # change group only
+chown -R dev:project-dev src/  # recursive — all files in src/
+```
+
+**How the kernel checks permissions (simplified):**
+
+```
+Process opens a file:
+  1. Is the process's effective UID == file owner UID?
+     → Yes: check owner bits (rwx)
+     → No: continue
+  2. Is the process's effective GID (or any supplementary GID) == file group GID?
+     → Yes: check group bits (rwx)
+     → No: continue
+  3. Check "others" bits (rwx)
+```
+
+This is a **three-tier waterfall** — you fall into exactly one category.
+There is no "deny" concept. If you're the owner, ONLY the owner bits apply,
+even if group bits are more permissive.
+
+### 2.2 Special Permission Bits: SUID, SGID, and Sticky Bit
+
+Beyond the standard `rwx` bits, Linux has three special bits that change
+how files and directories behave. These are important because the sticky
+bit and SGID are used in the dedicated-user + ACL approach (Section 3).
+
+#### SUID (Set User ID) — Run as the file's owner
+
+When the SUID bit is set on an executable, the process runs with the
+**file owner's** UID, not the calling user's UID.
+
+```bash
+$ ls -la /usr/bin/passwd
+-rwsr-xr-x 1 root root 68208 Mar 10 2024 /usr/bin/passwd
+   ^
+   s = SUID bit is set
+
+# When user 'suren' runs passwd:
+# The process runs with effective UID = root (the file owner)
+# This is how passwd can modify /etc/shadow (owned by root)
+# even though 'suren' can't modify /etc/shadow directly
+```
+
+```bash
+# Setting SUID:
+chmod u+s /usr/bin/myprogram     # symbolic
+chmod 4755 /usr/bin/myprogram    # octal (4 = SUID)
+#     ^
+#     4 in the thousands place = SUID
+
+# The 4-digit octal: chmod SUGO file
+#   S = special bits: SUID(4) + SGID(2) + Sticky(1)
+#   U = user bits:    r(4) + w(2) + x(1)
+#   G = group bits:   r(4) + w(2) + x(1)
+#   O = others bits:  r(4) + w(2) + x(1)
+```
+
+**Security relevance for AI agents:**
+SUID is dangerous because if an agent finds a SUID-root binary with a
+vulnerability, it can escalate to root. Never create SUID binaries for
+agent tools. Guardian Shell can monitor exec of SUID binaries.
+
+#### SGID (Set Group ID) — Inherit the directory's group
+
+SGID behaves differently on files vs directories:
+
+**On an executable file:** The process runs with the file's group GID
+(similar to SUID but for groups).
+
+**On a directory (the important case):** New files and subdirectories
+created inside **inherit the directory's group**, instead of the creator's
+primary group.
+
+```bash
+# Without SGID:
+$ ls -la /home/dev/project/
+drwxrwx--- 2 dev project-dev 4096 Mar 10 14:30 .
+
+$ whoami
+llm-agent
+
+$ touch /home/dev/project/newfile.txt
+$ ls -la /home/dev/project/newfile.txt
+-rw-r--r-- 1 llm-agent llm-agent 0 Mar 10 14:31 newfile.txt
+#                       ^^^^^^^^^
+#                       Group = llm-agent (creator's primary group)
+#                       The developer may not be in this group!
+
+# With SGID:
+$ chmod g+s /home/dev/project/    # or chmod 2775
+$ ls -la /home/dev/
+drwxrws--- 2 dev project-dev 4096 Mar 10 14:30 project/
+      ^
+      s = SGID bit is set on the directory
+
+$ touch /home/dev/project/newfile.txt
+$ ls -la /home/dev/project/newfile.txt
+-rw-r--r-- 1 llm-agent project-dev 0 Mar 10 14:31 newfile.txt
+#                       ^^^^^^^^^^^
+#                       Group = project-dev (inherited from directory!)
+#                       Now both dev and llm-agent (both in project-dev) can access it
+```
+
+```bash
+# Setting SGID:
+chmod g+s /home/dev/project/      # symbolic
+chmod 2775 /home/dev/project/     # octal (2 = SGID)
+#     ^
+#     2 in the thousands place = SGID
+```
+
+**Why SGID matters for AI agents:**
+When the developer and the agent are different users but share a group
+(`project-dev`), SGID ensures that files created by either user belong to
+the shared group. Without it, files created by the agent would have
+`llm-agent` as the group, and the developer might not be able to edit them.
+
+```
+Without SGID:                        With SGID on directory:
+dev creates file → dev:dev           dev creates file → dev:project-dev
+agent creates file → agent:agent     agent creates file → agent:project-dev
+                     ^^^^ developer              both can access via group ✓
+                     can't access!
+```
+
+#### Sticky Bit — Only the owner can delete/rename
+
+When the sticky bit is set on a directory, only the **file owner**, the
+**directory owner**, or **root** can delete or rename files inside it.
+Other users with write permission on the directory CANNOT delete or rename
+files they don't own.
+
+The classic example is `/tmp`:
+
+```bash
+$ ls -la /
+drwxrwxrwt 20 root root 4096 Mar 10 14:30 tmp
+         ^
+         t = sticky bit is set
+
+# /tmp is world-writable (rwx for everyone)
+# Without sticky bit: any user could delete any other user's files in /tmp
+# With sticky bit: you can only delete YOUR OWN files in /tmp
+```
+
+```bash
+# Setting the sticky bit:
+chmod +t /home/dev/project/       # symbolic
+chmod 1775 /home/dev/project/     # octal (1 = sticky)
+#     ^
+#     1 in the thousands place = sticky bit
+```
+
+**Example showing the sticky bit in action:**
+
+```bash
+# Setup: directory with sticky bit, both users have write access
+$ chmod 1777 /shared/workspace
+
+# As user 'dev':
+$ echo "my work" > /shared/workspace/notes.txt
+
+# As user 'llm-agent':
+$ rm /shared/workspace/notes.txt
+rm: cannot remove 'notes.txt': Operation not permitted
+# ✅ BLOCKED — llm-agent doesn't own notes.txt
+
+$ mv /shared/workspace/notes.txt /shared/workspace/stolen.txt
+mv: cannot move 'notes.txt': Operation not permitted
+# ✅ BLOCKED — rename also blocked by sticky bit
+
+$ echo "my file" > /shared/workspace/agent-output.txt
+# ✅ ALLOWED — creating new files is fine
+
+$ rm /shared/workspace/agent-output.txt
+# ✅ ALLOWED — llm-agent owns this file, so it can delete it
+```
+
+**Why sticky bit matters for AI agents:**
+In the dedicated-user approach (Section 3), the `rename()` bypass is the
+most dangerous attack vector — the agent can rename `.env` to `.env.bak`
+even though it can't read `.env`. The sticky bit prevents this because only
+the file owner (the developer) can rename files in the directory.
+
+**The trade-off:** The sticky bit also prevents the agent from deleting
+ANY file it doesn't own — including build artifacts, generated code, or
+test output that the developer created. This can break normal workflows:
+
+```bash
+# With sticky bit on /home/dev/project/:
+# As llm-agent:
+$ rm /home/dev/project/src/old_module.rs
+rm: cannot remove 'old_module.rs': Operation not permitted
+# ❌ The agent can't clean up files the developer created
+# Even though the agent SHOULD be able to delete source files as part of refactoring
+```
+
+#### Summary of Special Bits
+
+```
+Special bits (the leading digit in 4-digit chmod):
+
+  chmod 7775 directory
+        ^^^
+        |||
+        ||└─ 1 = Sticky bit  (only owner can delete/rename files)
+        |└── 2 = SGID         (new files inherit directory's group)
+        └─── 4 = SUID         (execute as file owner's UID)
+
+  7 = SUID(4) + SGID(2) + Sticky(1) — all three set (unusual)
+  6 = SUID(4) + SGID(2)             — SUID + SGID
+  3 = SGID(2) + Sticky(1)           — SGID + sticky (common for shared dirs)
+  2 = SGID(2)                       — just SGID (common for shared dirs)
+  1 = Sticky(1)                     — just sticky (common for /tmp)
+
+Display in ls -la:
+  -rwsr-xr-x  → SUID set (s in user execute position)
+  -rwxr-sr-x  → SGID set (s in group execute position)
+  drwxrwxrwt  → Sticky set (t in others execute position)
+
+  Capital S or T means the bit is set but execute is NOT:
+  -rwSr--r--  → SUID set, but owner lacks execute (unusual, often a mistake)
+  drwxrwx--T  → Sticky set, but others lack execute
+```
+
+### 2.3 POSIX ACLs (Access Control Lists) — Beyond User/Group/Others
+
+Standard Unix permissions only support three categories: owner, group,
+others. POSIX ACLs extend this to allow **per-user** and **per-group**
+entries on individual files.
+
+#### Why ACLs Exist
+
+```bash
+# Problem: You want to give 'llm-agent' read access to a file
+# owned by 'dev', without giving read to ALL other users.
+
+# Without ACLs — you're stuck:
+# - Can't change owner (breaks dev's access)
+# - Can't use group (llm-agent might not be in the right group)
+# - Setting other=r-- gives EVERYONE read access
+
+# With ACLs — you can target specific users:
+setfacl -m u:llm-agent:r-- /home/dev/project/config.toml
+# Now llm-agent can read it, other users still can't
+```
+
+#### ACL Syntax and Commands
+
+```bash
+# setfacl — set (modify) ACL entries
+# Syntax: setfacl -m TYPE:NAME:PERMISSIONS file
+
+# TYPE can be:
+#   u (user)     — a specific user
+#   g (group)    — a specific group
+#   m (mask)     — the maximum permissions for named entries
+#   o (other)    — the "others" category
+
+# Grant read+write to user 'llm-agent':
+setfacl -m u:llm-agent:rw- /home/dev/project/src/main.rs
+
+# Deny all access to user 'llm-agent' (set permissions to nothing):
+setfacl -m u:llm-agent:--- /home/dev/project/.env
+
+# Grant read to group 'auditors':
+setfacl -m g:auditors:r-- /home/dev/project/config.toml
+
+# Remove an ACL entry entirely:
+setfacl -x u:llm-agent /home/dev/project/.env
+
+# Remove ALL ACLs (restore to basic Unix permissions):
+setfacl -b /home/dev/project/.env
+
+# Apply recursively to all files in a directory:
+setfacl -R -m u:llm-agent:rwx /home/dev/project/
+
+# getfacl — view ACL entries
+getfacl /home/dev/project/.env
+```
+
+**Example output of `getfacl`:**
+
+```bash
+$ getfacl /home/dev/project/.env
+# file: home/dev/project/.env
+# owner: dev
+# group: project-dev
+user::rw-              ← owner 'dev' has read+write
+user:llm-agent:---     ← agent DENIED (the key entry!)
+group::rw-             ← group 'project-dev' has read+write
+mask::rw-              ← maximum for named user/group entries
+other::---             ← everyone else: no access
+```
+
+The `+` sign in `ls -la` indicates a file has ACLs:
+
+```bash
+$ ls -la /home/dev/project/.env
+-rw-rw----+ 1 dev project-dev 256 Mar 10 14:30 .env
+          ^
+          + means ACLs are present (use getfacl to see them)
+```
+
+#### Default ACLs — Inheritance for New Files
+
+Default ACLs are set on **directories** and control what ACLs new files
+created inside that directory will inherit:
+
+```bash
+# Set default ACLs on the project directory
+# -d means "default" — these apply to NEW files, not the directory itself
+setfacl -d -m u:llm-agent:rwx /home/dev/project/
+setfacl -d -m g:project-dev:rwx /home/dev/project/
+
+# Now every new file created in /home/dev/project/ will inherit:
+#   user:llm-agent:rwx (from default ACL)
+#   group:project-dev:rwx (from default ACL)
+
+# Verify default ACLs:
+$ getfacl /home/dev/project/
+# file: home/dev/project/
+# owner: dev
+# group: project-dev
+user::rwx
+group::rwx
+other::---
+default:user::rwx             ← default for owner
+default:user:llm-agent:rwx    ← default for agent (inherited by new files)
+default:group::rwx             ← default for owning group
+default:group:project-dev:rwx  ← default for project-dev group
+default:mask::rwx              ← default mask
+default:other::---             ← default for others
+```
+
+**Critical behavior:**
+
+```bash
+# New files INHERIT default ACLs:
+$ touch /home/dev/project/newfile.txt
+$ getfacl /home/dev/project/newfile.txt
+user:llm-agent:rwx     ← inherited from parent's default ACL ✓
+
+# Moved files DO NOT inherit default ACLs:
+$ mv /tmp/outsidefile.txt /home/dev/project/
+$ getfacl /home/dev/project/outsidefile.txt
+# No llm-agent entry! ← moved files keep their original ACLs
+
+# Copied files DO inherit (cp creates a new file):
+$ cp /tmp/outsidefile.txt /home/dev/project/copied.txt
+$ getfacl /home/dev/project/copied.txt
+user:llm-agent:rwx     ← inherited because cp creates a new inode ✓
+
+# EXCEPT cp -p (preserve) tries to keep source ACLs:
+$ cp -p /tmp/outsidefile.txt /home/dev/project/preserved.txt
+# May NOT have the default ACL entries
+```
+
+#### The ACL Mask — The Often-Misunderstood Ceiling
+
+The **mask** entry is the maximum effective permission for ALL named user
+and named group entries. It acts as a ceiling:
+
+```bash
+$ setfacl -m u:llm-agent:rwx /home/dev/project/file.txt
+$ setfacl -m m::r-- /home/dev/project/file.txt   # set mask to read-only
+
+$ getfacl /home/dev/project/file.txt
+user:llm-agent:rwx    #effective:r--
+#                       ^^^^^^^^
+#                       Despite granting rwx, effective permission is r--
+#                       because mask limits it to r--
+mask::r--
+```
+
+**The `chmod` trap:** Running `chmod` on a file with ACLs modifies the
+**mask** entry, not the traditional group bits:
+
+```bash
+# Before chmod:
+$ getfacl file.txt
+user:llm-agent:rwx
+group::rwx
+mask::rwx          ← agent effectively has rwx
+
+# Developer runs chmod (common, innocent operation):
+$ chmod 640 file.txt
+
+# After chmod:
+$ getfacl file.txt
+user:llm-agent:rwx    #effective:r--
+group::rwx             #effective:r--
+mask::r--              ← chmod changed the mask! Agent lost write+exec!
+```
+
+This is a **common source of mysterious permission failures** — a developer
+runs `chmod` without realizing it changes the ACL mask, silently restricting
+all named ACL entries.
+
+#### How the Kernel Evaluates ACLs (The Full Algorithm)
+
+When a process tries to access a file with ACLs, the kernel follows this
+exact algorithm:
+
+```
+1. Is process effective UID == file owner UID?
+   → YES: use ACL_USER_OBJ entry (owner permissions). STOP.
+   → NO: continue.
+
+2. Is there a named ACL_USER entry matching the process UID?
+   → YES: effective permission = (ACL_USER entry) AND (ACL_MASK)
+          If sufficient → ALLOW. Otherwise → DENY. STOP.
+   → NO: continue.
+
+3. Does the process GID (or any supplementary GID) match the owning group
+   or any named ACL_GROUP entry?
+   → YES: collect all matching group entries.
+          Effective permission = (union of matching entries) AND (ACL_MASK)
+          If sufficient → ALLOW. Otherwise → DENY. STOP.
+   → NO: continue.
+
+4. Use ACL_OTHER entry. STOP.
+```
+
+**Key takeaway:** Named user entries (step 2) are checked BEFORE groups
+(step 3). So `u:llm-agent:---` blocks the agent even if the agent is in
+a group that has access. But step 1 (owner check) takes precedence over
+everything — **never make the agent the owner of files you want to protect.**
+
+#### ACLs on Directories — The `x` Permission Matters
+
+For directories, `x` (execute) means "can traverse" — the process can `cd`
+into the directory and access files inside by name. Without `x`, even if the
+process has `r`, it can list filenames but NOT read file contents:
+
+```bash
+# Grant read + traverse on directory (needed for agent to access files inside):
+setfacl -m u:llm-agent:r-x /home/dev/project/
+
+# Grant full access (read, write/create, traverse):
+setfacl -m u:llm-agent:rwx /home/dev/project/
+
+# Common mistake — granting rw- on a directory (no traverse):
+setfacl -m u:llm-agent:rw- /home/dev/project/
+# The agent can list files (r) and create files (w) but CANNOT
+# actually read any file inside the directory because it can't
+# traverse (x) into it. Most operations will fail with EACCES.
+```
+
+#### Complete Example: Setting Up ACLs for an AI Agent
+
+```bash
+# Goal: llm-agent can read/write everything in /home/dev/project/
+#        EXCEPT .env files and .git/config
+
+# 1. Grant access to the directory tree
+setfacl -R -m u:llm-agent:rwx /home/dev/project/
+
+# 2. Set default ACLs so new files are also accessible
+setfacl -R -d -m u:llm-agent:rwx /home/dev/project/
+
+# 3. Deny specific sensitive files
+setfacl -m u:llm-agent:--- /home/dev/project/.env
+setfacl -m u:llm-agent:--- /home/dev/project/.env.local
+setfacl -m u:llm-agent:--- /home/dev/project/.env.production
+setfacl -m u:llm-agent:--- /home/dev/project/.git/config
+
+# 4. Verify the deny is in place
+$ getfacl /home/dev/project/.env
+user:llm-agent:---     ← DENIED
+
+# 5. Test
+$ sudo -u llm-agent cat /home/dev/project/.env
+cat: .env: Permission denied    ← ✅
+
+$ sudo -u llm-agent cat /home/dev/project/src/main.rs
+(file contents shown)           ← ✅
+
+$ sudo -u llm-agent touch /home/dev/project/newfile.txt
+(file created)                  ← ✅
+```
+
+**What this does NOT protect against** is covered in Section 3 (the
+rename bypass, git checkout destroying ACLs, default ACLs not matching
+filename patterns, etc.).
+
+---
+
 ### Why They're Insufficient for AI Agent Sandboxing
 
 **Problem 1: Identity is user-based, not process-based.**

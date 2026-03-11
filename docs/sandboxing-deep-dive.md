@@ -24,7 +24,7 @@ and why some say OS-level sandboxing isn't enough.**
 12. [How the Industry Sandboxes AI Agents Today](#12-how-the-industry-sandboxes-ai-agents-today)
 13. [Where Guardian Shell Fits](#13-where-guardian-shell-fits)
 14. [Comparison Matrix](#14-comparison-matrix)
-15. [Recommendations](#15-recommendations)
+15. [Final Summary: Pros, Cons, and When to Use Each Approach](#15-final-summary-pros-cons-and-when-to-use-each-approach)
 
 ---
 
@@ -1510,6 +1510,156 @@ untrusted code** — the LLM decides what to run at runtime:
 > often execute arbitrary code by design, kernel vulnerabilities can be
 > directly targeted as a path to full system compromise."
 
+### The Core Argument Visualized
+
+The sandbox promises isolation. But the isolation is **implemented by the
+very code the attacker can reach**:
+
+```
+Agent process → openat() → KERNEL CODE (40M lines of C) → filesystem
+                              ↑
+                     A bug here = game over.
+                     Doesn't matter what sandbox sits above.
+                     eBPF, seccomp, namespaces, cgroups —
+                     all enforced by this same code.
+```
+
+A bug in the kernel's `openat()` handler, network stack, filesystem driver,
+or eBPF verifier bypasses **all** OS-level sandboxing simultaneously. The
+sandbox and the attack surface share the same address space.
+
+### So What's the Alternative? Don't Share the Kernel.
+
+There are three approaches that **eliminate** or **drastically reduce** the
+shared kernel problem:
+
+#### Alternative 1: MicroVMs — Separate Kernel per Agent
+
+Give each agent its own kernel. Hardware virtualization (Intel VT-x, AMD-V)
+enforces isolation at the **CPU level**, not the kernel level:
+
+```
+┌──────────────┐  ┌──────────────┐
+│   Agent A    │  │   Agent B    │
+│              │  │              │
+│ Guest Kernel │  │ Guest Kernel │
+│   (Linux)    │  │   (Linux)    │
+└──────┬───────┘  └──────┬───────┘
+       │                 │
+  ═════╪═════════════════╪════════
+  HYPERVISOR (KVM + Firecracker)
+  ~50K lines of Rust (vs 40M lines of C)
+  ═══════════════════════════════════
+       │
+  Host Kernel ← agent NEVER touches this directly
+```
+
+- **Firecracker**: ~125ms boot, <5MB RAM per VM, powers AWS Lambda
+- **Kata Containers**: ~200ms boot, Kubernetes-native
+- To escape: must exploit the guest kernel AND the hypervisor — dramatically harder
+- Used by: **Vercel** (AI sandbox), **AWS Lambda**, **Fargate**
+
+#### Alternative 2: User-Space Kernel — Reimplemented in a Memory-Safe Language
+
+Instead of running the real kernel, intercept syscalls and handle them in a
+**memory-safe** user-space process:
+
+```
+Traditional:     Agent → Linux Kernel (C, 40M LoC) → hardware
+                           ~350 syscalls exposed
+
+gVisor:          Agent → Sentry (Go, memory-safe) → Host Kernel
+                           Only 68 of ~350 syscalls reach host
+                           No buffer overflows, no use-after-free
+```
+
+- **gVisor**: Written in Go. Implements ~70-80% of Linux syscalls in user-space.
+  Only 68 syscalls forwarded to the host kernel (vs ~350 in bare containers).
+- Used by: **Anthropic for Claude's cloud sandboxes**, **Google Cloud Run**
+- Trade-off: 10-30% I/O overhead, not full hardware isolation
+
+#### Alternative 3: WASM Sandboxes — No Kernel Access at All
+
+Run agent code inside WebAssembly where dangerous operations **don't exist**:
+
+```
+Agent JS code → QuickJS (in WASM) → wasmtime → 4 WASI calls only
+                                                (clock, random, fd_write, env)
+
+No filesystem. No network. No syscalls. No kernel attack surface.
+```
+
+- **amla-sandbox**: JS-only, virtual filesystem, capability-based tool access
+- Trade-off: JavaScript only, no native code, no real filesystem
+- Ideal for: API orchestration agents, not coding agents
+
+### So Is eBPF / OS-Level Sandboxing Pointless?
+
+**No.** The critique is valid but context-dependent. The right approach
+depends on the threat model:
+
+| Scenario | Best Approach | Why |
+|----------|--------------|-----|
+| Cloud, multi-tenant, untrusted code | gVisor / Firecracker | Must assume adversarial code; kernel isolation essential |
+| **Local dev machine, coding agent** | **eBPF (Guardian Shell)** | Agent needs real files, real tools; VM friction kills workflow |
+| API orchestration agent | WASM (amla-sandbox) | No need for filesystem or native code |
+| Maximum security | Firecracker + Guardian Shell inside VM | Defense in depth — separate kernel + per-agent monitoring |
+
+For local development, the developer **wants** the agent to work on their
+actual files with their actual tools. Spinning up a MicroVM for every
+`claude-code` session adds:
+- ~125ms boot latency per invocation
+- File sync complexity (bidirectional host ↔ VM)
+- Credential forwarding headaches (SSH agent, git tokens)
+- No GPU passthrough (Firecracker doesn't support it)
+- Significant operational complexity
+
+The friction kills the workflow. **That's why no local AI coding tool today
+uses MicroVMs** — Claude Code, Cursor, Codex CLI, and Aider all run directly
+on the host. The practical choice is between "no protection" and "best
+available kernel-level protection." Guardian Shell provides the latter.
+
+### The Layered Defense Answer
+
+The real answer isn't "pick one." It's **layer multiple approaches** so an
+attacker must break all of them simultaneously:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ Layer 0 (optional): Firecracker / gVisor                 │
+│   → Separate kernel. Needed for high-security / cloud.   │
+├──────────────────────────────────────────────────────────┤
+│ Layer 1: Network proxy with domain allowlists            │
+│   → Block data exfiltration. Agent can only reach        │
+│     github.com, npmjs.org, etc. No arbitrary outbound.   │
+├──────────────────────────────────────────────────────────┤
+│ Layer 2: Guardian Shell (eBPF monitoring + enforcement)  │
+│   → Per-agent file/exec policy at the syscall level.     │
+│   → Real-time dashboard, Slack alerts, Prometheus.       │
+│   → Temporary grants, deny-takes-precedence, cgroup ID.  │
+├──────────────────────────────────────────────────────────┤
+│ Layer 3: Application-level permissions (HITL)            │
+│   → Human-in-the-loop approval for dangerous actions.    │
+│   → The agent asks before running rm, git push, etc.     │
+├──────────────────────────────────────────────────────────┤
+│ Layer 4: Ephemeral workspace                             │
+│   → Destroy the environment after each task.             │
+│   → No persistence of SSH history, credentials, or       │
+│     accumulated attack artifacts.                        │
+└──────────────────────────────────────────────────────────┘
+```
+
+Each layer catches what the others miss:
+- **Network proxy** stops exfiltration even if eBPF is bypassed
+- **eBPF** blocks file/exec even if the proxy doesn't cover local attacks
+- **HITL** catches semantic attacks that look legitimate to automated tools
+- **Ephemeral workspace** limits blast radius even if everything else fails
+- **MicroVM** (if used) means a kernel exploit only compromises the guest
+
+**No single layer is unbreakable. The point is that an attacker must break
+ALL of them simultaneously** — and that's exponentially harder than breaking
+any one.
+
 ---
 
 ## 8. Real-World Sandbox Escapes
@@ -2053,55 +2203,581 @@ Layer 0: gVisor or Firecracker (separate kernel)
 
 ---
 
-## 15. Recommendations
+## 15. Final Summary: Pros, Cons, and When to Use Each Approach
 
-### For Guardian Shell's Roadmap
+### 1. chmod / chown / POSIX ACLs (Traditional Unix Permissions)
 
-**Short-term improvements:**
+**What it is:** The standard Unix permission model — read/write/execute bits
+per user/group/other, extended with per-user and per-group ACL entries.
 
-1. **Path canonicalization**: Resolve symlinks and `/proc/self/root` before
-   policy evaluation to close the most obvious evasion vector.
+**Pros:**
+- Zero setup — built into every Unix system for 50+ years
+- No performance overhead — permission checks are part of normal kernel path
+- Well-understood by every sysadmin
+- ACLs work on Linux, macOS, FreeBSD
 
-2. **Binary hash checking**: Add optional SHA-256 content-based identification
-   for exec enforcement (inspired by Veto).
+**Cons:**
+- Identity is **user-based, not process-based** — cannot distinguish the AI
+  agent from the developer when both run as the same user
+- No per-process granularity, no pattern matching, no temporal grants
+- No monitoring or alerting — completely silent
+- Static — cannot express dynamic or context-aware policies
 
-3. **Dynamic linker monitoring**: Hook `mmap` with `PROT_EXEC` to detect
-   binaries loaded via `ld-linux` instead of `execve`.
+**Best suited for:**
+- Protecting files from **other users** on a shared system
+- Basic server hardening where each service runs as its own user
+- **NOT suited for AI agent sandboxing** — too coarse-grained
 
-4. **Network monitoring**: Add eBPF hooks for `connect()` and `sendto()` to
-   detect data exfiltration.
+```
+Verdict: Necessary baseline, but completely insufficient alone for AI agents.
+         Like locking your front door — needed, but won't stop a determined
+         intruder who's already inside your house.
+```
 
-**Medium-term:**
+---
 
-5. **Integration with gVisor/Firecracker**: Provide Guardian Shell as the
-   monitoring layer inside a microVM for defense-in-depth.
+### 2. Dedicated User + ACLs (Separate User for the Agent)
 
-6. **API-level tool control**: Integrate with proxy-based approaches to
-   monitor and restrict API calls, not just syscalls.
+**What it is:** Create a Linux user like `llm-agent`, run the AI agent as
+that user, and use ACLs to deny access to specific files like `.env`.
 
-### For Choosing a Sandboxing Strategy
+**Pros:**
+- **Strongest credential isolation** of any non-VM approach — the agent
+  physically cannot access `~/.ssh/`, `~/.aws/`, `~/.docker/` because
+  they're in a different user's home directory
+- Child processes inherit the UID — automatic coverage for subprocesses
+- ACL deny on specific files works for direct reads, copies, symlinks
+- No kernel modules, no root needed (except for initial user creation)
+- Cross-platform (any Unix with ACL support)
 
-| Scenario | Recommended Stack |
-|----------|------------------|
-| **Dev machine, trusted agent** | Guardian Shell (monitor mode) + application permissions |
-| **Dev machine, untrusted agent** | Guardian Shell (enforce) + network proxy + ephemeral workspace |
-| **Cloud, multi-tenant** | gVisor + network isolation + credential brokering |
-| **Cloud, high security** | Firecracker + Guardian Shell (inside VM) + network proxy |
-| **API orchestration only** | amla-sandbox (WASM) + capability tokens |
-| **Maximum security** | Firecracker + gVisor + Guardian Shell + network proxy + HITL |
+**Cons:**
+- **`rename()` bypass** — agent can rename protected files if it has
+  directory write permission (sticky bit mitigates but breaks workflows)
+- **ACLs destroyed by `git checkout`** — must re-apply via git hooks
+  every time; race window between file creation and hook execution
+- **Default ACLs can't match filenames** — no "deny all `.env*`" pattern;
+  each file must be denied individually
+- **Massive workflow friction** — agent needs separate SSH keys, git tokens,
+  npm credentials, AWS roles; every tool that uses `~/` config breaks
+- **High maintenance** — git hooks per clone, periodic ACL audits,
+  credential rotation, re-apply on every file recreation
+- No real-time monitoring — access attempts are silent
+- No temporal grants — can't allow access for 60 seconds then auto-revoke
+
+**Best suited for:**
+- Environments where **credential isolation is the #1 priority** — the agent
+  must never see SSH keys or cloud credentials under any circumstances
+- Simple workflows where the agent doesn't need `git push`, `npm publish`,
+  or `docker build`
+- As a **complement** to eBPF — run the agent as a separate user AND
+  monitor with Guardian Shell for defense-in-depth
+
+```
+Verdict: The one thing it does better than everything else is credential
+         isolation. But the maintenance burden and workflow friction make
+         it impractical as a standalone solution. Best used as one layer
+         in combination with eBPF.
+```
+
+---
+
+### 3. AppArmor (Path-Based Mandatory Access Control)
+
+**What it is:** Kernel-level MAC system that restricts programs based on
+file path profiles. Default on Ubuntu/Debian/SUSE.
+
+**Pros:**
+- Human-readable profiles — easy to write and audit
+- Kernel-level enforcement — cannot be bypassed from userspace
+- `aa-genprof` auto-generates profiles by observing program behavior
+- Low performance overhead
+- Deny rules for both file access and exec
+- Covers network access (partial)
+
+**Cons:**
+- **Path-based → bypassable** via symlinks, `/proc/self/root`, and other
+  path manipulation tricks (exactly what Claude Code exploited)
+- **One profile per binary** — cannot distinguish two instances of the same
+  agent with different permissions
+- No per-instance policies — all `claude-code` processes share one profile
+- No temporal grants — profiles are static
+- No real-time monitoring dashboard (denials go to kernel audit log)
+- Breaks with `no_new_privs` in Kubernetes (common security hardening)
+- Major LSM — traditionally can't stack with SELinux
+
+**Best suited for:**
+- **Server workloads** with well-defined, predictable access patterns
+  (web servers, databases, network services)
+- Systems already running Ubuntu/Debian where AppArmor is the default MAC
+- As a **baseline MAC layer** alongside BPF-LSM (eBPF stacks on top)
+
+```
+Verdict: Good general-purpose MAC, but the path-based model is fundamentally
+         weak against reasoning agents that can discover alternative paths.
+         Fine for traditional server hardening; insufficient alone for AI agents.
+```
+
+---
+
+### 4. SELinux (Label-Based Mandatory Access Control)
+
+**What it is:** Kernel-level MAC system that assigns security labels to every
+object (processes, files, ports) and enforces policies on label interactions.
+Developed by the NSA. Default on RHEL/Fedora/CentOS.
+
+**Pros:**
+- **Strongest MAC system** in the Linux ecosystem — 20+ years of hardening
+- Label-based (not path-based) — more robust than AppArmor against path tricks
+- Comprehensive coverage — files, network, IPC, capabilities, transitions
+- Government-grade — used by US military, banking, healthcare
+- Immutable at runtime — attackers cannot modify the policy
+
+**Cons:**
+- **Notoriously complex** — a full distro policy is 100,000+ rules in a
+  custom language (m4 macros). Writing custom modules requires specialized
+  expertise.
+- Creating a policy for an AI agent requires: custom type, entry file label,
+  domain transition rules, per-file-type access rules, child process
+  transition rules — easily 100+ lines of policy for one agent
+- Static policies — changes require recompilation and reload
+- No temporal grants, no real-time dashboards, no webhook alerts
+- Overkill for the dynamic, short-lived nature of AI agent sessions
+- Major LSM — stacking with AppArmor improved in recent kernels but still complex
+
+**Best suited for:**
+- **High-security production servers** — databases, web servers, mail servers
+  where access patterns are fixed and well-known
+- **Regulated industries** (government, finance, healthcare) that require
+  formal MAC certification
+- **NOT suited as the primary tool for AI agent sandboxing** — the
+  authoring complexity vs. agent lifecycle mismatch is too high
+
+```
+Verdict: The gold standard for server MAC. But using SELinux to sandbox AI
+         agents is like using a battleship to go fishing — technically
+         possible, but the complexity-to-value ratio is terrible for this
+         use case.
+```
+
+---
+
+### 5. eBPF / BPF-LSM (Guardian Shell)
+
+**What it is:** Programmable kernel-level hooks that intercept syscalls and
+LSM security decisions. Guardian Shell uses this to monitor and enforce
+per-agent file access and exec policies.
+
+**Pros:**
+- **Per-agent policies via cgroup identity** — unspoofable, automatic child
+  tracking, each agent instance gets unique rules
+- **Dynamic policies** — load/unload at runtime, update BPF maps atomically
+- **Temporal grants** — "allow this path for 60 seconds" with auto-expiry
+- **Pattern-based deny** — `**/.env*` matches any `.env` file, present or
+  future
+- **Real-time monitoring** — every access attempt generates an event →
+  dashboard, Slack, webhook, Prometheus
+- **Stacks with SELinux/AppArmor** — BPF-LSM is a minor LSM, adds to
+  existing MAC rather than replacing it
+- **Low maintenance** — policy is a TOML config file, survives git operations
+- **Low workflow friction** — agent runs as your user, all tools work normally
+
+**Cons:**
+- **Shares the host kernel** — a kernel vulnerability bypasses all eBPF
+  enforcement (the fundamental shared-kernel problem)
+- **Path-based policy matching is fragile** — `/proc/self/root` trick,
+  relative paths, symlinks can evade deny rules
+- **No content-based binary identification** — doesn't hash binaries (yet)
+- **Dynamic linker bypass** — `ld-linux` can load binaries via `mmap`
+  without triggering `execve` hooks
+- **Linux only** — eBPF doesn't exist on macOS, Windows, or BSD
+- **Requires root** — loading eBPF programs needs `CAP_BPF` + `CAP_PERFMON`
+- **No credential isolation** — agent runs as your user, can access your
+  home directory (blocked by policy rules, not structurally)
+- **No network isolation** — currently monitors file/exec only (network
+  hooks are a roadmap item)
+- **eBPF verifier bugs exist** — CVE-2021-3490, CVE-2021-31440 proved the
+  verifier is not infallible
+
+**Best suited for:**
+- **Local development machines** where AI coding agents need real filesystem
+  access with real tools — the primary use case
+- **Per-agent monitoring and enforcement** with real-time visibility
+- As the **kernel-level enforcement layer** in a defense-in-depth stack
+- Environments where you need **dynamic, short-lived policies** that change
+  per agent session
+
+```
+Verdict: The best available kernel-level defense for local AI agent
+         supervision. Not unbreakable (nothing is), but provides the right
+         balance of security, visibility, and workflow compatibility for
+         the "coding agent on a dev machine" use case.
+```
+
+---
+
+### 6. Bubblewrap / Seatbelt (Namespace-Based Process Sandboxing)
+
+**What it is:** Lightweight process sandboxing using Linux namespaces
+(Bubblewrap) or macOS sandbox profiles (Seatbelt). Used by Claude Code,
+OpenAI Codex CLI, and Flatpak.
+
+**Pros:**
+- Lightweight — no VM, no kernel modules, no root needed (user namespaces)
+- Filesystem isolation via mount namespace — agent only sees explicitly
+  bind-mounted paths
+- Cross-platform concept (Bubblewrap on Linux, Seatbelt on macOS)
+- Reduces permission prompts by ~84% (Anthropic's measurement)
+- Well-tested in production (Flatpak, browser sandboxes)
+
+**Cons:**
+- **Shares the host kernel** — same shared-kernel attack surface
+- **Bypassable by the agent itself** — Claude Code was observed disabling
+  its own Bubblewrap sandbox to complete tasks
+- **Approval fatigue** — agent requests sandbox override, user clicks "yes"
+  without reading
+- **CVE-2026-25725** — Claude Code's Bubblewrap failed to protect config
+  files that didn't exist at startup
+- No per-agent policy granularity — binary sandboxed-or-not
+- No real-time monitoring or alerting
+
+**Best suited for:**
+- **Default sandbox for CLI AI tools** — better than nothing, easy to ship
+- **Reducing the attack surface of known-good agents** that occasionally
+  need to be unboxed
+- **NOT sufficient as the sole defense** — too easily disabled or bypassed
+
+```
+Verdict: The industry default for local AI tools because it's easy to ship
+         and transparent to users. But it's a thin layer that a reasoning
+         agent can talk its way out of. Should be combined with deeper
+         enforcement (eBPF, network proxy).
+```
+
+---
+
+### 7. WASM Sandboxes (amla-sandbox)
+
+**What it is:** Run agent-generated code inside WebAssembly (QuickJS compiled
+to WASM via wasmtime) where dangerous operations don't exist. Tools are
+explicitly granted via capability tokens.
+
+**Pros:**
+- **Strongest isolation by design** — WASM linear memory is bounds-checked;
+  host memory access is architecturally impossible
+- **Zero infrastructure** — `pip install`, no VM, no root, no kernel support
+- **Cross-platform** — works on macOS, Linux, Windows
+- **Fine-grained tool/API control** — per-tool constraints, call limits,
+  Ed25519-signed capability tokens
+- **No path-based evasion** — real filesystem doesn't exist; `/proc/self/root`
+  trick is meaningless
+- **No shared kernel risk** — agent code never makes syscalls; only 4 WASI
+  calls reach the host
+- Fast warm starts (~0.5ms)
+
+**Cons:**
+- **JavaScript only** — cannot run Python, Rust, Go, shell scripts, or
+  compilers. Cannot `git clone`, `npm install`, or `cargo build`.
+- **No real filesystem** — only an in-memory virtual FS (`/workspace/`, `/tmp/`)
+- **No native module support** — no numpy, pandas, or compiled dependencies
+- **No GPU access** — unsuitable for ML workloads
+- **No infinite loop protection** — buggy code can hang the sandbox
+- **Proprietary WASM binary** — the core sandbox cannot be audited
+- WASM escapes are rare but possible (CVE-2025-68668 in n8n's Pyodide)
+- **Cannot sandbox coding agents** — coding agents need real compilers,
+  real package managers, real test runners
+
+**Best suited for:**
+- **API orchestration agents** — "fetch data from Stripe, transform it,
+  send via Slack" workflows where the agent composes tool calls
+- **Multi-tenant SaaS** where untrusted users submit code that interacts
+  with your APIs
+- **Browser-like sandboxing** for tool-calling agents that don't need
+  native execution
+
+```
+Verdict: Excellent for agents that orchestrate APIs and tools. Useless for
+         agents that need to compile code, run tests, or interact with real
+         filesystems. A fundamentally different tool for a different problem.
+```
+
+---
+
+### 8. gVisor (User-Space Kernel)
+
+**What it is:** Google's user-space kernel ("Sentry") that intercepts all
+syscalls and reimplements them in Go. Only 68 of ~350 syscalls reach the
+host kernel.
+
+**Pros:**
+- **Dramatically reduced kernel attack surface** — 68 host syscalls vs ~350
+- **Written in Go** — memory-safe, no buffer overflows, no use-after-free
+  in the "kernel" layer
+- **Container-compatible** — drop-in replacement for runc; works with Docker
+  and Kubernetes
+- **Proven at scale** — used by Anthropic (Claude cloud), Google Cloud Run
+- Millisecond-level startup (comparable to containers)
+- Runs real Linux binaries — unlike WASM, supports any language and tool
+
+**Cons:**
+- **10-30% I/O overhead** — syscall interception adds latency, especially
+  for filesystem-heavy workloads
+- **Not full hardware isolation** — Sentry is a userspace process on the
+  host kernel; the 68 forwarded syscalls still reach the real kernel
+- **Compatibility gaps** — not all Linux syscalls implemented; some programs
+  may break (especially those using exotic ioctls or /proc features)
+- **Linux only** — no macOS or Windows support
+- **Not practical for local dev** — requires running inside a container;
+  file access to host filesystem requires bind mounts
+- No per-agent policy granularity — isolation is per-container
+- No real-time monitoring dashboard (standard container logging only)
+
+**Best suited for:**
+- **Cloud-hosted AI agent sandboxes** where multiple untrusted agents run
+  concurrently — the primary use case
+- **Multi-tenant SaaS** that needs stronger-than-container isolation without
+  the overhead of full VMs
+- When you need **real Linux binary execution** with a **dramatically
+  reduced kernel attack surface**
+
+```
+Verdict: The sweet spot for cloud AI sandboxing. Stronger than containers,
+         lighter than VMs, runs real Linux binaries. Not practical for local
+         dev workflows, but the right choice for hosted agent platforms.
+         This is why Anthropic chose it for Claude's cloud sandboxes.
+```
+
+---
+
+### 9. Firecracker MicroVMs (Hardware-Level Isolation)
+
+**What it is:** Amazon's lightweight VMM that creates microVMs with separate
+kernels. Hardware virtualization (Intel VT-x / AMD-V) enforces isolation at
+the CPU level.
+
+**Pros:**
+- **Strongest isolation** — completely separate kernel per agent; hardware
+  enforced at the CPU level
+- **Minimal attack surface** — Firecracker is ~50K lines of Rust (vs QEMU's
+  ~1.4M lines of C); only virtio-net, virtio-block, serial, keyboard
+- **Fast boot** — ~125ms (vs seconds for traditional VMs)
+- **Low memory overhead** — <5 MiB per VM
+- **Proven at massive scale** — powers AWS Lambda (billions of invocations)
+- To escape: must exploit guest kernel + Firecracker VMM + host kernel
+  (three independent layers)
+
+**Cons:**
+- **No GPU passthrough** — cannot run ML inference workloads
+- **File sync complexity** — agent works on a VM disk image, not the host
+  filesystem; need bidirectional sync mechanism
+- **Credential forwarding** — SSH agent, git tokens, etc. must be explicitly
+  injected into the VM
+- **~125ms startup latency** — noticeable for interactive workflows
+- **Linux + KVM only** — requires hardware virtualization support
+- **Operational complexity** — managing VM images, networking, storage is
+  significantly harder than running a process
+- **No real-time monitoring at the syscall level** — you'd need Guardian
+  Shell running inside the VM for that
+
+**Best suited for:**
+- **Highest-security cloud sandboxes** — financial services, healthcare,
+  government, or any environment where a kernel exploit is unacceptable
+- **Arbitrary untrusted code execution** — the agent can run anything
+  without risk to the host
+- **Multi-tenant platforms** that sell isolation as a feature (Vercel, AWS)
+- Environments where **startup latency is acceptable** (batch jobs, CI/CD,
+  async agent tasks)
+
+```
+Verdict: The nuclear option. Strongest isolation available, but the
+         operational overhead and file sync complexity make it impractical
+         for local interactive development. Ideal for cloud platforms where
+         isolation is a product requirement and the infrastructure team can
+         manage VM orchestration.
+```
+
+---
+
+### Approach-at-a-Glance
+
+| Approach | Isolation Strength | Workflow Friction | Setup Cost | Maintenance | Best For |
+|----------|-------------------|-------------------|------------|-------------|----------|
+| chmod/ACL | ⚪ Minimal | ⚪ None | ⚪ None | ⚪ None | Not AI agents |
+| Dedicated User + ACL | 🟡 Medium | 🔴 High | 🟡 Medium | 🔴 High | Credential isolation |
+| AppArmor | 🟡 Medium | 🟢 Low | 🟢 Low | 🟢 Low | Server workloads |
+| SELinux | 🟠 High | 🟢 Low | 🔴 Very High | 🔴 High | Regulated servers |
+| **eBPF (Guardian Shell)** | **🟡 Medium** | **🟢 Low** | **🟡 Medium** | **🟢 Low** | **Local dev agents** |
+| Bubblewrap/Seatbelt | 🟡 Medium | 🟢 Low | 🟢 Low | 🟢 Low | CLI tool default |
+| WASM (amla-sandbox) | 🟠 High | 🟡 Medium | 🟢 Low | 🟢 Low | API orchestration |
+| gVisor | 🟠 High | 🟡 Medium | 🟡 Medium | 🟡 Medium | Cloud multi-tenant |
+| Firecracker | 🔴 Highest | 🔴 High | 🔴 High | 🟡 Medium | Cloud high-security |
+
+---
+
+### Decision Flowchart: Which Approach for Your Scenario?
+
+```
+START: What is the agent doing?
+  │
+  ├─► Orchestrating APIs / calling tools (no filesystem needed)
+  │     └─► amla-sandbox (WASM) + capability tokens
+  │
+  ├─► Coding on a dev machine (needs real files, compilers, git)
+  │     │
+  │     ├─► Trusted agent (your own tool, reviewed code)
+  │     │     └─► Guardian Shell (monitor mode) + HITL approval
+  │     │
+  │     ├─► Semi-trusted agent (third-party, some risk)
+  │     │     └─► Guardian Shell (enforce) + network proxy
+  │     │         + dedicated user (for credential isolation)
+  │     │
+  │     └─► Untrusted agent (unknown code, high risk)
+  │           └─► Firecracker/gVisor + Guardian Shell inside VM
+  │               + network proxy + ephemeral workspace
+  │
+  ├─► Cloud platform (multi-tenant, many concurrent agents)
+  │     │
+  │     ├─► Standard security requirements
+  │     │     └─► gVisor + network isolation + credential brokering
+  │     │
+  │     └─► High security (finance, healthcare, government)
+  │           └─► Firecracker + network isolation + credential brokering
+  │               + Guardian Shell inside VM (for monitoring)
+  │
+  └─► Maximum paranoia (adversarial threat model)
+        └─► Air-gapped Firecracker + gVisor + Guardian Shell
+            + network disabled + ephemeral + HITL on every action
+```
+
+---
+
+### Recommended Stacks for Common Scenarios
+
+#### Scenario 1: Solo Developer with Claude Code / Cursor
+
+The developer runs an AI coding agent on their laptop. The agent needs to
+read/write project files, run tests, use git.
+
+```
+Recommended stack:
+  ✅ Guardian Shell (enforce mode) — per-agent deny rules for .ssh, .aws, .env
+  ✅ Network proxy — allowlist github.com, npmjs.org, pypi.org
+  ✅ HITL approval — agent asks before rm, git push, docker run
+  ❌ Firecracker — too much friction for interactive coding
+  ❌ SELinux — overkill, authoring complexity too high
+```
+
+Why: The agent needs seamless access to real tools. Guardian Shell provides
+kernel-level enforcement without breaking the workflow. The network proxy
+prevents data exfiltration even if file access is somehow bypassed.
+
+#### Scenario 2: Startup Running Agents for Customers (Multi-Tenant SaaS)
+
+Each customer's AI agent runs on your cloud infrastructure. Agents execute
+customer-provided code. A compromise must not leak to other customers.
+
+```
+Recommended stack:
+  ✅ gVisor — separate user-space kernel per customer agent
+  ✅ Network proxy — per-customer domain allowlists
+  ✅ Credential brokering — short-lived tokens, never host credentials
+  ✅ Ephemeral workspace — destroy after each session
+  🟡 Guardian Shell inside gVisor (optional) — adds per-agent monitoring
+  ❌ ACLs / dedicated user — doesn't scale to thousands of customers
+```
+
+Why: gVisor gives strong isolation with low overhead. Each customer is in
+their own sandbox. A kernel exploit inside gVisor's Sentry (written in Go)
+doesn't give host access. Ephemeral workspaces prevent persistence.
+
+#### Scenario 3: Financial Services / Healthcare AI Agent
+
+Strict regulatory requirements. Agents process sensitive data. Any breach
+is catastrophic. Auditors need full access logs.
+
+```
+Recommended stack:
+  ✅ Firecracker — hardware-isolated VM per agent session
+  ✅ Guardian Shell inside VM — full audit trail for compliance
+  ✅ Network disabled or strict proxy — only pre-approved endpoints
+  ✅ Credential brokering via STS — time-limited, scoped tokens only
+  ✅ Ephemeral workspace — destroy VM after each session
+  ✅ SELinux on host — MAC on the host system itself
+  ❌ WASM — needs real code execution, not just JS
+```
+
+Why: Firecracker provides the strongest isolation. Guardian Shell inside the
+VM gives the real-time audit trail regulators require. SELinux on the host
+hardens the infrastructure. Nothing persists.
+
+#### Scenario 4: AI Agent That Only Calls APIs (No Code Execution)
+
+The agent reads data from Stripe, transforms it, sends a summary to Slack.
+No filesystem access needed. No compilers or package managers.
+
+```
+Recommended stack:
+  ✅ amla-sandbox (WASM) — agent writes JS to compose tool calls
+  ✅ Capability tokens — per-tool constraints (read-only Stripe, write-only Slack)
+  ✅ Call limits — max 100 API calls per session
+  ❌ Guardian Shell — no syscalls to monitor (everything is tool-mediated)
+  ❌ Firecracker — massive overkill for API composition
+  ❌ ACLs — irrelevant (no real files involved)
+```
+
+Why: amla-sandbox gives the strongest isolation with the least infrastructure.
+The agent literally cannot access anything that isn't explicitly granted via
+a capability token. The real filesystem, network, and kernel don't exist
+from the agent's perspective.
+
+---
 
 ### The Uncomfortable Truth
 
-No single technology provides complete isolation for AI agents. The kernel
-developer's critique is valid — sharing a kernel is an inherent risk. But
-for local development workflows, MicroVMs add too much friction. The
-pragmatic approach is **defense-in-depth**: multiple overlapping layers,
-each catching what the others miss.
+No single technology provides complete isolation for AI agents.
 
-Guardian Shell's value is being the **real-time, kernel-level monitoring
-and enforcement layer** that provides visibility and control over what
-AI agents do on the host system — while acknowledging that it should be
-one layer in a broader security stack, not the only one.
+The kernel developer's critique is valid — sharing a kernel is an inherent
+risk. But for local development workflows, MicroVMs add too much friction.
+For cloud platforms, OS-level sandboxing alone is too weak. For API agents,
+most of these tools are irrelevant.
+
+**The answer is always layers.** Each layer catches what the others miss:
+
+| Layer | Catches | Missed by |
+|-------|---------|-----------|
+| Network proxy | Data exfiltration via any channel | eBPF (no network hooks yet) |
+| eBPF (Guardian Shell) | Per-agent file/exec at syscall level | ACLs, namespace escapes |
+| HITL approval | Semantic attacks that look legitimate | All automated tools |
+| Ephemeral workspace | Persistent threats, accumulated artifacts | All runtime tools |
+| Separate kernel (VM) | Kernel exploits | All OS-level tools |
+
+**No single layer is unbreakable. The point is that an attacker must break
+ALL of them simultaneously — and that's exponentially harder than breaking
+any one.**
+
+Guardian Shell's value is being the **real-time, kernel-level monitoring and
+enforcement layer** that provides visibility and control over what AI agents
+do on the host system — while acknowledging that it should be one layer in
+a broader security stack, not the only one.
+
+### For Guardian Shell's Roadmap
+
+Based on this analysis, the highest-impact improvements would be:
+
+**Short-term:**
+1. **Path canonicalization** — resolve symlinks and `/proc/self/root` before
+   policy evaluation to close the most obvious evasion vector
+2. **Network monitoring** — add eBPF hooks for `connect()` and `sendto()` to
+   detect data exfiltration (the biggest current gap)
+3. **Binary hash checking** — optional SHA-256 content-based identification
+   for exec enforcement (inspired by Veto)
+
+**Medium-term:**
+4. **Dynamic linker monitoring** — hook `mmap` with `PROT_EXEC` to detect
+   binaries loaded via `ld-linux` instead of `execve`
+5. **Integration with gVisor/Firecracker** — provide Guardian Shell as the
+   monitoring layer inside a microVM for defense-in-depth
+6. **API-level tool control** — integrate with proxy-based approaches to
+   monitor and restrict API calls, not just syscalls
 
 ---
 

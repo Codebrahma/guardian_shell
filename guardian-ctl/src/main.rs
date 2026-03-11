@@ -49,6 +49,25 @@ enum Commands {
         #[arg(short, long)]
         duration: u64,
     },
+
+    /// Request permission for a resource (waits for human approval via dashboard)
+    RequestPermission {
+        /// Agent name
+        #[arg(short, long)]
+        name: String,
+
+        /// Resource type: "file" or "exec"
+        #[arg(short = 't', long, default_value = "exec")]
+        resource_type: String,
+
+        /// Resource path (e.g., "/usr/bin/grep" or "/etc/passwd")
+        #[arg(short, long)]
+        path: String,
+
+        /// Human-readable justification for the request
+        #[arg(short, long)]
+        justification: Option<String>,
+    },
 }
 
 // =============================================================================
@@ -57,6 +76,8 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    let is_permission_request = matches!(&cli.command, Commands::RequestPermission { .. });
 
     let request = match &cli.command {
         Commands::List => IpcRequest::ListAgents,
@@ -72,9 +93,20 @@ fn main() -> Result<()> {
             path: path.clone(),
             duration_secs: *duration,
         },
+        Commands::RequestPermission {
+            name,
+            resource_type,
+            path,
+            justification,
+        } => IpcRequest::RequestPermission {
+            agent_name: name.clone(),
+            resource_type: resource_type.clone(),
+            resource_path: path.clone(),
+            justification: justification.clone(),
+        },
     };
 
-    let response = send_request(&cli.socket, &request)?;
+    let response = send_request(&cli.socket, &request, is_permission_request)?;
 
     match response {
         IpcResponse::Ack => {
@@ -114,6 +146,19 @@ fn main() -> Result<()> {
                 }
             }
         }
+        IpcResponse::PermissionDecision {
+            approved,
+            reason,
+            grant_duration_secs,
+        } => {
+            if approved {
+                let dur = grant_duration_secs.unwrap_or(0);
+                println!("APPROVED: {} (granted for {}s)", reason, dur);
+            } else {
+                println!("DENIED: {}", reason);
+                std::process::exit(1);
+            }
+        }
     }
 
     Ok(())
@@ -123,15 +168,25 @@ fn main() -> Result<()> {
 // IPC Client
 // =============================================================================
 
-fn send_request(socket_path: &str, request: &IpcRequest) -> Result<IpcResponse> {
+fn send_request(
+    socket_path: &str,
+    request: &IpcRequest,
+    long_wait: bool,
+) -> Result<IpcResponse> {
     let mut stream = UnixStream::connect(socket_path)
         .with_context(|| format!(
             "Failed to connect to Guardian daemon at '{}'. Is it running?",
             socket_path
         ))?;
 
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    // Permission requests may wait up to 180s (daemon timeout is 120s)
+    let read_timeout = if long_wait { 180 } else { 10 };
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(read_timeout)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+
+    if long_wait {
+        eprintln!("Waiting for human approval via dashboard (up to 120s)...");
+    }
 
     ipc::send_message(&mut stream, request)?;
     let response: IpcResponse = ipc::recv_message(&mut stream)?;

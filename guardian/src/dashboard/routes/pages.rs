@@ -90,6 +90,40 @@ struct AlertsTemplate {
 #[template(path = "events.html")]
 struct EventsTemplate;
 
+#[derive(Template)]
+#[template(path = "requests.html")]
+#[allow(dead_code)]
+struct RequestsTemplate {
+    pending: Vec<PendingRequestInfo>,
+    resolved: Vec<ResolvedRequestInfo>,
+}
+
+#[allow(dead_code)]
+struct PendingRequestInfo {
+    id: u64,
+    agent_name: String,
+    resource_type: String,
+    resource_path: String,
+    justification: String,
+    timeout_secs: u64,
+    elapsed_secs: u64,
+    requested_at: String,
+}
+
+#[allow(dead_code)]
+struct ResolvedRequestInfo {
+    id: u64,
+    agent_name: String,
+    resource_type: String,
+    resource_path: String,
+    justification: String,
+    requested_at: String,
+    resolved_at: String,
+    approved: bool,
+    reason: String,
+    grant_duration_secs: u64,
+}
+
 // =============================================================================
 // Page Handlers
 // =============================================================================
@@ -227,5 +261,47 @@ pub async fn alerts(
 
 pub async fn events() -> Html<String> {
     let tmpl = EventsTemplate;
+    Html(tmpl.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+pub async fn requests(
+    State(state): State<Arc<DashboardState>>,
+) -> Html<String> {
+    let s = state.ipc_state.lock().await;
+
+    let pending: Vec<PendingRequestInfo> = s
+        .pending_permissions
+        .iter()
+        .map(|p| PendingRequestInfo {
+            id: p.id,
+            agent_name: p.agent_name.clone(),
+            resource_type: p.resource_type.clone(),
+            resource_path: p.resource_path.clone(),
+            justification: p.justification.clone().unwrap_or_default(),
+            timeout_secs: p.timeout_secs,
+            elapsed_secs: p.requested_at.elapsed().as_secs(),
+            requested_at: p.requested_at_utc.format("%H:%M:%S").to_string(),
+        })
+        .collect();
+
+    let resolved: Vec<ResolvedRequestInfo> = s
+        .resolved_permissions
+        .iter()
+        .rev()
+        .map(|r| ResolvedRequestInfo {
+            id: r.id,
+            agent_name: r.agent_name.clone(),
+            resource_type: r.resource_type.clone(),
+            resource_path: r.resource_path.clone(),
+            justification: r.justification.clone().unwrap_or_default(),
+            requested_at: r.requested_at.clone(),
+            resolved_at: r.resolved_at.clone(),
+            approved: r.approved,
+            reason: r.reason.clone(),
+            grant_duration_secs: r.grant_duration_secs.unwrap_or(0),
+        })
+        .collect();
+
+    let tmpl = RequestsTemplate { pending, resolved };
     Html(tmpl.render().unwrap_or_else(|e| format!("Template error: {}", e)))
 }

@@ -8,21 +8,22 @@ on this project on a Linux machine.
 Guardian Shell is a Linux security tool that uses eBPF to monitor and restrict
 LLM agent activities. It's built with Rust and the Aya eBPF framework.
 
-**Current state: Phase 5 - Dashboard & UI (compiled on Linux)**
+**Current state: Phase 6 - Interactive Permission Requests (compiled on Linux)**
 
-Phase 5 adds (on top of Phase 4):
-- **Web dashboard**: Real-time embedded dashboard with axum + htmx + Alpine.js + TailwindCSS
-- **Live event stream**: SSE-powered real-time event feed with severity/action filtering
-- **Agent management UI**: View configured agents, stop cgroup agents, grant temporary access
-- **Policy editor**: Edit file access and exec policies per agent from the browser
-- **Alert config editor**: Configure all alerting outputs (JSON, webhook, Slack, email, Prometheus)
-- **Status overview**: Auto-refreshing cards showing mode, agent count, event totals, blocked count
-- **Config write-back**: Dashboard saves config changes to disk as valid TOML
-- **Config reload**: Reload config from dashboard without SIGHUP
+Phase 6 adds (on top of Phase 5):
+- **Interactive permission requests**: Agents can ask for temporary access via `guardian-ctl request-permission`
+- **Real-time approval workflow**: Permission request banners appear on all dashboard pages via SSE
+- **Dedicated requests page**: `/requests` page with pending requests table and resolved history
+- **Long-poll IPC**: `tokio::sync::oneshot` channels for agent-blocks-until-human-decides pattern
+- **SSE stream merging**: Alert events and permission events merged into single SSE endpoint
+- **Exec grant support**: Temporary grants now support both file access and exec command types
+- **Permission audit trail**: Last 100 resolved requests kept in memory with full metadata
+- **Auto-deny timeout**: 120-second timeout with automatic denial (fail-secure)
 
-Architecture: Dashboard runs as an additional axum HTTP server (tokio task) on port 8080.
-SSE events are broadcast via `tokio::sync::broadcast` channel from the existing AlertSender.
-Templates use askama (compile-time checked). Static files embedded via rust-embed for single binary.
+Architecture: Permission requests use oneshot channels for long-poll IPC. Agent sends request
+via Unix socket, daemon creates oneshot channel and broadcasts to dashboard via `tokio::sync::broadcast`.
+Human approves/denies in browser, decision sent back via oneshot, agent unblocks immediately.
+SSE endpoint uses `tokio_stream::StreamExt::merge` to combine two broadcast streams.
 
 ## Project Structure
 
@@ -46,20 +47,21 @@ guardian_shell/
 ├── guardian/                   # Userspace daemon
 │   ├── Cargo.toml
 │   ├── askama.toml             # Template config
-│   ├── templates/              # Phase 5: Askama HTML templates
-│   │   ├── base.html           # Base layout (nav, head, TailwindCSS/htmx/Alpine.js)
+│   ├── templates/              # Phase 5/6: Askama HTML templates
+│   │   ├── base.html           # Base layout (nav, head, TailwindCSS/htmx/Alpine.js, permission banner)
 │   │   ├── index.html          # Dashboard overview with status cards + recent events
 │   │   ├── events.html         # Live SSE event stream with filtering
-│   │   ├── agents.html         # Agent management (list, stop, grant)
+│   │   ├── agents.html         # Agent management (list, stop, grant with exec type)
 │   │   ├── policy.html         # Policy editor (per-agent allow/deny rules)
-│   │   └── alerts.html         # Alert configuration editor
+│   │   ├── alerts.html         # Alert configuration editor
+│   │   └── requests.html       # Phase 6: Permission requests (pending + resolved history)
 │   ├── static/                 # Phase 5: Static assets (embedded via rust-embed)
 │   │   ├── app.js              # Custom JavaScript
 │   │   └── app.css             # Custom CSS
 │   └── src/
 │       ├── main.rs             # Entry point, eBPF loading, event loop, IPC server
 │       ├── config.rs           # TOML parsing, policy engine, alerting + dashboard config
-│       ├── ipc.rs              # IPC server, agent registration, cgroup lifecycle
+│       ├── ipc.rs              # IPC server, agent registration, cgroup lifecycle, permission requests
 │       ├── alerting/           # Phase 4: Alerting & Integration
 │       │   ├── mod.rs          # AlertManager, AlertSender, dedup, dispatch, broadcast
 │       │   ├── json_log.rs     # Structured JSONL logging with rotation
@@ -72,17 +74,17 @@ guardian_shell/
 │           ├── state.rs        # DashboardState (shared refs to IPC, alerts, event bus)
 │           └── routes/
 │               ├── mod.rs      # Route module declarations
-│               ├── pages.rs    # Page handlers (/, /agents, /policy, /alerts, /events)
-│               ├── api.rs      # API handlers (stop, grant, policy update, alerts, reload)
-│               └── sse.rs      # SSE event stream endpoint
+│               ├── pages.rs    # Page handlers (/, /agents, /policy, /alerts, /events, /requests)
+│               ├── api.rs      # API handlers (stop, grant, policy update, alerts, reload, permissions)
+│               └── sse.rs      # SSE event stream endpoint (merged alert + permission streams)
 │
 ├── guardian-launch/            # Agent launcher with cgroup isolation (Phase 3)
 │   ├── Cargo.toml
 │   └── src/main.rs             # Creates cgroup, registers, exec's agent
 │
-├── guardian-ctl/               # CLI for managing agents (Phase 3)
+├── guardian-ctl/               # CLI for managing agents (Phase 3+6)
 │   ├── Cargo.toml
-│   └── src/main.rs             # list/stop/grant commands
+│   └── src/main.rs             # list/stop/grant/request-permission commands
 │
 ├── configs/                    # Preset configuration templates (Phase 4)
 │   ├── minimal.toml            # Bare minimum, monitor-only
@@ -247,8 +249,13 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | broadcast channel for SSE | Standard tokio pattern. Lagged SSE clients skip events rather than blocking producers. |
 | Manual TOML serialization | Preserves readable config format. serde_toml round-trips lose comments and ordering. |
 | Dashboard behind `enabled` flag | Zero overhead when disabled. No axum server spawned. |
+| Oneshot channel for permission long-poll | Agent blocks on `oneshot::Receiver`, dashboard resolves via `oneshot::Sender`. No polling loops. |
+| SSE stream merging | `tokio_stream::StreamExt::merge` combines alert + permission broadcast streams into single SSE endpoint. |
+| Alpine.js global permission store | Defined in `base.html`, available on every page. Banners appear everywhere without code duplication. |
+| 120s auto-deny timeout | Fail-secure: unanswered requests are denied. Prevents agents from hanging indefinitely. |
+| Dual data sources (fetch + SSE) | HTTP fetch catches pre-existing pending requests; SSE delivers new ones in real time. |
 
-## Known Limitations (Phase 5)
+## Known Limitations (Phase 6)
 
 1. **Relative paths not resolved**: eBPF captures whatever path the syscall receives
 2. **Only hooks `openat`**: Doesn't cover `open` (rare on modern Linux), `openat2`,
@@ -270,6 +277,10 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 15. **Config write-back loses comments**: Dashboard saves config as clean TOML, original comments are removed
 16. **Dashboard has no authentication**: Bind to localhost only; use a reverse proxy for remote access with auth
 17. **TailwindCSS/htmx/Alpine.js loaded from CDN**: Dashboard requires internet access for first load (or bundle locally)
+18. **Permission request timeout is fixed at 120s**: Not configurable per-request or per-agent
+19. **Permission audit trail is in-memory only**: Last 100 resolved requests; lost on daemon restart
+20. **No auto-approve rules for permission requests**: Every request requires manual human approval
+21. **Permission requests require dashboard enabled**: Auto-denied when dashboard is disabled
 
 ## Build Notes
 
@@ -316,6 +327,18 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 - **Config reload**: reload config from dashboard UI
 - **Prometheus metrics** endpoint integrated into dashboard server (`/metrics`)
 - **Single binary**: templates compiled in, static files embedded via rust-embed
+
+### Phase 6: Interactive Permission Requests ✅ DONE
+- **Interactive permission requests** via `guardian-ctl request-permission`
+- **Long-poll IPC** with `tokio::sync::oneshot` channels (agent blocks waiting for human)
+- **Real-time dashboard notifications**: permission banners on every page via SSE
+- **Dedicated `/requests` page**: pending requests table + resolved history audit trail
+- **SSE stream merging**: alert events + permission events on single SSE connection
+- **Approve/deny with grant duration**: 1 min to 1 hour configurable grant duration
+- **120-second auto-deny timeout**: fail-secure, unanswered requests denied
+- **Exec grant support**: temporary grants for both file access and exec commands
+- **Alpine.js permission store**: global store with countdown timer, badge counter
+- **Resolved history**: last 100 resolved requests with full metadata
 
 ## Dependency Versions
 

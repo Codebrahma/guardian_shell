@@ -395,6 +395,68 @@ label {
 }
 .channel-toggle span { font-size: 12px; color: var(--text-secondary); }
 
+/* ─── Permission Request Banner ─── */
+.perm-banner {
+  background: var(--bg-secondary);
+  border: 1px solid var(--warning);
+  border-left: 4px solid var(--warning);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  animation: perm-slide-in 0.3s ease;
+}
+@keyframes perm-slide-in {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.perm-banner-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px; flex-wrap: wrap; gap: 8px;
+}
+.perm-banner-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 600; color: var(--text-primary);
+}
+.perm-banner-icon {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--warning-bg); color: var(--warning);
+  border-radius: 50%; font-size: 14px; font-weight: 700;
+  flex-shrink: 0;
+}
+.perm-banner-timer {
+  font-size: 13px; font-weight: 600; color: var(--warning);
+  background: var(--warning-bg);
+  padding: 3px 10px; border-radius: 10px;
+  white-space: nowrap;
+}
+.perm-banner-body { margin-bottom: 12px; }
+.perm-banner-detail {
+  font-size: 13px; color: var(--text-secondary);
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.perm-banner-reason {
+  font-size: 12px; color: var(--text-muted);
+  margin-top: 6px; font-style: italic;
+}
+.perm-banner-actions {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.perm-banner-select {
+  width: 90px; padding: 4px 8px; font-size: 12px;
+  background: var(--bg-primary); border: 1px solid var(--border);
+  color: var(--text-primary); border-radius: var(--radius);
+}
+
+/* ─── Nav badge (pending count) ─── */
+.nav-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  background: var(--warning); color: #000;
+  border-radius: 9px; font-size: 11px; font-weight: 700;
+  margin-left: auto;
+}
+
 /* ─── Agent actions ─── */
 .agent-actions {
   display: flex; align-items: center; gap: 8px; position: relative;

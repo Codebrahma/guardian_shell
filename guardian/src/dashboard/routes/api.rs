@@ -128,6 +128,7 @@ pub async fn stop_agent(
 
 #[derive(Deserialize)]
 pub struct GrantForm {
+    pub grant_type: String,
     pub path: String,
     pub duration: u64,
 }
@@ -152,34 +153,67 @@ pub async fn grant_access(
     let is_prefix = form.path.ends_with("/**");
     let expires_at = std::time::Instant::now() + std::time::Duration::from_secs(form.duration);
 
-    // Add to BPF allow maps
-    if let Some(ref mut policy_maps) = ipc.policy_maps {
-        if is_prefix {
-            let prefix = format!("{}/", &form.path[..form.path.len() - 3]);
-            let key = crate::ipc::path_to_lpm_key_pub(prefix.as_bytes());
-            let _ = policy_maps.allow_prefixes.insert(&key, 1, 0);
-        } else {
-            let key = crate::ipc::path_to_map_key_pub(form.path.as_bytes());
-            let _ = policy_maps.allow_exact.insert(key, 1, 0);
+    if form.grant_type == "exec" {
+        // Exec grant: add command to agent's exec policy allow list temporarily
+        if let Some(agent_cfg) = ipc.config.agents.iter_mut().find(|a| a.name == name) {
+            let exec = agent_cfg.exec_policy.get_or_insert(crate::config::ExecPolicy {
+                default: "deny".to_string(),
+                allow: vec![],
+                deny: vec![],
+            });
+            if !exec.allow.contains(&form.path) {
+                exec.allow.push(form.path.clone());
+            }
         }
+
+        ipc.grants.push(crate::ipc::TemporaryGrant {
+            agent_name: name.clone(),
+            path: form.path.clone(),
+            is_prefix,
+            grant_type: crate::ipc::GrantType::Exec,
+            expires_at,
+        });
+
+        info!(
+            "Dashboard: granted '{}' exec access to '{}' for {}s",
+            name, form.path, form.duration
+        );
+
+        Html(format!(
+            r#"<div class="toast-success">Granted '{}' exec access to '{}' for {}s</div>"#,
+            name, form.path, form.duration
+        ))
+    } else {
+        // File access grant: add to BPF allow maps
+        if let Some(ref mut policy_maps) = ipc.policy_maps {
+            if is_prefix {
+                let prefix = format!("{}/", &form.path[..form.path.len() - 3]);
+                let key = crate::ipc::path_to_lpm_key_pub(prefix.as_bytes());
+                let _ = policy_maps.allow_prefixes.insert(&key, 1, 0);
+            } else {
+                let key = crate::ipc::path_to_map_key_pub(form.path.as_bytes());
+                let _ = policy_maps.allow_exact.insert(key, 1, 0);
+            }
+        }
+
+        ipc.grants.push(crate::ipc::TemporaryGrant {
+            agent_name: name.clone(),
+            path: form.path.clone(),
+            is_prefix,
+            grant_type: crate::ipc::GrantType::FileAccess,
+            expires_at,
+        });
+
+        info!(
+            "Dashboard: granted '{}' file access to '{}' for {}s",
+            name, form.path, form.duration
+        );
+
+        Html(format!(
+            r#"<div class="toast-success">Granted '{}' file access to '{}' for {}s</div>"#,
+            name, form.path, form.duration
+        ))
     }
-
-    ipc.grants.push(crate::ipc::TemporaryGrant {
-        agent_name: name.clone(),
-        path: form.path.clone(),
-        is_prefix,
-        expires_at,
-    });
-
-    info!(
-        "Dashboard: granted '{}' access to '{}' for {}s",
-        name, form.path, form.duration
-    );
-
-    Html(format!(
-        r#"<div class="toast-success">Granted '{}' access to '{}' for {}s</div>"#,
-        name, form.path, form.duration
-    ))
 }
 
 // =============================================================================
@@ -402,6 +436,99 @@ pub async fn update_alerts(
     }
 
     Html(r#"<div class="toast-success">Alerting configuration saved. Note: changes to alerting outputs take effect on next daemon restart.</div>"#.to_string())
+}
+
+// =============================================================================
+// Permission Request Management
+// =============================================================================
+
+#[derive(Deserialize)]
+pub struct ApproveForm {
+    pub duration: Option<u64>,
+}
+
+pub async fn approve_permission(
+    State(state): State<Arc<DashboardState>>,
+    Path(id): Path<u64>,
+    Form(form): Form<ApproveForm>,
+) -> Html<String> {
+    let duration = form.duration.unwrap_or(600);
+
+    match crate::ipc::resolve_permission(
+        &state.ipc_state,
+        id,
+        true,
+        "Approved by user".to_string(),
+        Some(duration),
+    )
+    .await
+    {
+        Ok(()) => Html(format!(
+            r#"<div class="toast-success">Permission #{} approved ({}s grant)</div>"#,
+            id, duration
+        )),
+        Err(msg) => Html(format!(
+            r#"<div class="toast-error">{}</div>"#,
+            msg
+        )),
+    }
+}
+
+pub async fn deny_permission(
+    State(state): State<Arc<DashboardState>>,
+    Path(id): Path<u64>,
+) -> Html<String> {
+    match crate::ipc::resolve_permission(
+        &state.ipc_state,
+        id,
+        false,
+        "Denied by user".to_string(),
+        None,
+    )
+    .await
+    {
+        Ok(()) => Html(format!(
+            r#"<div class="toast-success">Permission #{} denied</div>"#,
+            id
+        )),
+        Err(msg) => Html(format!(
+            r#"<div class="toast-error">{}</div>"#,
+            msg
+        )),
+    }
+}
+
+/// JSON endpoint: list pending permission requests.
+pub async fn list_pending_permissions(
+    State(state): State<Arc<DashboardState>>,
+) -> impl IntoResponse {
+    let s = state.ipc_state.lock().await;
+    let pending: Vec<serde_json::Value> = s
+        .pending_permissions
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "agent_name": p.agent_name,
+                "resource_type": p.resource_type,
+                "resource_path": p.resource_path,
+                "justification": p.justification,
+                "timeout_secs": p.timeout_secs,
+                "requested_at": p.requested_at_utc.to_rfc3339(),
+                "elapsed_secs": p.requested_at.elapsed().as_secs(),
+            })
+        })
+        .collect();
+    axum::Json(pending)
+}
+
+/// JSON endpoint: list resolved permission requests (audit trail).
+pub async fn list_resolved_permissions(
+    State(state): State<Arc<DashboardState>>,
+) -> impl IntoResponse {
+    let s = state.ipc_state.lock().await;
+    let resolved: Vec<_> = s.resolved_permissions.iter().rev().cloned().collect();
+    axum::Json(resolved)
 }
 
 // =============================================================================

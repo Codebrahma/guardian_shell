@@ -2,14 +2,15 @@
 
 Guardian Shell is a Linux security tool that monitors and enforces file access policies for LLM agents (Claude Code, OpenAI Codex, Aider, OpenClaw, Cursor, etc.) using eBPF. It hooks into the kernel's file-open syscall, evaluates every file access against your policy rules in real time, and can block unauthorized access at the kernel level.
 
-**Current mode: Phase 5 — Dashboard, UI & Full Application Control**
+**Current mode: Phase 6 — Interactive Permission Requests**
 
-Guardian Shell now provides five layers of protection:
+Guardian Shell now provides six layers of protection:
 - **Phase 1**: Monitor-only file access logging via eBPF tracepoints
 - **Phase 2**: Kernel-level enforcement via LSM BPF hooks (blocks denied access)
 - **Phase 3**: Unspoofable cgroup-based agent identity, resource limits, launcher wrapper, and time-based access grants
 - **Phase 4**: Structured JSON logging, webhook/Slack/email alerts, Prometheus metrics, and config validation
 - **Phase 5**: Web dashboard with real-time event streaming, policy editor, agent management, and full application control
+- **Phase 6**: Interactive permission requests — agents can ask for temporary access, humans approve/deny via dashboard in real time
 
 ---
 
@@ -37,6 +38,7 @@ Guardian Shell now provides five layers of protection:
    - [Listing Agents](#listing-agents)
    - [Stopping Agents](#stopping-agents)
    - [Temporary Access Grants](#temporary-access-grants)
+   - [Requesting Permissions (Phase 6)](#requesting-permissions-phase-6)
 8. [Alerting & Integration (Phase 4)](#alerting--integration-phase-4)
    - [Alerting Configuration](#alerting-configuration)
    - [JSON Logging for SIEM](#json-logging-for-siem)
@@ -55,6 +57,7 @@ Guardian Shell now provides five layers of protection:
    - [Managing Agents from Dashboard](#managing-agents-from-dashboard)
    - [Editing Policies from Dashboard](#editing-policies-from-dashboard)
    - [Configuring Alerts from Dashboard](#configuring-alerts-from-dashboard)
+   - [Permission Requests (Phase 6)](#permission-requests-phase-6)
    - [Dashboard Security](#dashboard-security)
 10. [Understanding the Output](#understanding-the-output)
    - [Startup Messages](#startup-messages)
@@ -612,7 +615,9 @@ This sends `SIGTERM` to every process in the agent's cgroup, then cleans up the 
 
 ### Temporary Access Grants
 
-Sometimes an agent needs temporary access to a sensitive resource — for example, reading AWS credentials during a deployment, or accessing an SSH key for a git push.
+Sometimes an agent needs temporary access to a sensitive resource — for example, reading AWS credentials during a deployment, accessing an SSH key for a git push, or running a specific command like `grep` or `curl`.
+
+**File access grants:**
 
 ```bash
 # Grant access to AWS credentials for 5 minutes
@@ -624,12 +629,93 @@ sudo guardian-ctl grant --name codex --path "/home/user/.ssh/id_rsa" --duration 
 
 After the duration expires, the allow rule is automatically removed from the kernel BPF maps. Access is blocked again without any manual intervention.
 
+**Exec command grants (via dashboard):**
+
+The dashboard's Agents page supports granting temporary exec access from the browser. Click the **Grant** button on any active cgroup agent and select "Exec Command" as the grant type:
+
+- Select **Exec Command** from the Grant Type dropdown
+- Enter the command path (e.g., `/usr/bin/grep`)
+- Set the duration (default: 600 seconds / 10 minutes)
+- Click **Grant Exec Access**
+
+This adds the command to the agent's exec policy allow list for the specified duration. After expiry, the command is automatically removed from the allow list.
+
 **How temporary grants work internally:**
-1. `guardian-ctl` sends a grant request to the daemon via Unix socket
-2. The daemon adds the path to the ALLOW_EXACT or ALLOW_PREFIXES BPF map
-3. The daemon stores the grant with an expiry timestamp
-4. A background task checks every 5 seconds and removes expired grants
-5. Once removed from the BPF map, the kernel blocks access again immediately
+1. `guardian-ctl` sends a grant request to the daemon via Unix socket (or the dashboard sends via HTTP API)
+2. For **file grants**: the daemon adds the path to the ALLOW_EXACT or ALLOW_PREFIXES BPF map
+3. For **exec grants**: the daemon adds the command to the agent's exec policy allow list in the config
+4. The daemon stores the grant with an expiry timestamp
+5. A background task checks every 5 seconds and removes expired grants
+6. For file grants: once removed from the BPF map, the kernel blocks access again immediately
+7. For exec grants: the command is removed from the config allow list, restoring the original policy
+
+### Requesting Permissions (Phase 6)
+
+Phase 6 adds **interactive permission requests** — an agent can ask the daemon for access to a resource, and the request appears as a real-time notification in the web dashboard for a human to approve or deny.
+
+```bash
+# Request permission to run curl (waits for human approval)
+sudo guardian-ctl request-permission \
+  --name my-agent \
+  --resource-type exec \
+  --path /usr/bin/curl \
+  --justification "Need to fetch config from internal API"
+```
+
+Output while waiting:
+```
+Waiting for human approval via dashboard (up to 120s)...
+```
+
+If approved:
+```
+APPROVED: Approved by user (granted for 600s)
+```
+
+If denied or timed out:
+```
+DENIED: Denied by user
+```
+
+**Options:**
+
+| Flag | Short | Required | Default | Description |
+|------|-------|----------|---------|-------------|
+| `--name` | `-n` | Yes | — | Agent name (must match a configured or registered agent) |
+| `--resource-type` | `-t` | No | `exec` | Resource type: `file` or `exec` |
+| `--path` | `-p` | Yes | — | Resource path (e.g., `/usr/bin/curl`, `/etc/shadow`) |
+| `--justification` | `-j` | No | — | Human-readable reason for the request |
+
+**How it works:**
+
+1. `guardian-ctl` sends a `RequestPermission` IPC message to the daemon
+2. The daemon creates a pending request with a 120-second timeout
+3. A notification banner appears on the dashboard (all pages) via SSE
+4. The human sees the agent name, resource path, justification, and a countdown timer
+5. The human selects a grant duration (1 min to 1 hour) and clicks **Approve** or **Deny**
+6. The daemon sends the decision back to `guardian-ctl`, which prints the result and exits
+
+**Exit codes:**
+- `0`: Approved — the agent now has temporary access for the granted duration
+- `1`: Denied or timed out — access was not granted
+
+**Using in scripts:**
+
+```bash
+# Request permission, then proceed only if approved
+if sudo guardian-ctl request-permission \
+    --name my-agent -t exec -p /usr/bin/curl \
+    -j "Fetching deployment config"; then
+  curl https://internal-api/config > /tmp/config.json
+else
+  echo "Permission denied, skipping curl"
+fi
+```
+
+**Requirements:**
+- The web dashboard must be enabled (`[dashboard] enabled = true` in config)
+- If the dashboard is disabled, requests are auto-denied immediately
+- The request times out after 120 seconds with an automatic denial if no human responds
 
 ---
 
@@ -915,7 +1001,7 @@ On startup you'll see:
 
 ### Dashboard Pages
 
-The dashboard has six pages accessible from the sidebar navigation:
+The dashboard has seven pages accessible from the sidebar navigation:
 
 | Page | Path | Description |
 |------|------|-------------|
@@ -923,6 +1009,7 @@ The dashboard has six pages accessible from the sidebar navigation:
 | **Live Events** | `/events` | Full real-time event stream with severity/action filtering |
 | **Agents** | `/agents` | Configured agents table + active cgroup agents with stop/grant |
 | **Policy Editor** | `/policy` | Per-agent file access and exec policy editing |
+| **Requests** | `/requests` | Permission request management — pending requests + resolved history (Phase 6) |
 | **Alert Config** | `/alerts` | Toggle and configure all alerting outputs |
 | **Metrics** | `/metrics` | Prometheus metrics endpoint (text format) |
 
@@ -991,7 +1078,10 @@ The **Agents** page (`/agents`) shows two tables:
 **Active Cgroup Agents** — agents registered via `guardian-launch`:
 - Name, cgroup path, cgroup ID, process count, uptime
 - **Stop** button: sends SIGTERM to all processes in the cgroup (with confirmation dialog)
-- **Grant** button: opens a form to grant temporary access to a path with a duration in seconds
+- **Grant** button: opens a form to grant temporary access with two grant types:
+  - **File Access**: grants access to a file path (added to BPF allow maps). Example: `/home/user/.aws/**` for 5 minutes.
+  - **Exec Command**: grants permission to run a command (added to agent's exec policy allow list). Example: `/usr/bin/grep` for 10 minutes.
+  - Default duration is 600 seconds (10 minutes). After the duration expires, the grant is automatically removed.
 
 These actions are equivalent to `guardian-ctl stop` and `guardian-ctl grant` but accessible from the browser.
 
@@ -1028,6 +1118,52 @@ The **Alert Config** page (`/alerts`) lets you configure all alerting outputs:
 - **Prometheus**: listen address
 
 Changes are saved to the config file on disk. Note: alerting output changes (webhook URLs, SMTP settings, etc.) require a daemon restart to take effect because the `AlertManager` and its connections are initialized once at startup.
+
+### Permission Requests (Phase 6)
+
+Phase 6 adds interactive permission requests to the dashboard. When an agent requests permission (via `guardian-ctl request-permission`), a notification banner appears at the top of **every dashboard page** in real time.
+
+#### Permission Banner
+
+The banner shows:
+- **Agent name** — which agent is asking
+- **Resource type** — `EXEC` (purple badge) or `FILE` (blue badge)
+- **Resource path** — the exact path being requested (e.g., `/usr/bin/curl`)
+- **Justification** — the agent's reason for the request
+- **Countdown timer** — seconds remaining before auto-denial (120s)
+- **Duration selector** — how long to grant access (1 min / 5 min / 10 min / 30 min / 1 hour)
+- **Approve** and **Deny** buttons
+
+The banner slides in with an animation and is visible on every page — you don't need to navigate to a specific page to see permission requests.
+
+#### Requests Page
+
+The **Requests** page (`/requests`) provides a dedicated view with two tables:
+
+**Pending Requests:**
+- All currently-waiting permission requests with full details
+- Approve/deny actions with duration selector
+- Shows elapsed waiting time vs timeout
+
+**Resolved History:**
+- Last 100 resolved requests (approved, denied, or timed out)
+- Shows decision, reason, and grant duration
+- Scrollable for audit review
+
+#### Sidebar Badge
+
+The "Requests" navigation link shows a yellow badge with the count of pending requests. The badge appears/disappears in real time as requests arrive and are resolved.
+
+#### How It Works
+
+1. Agent sends `guardian-ctl request-permission --name my-agent --path /usr/bin/curl`
+2. The daemon broadcasts a permission event via SSE to all connected browsers
+3. The Alpine.js store on every page receives the event and shows the banner
+4. The human clicks Approve (with selected duration) or Deny
+5. The dashboard sends the decision via API, the daemon relays it to the waiting agent
+6. The agent receives the response and either proceeds (approved) or handles denial
+
+Requests that are not resolved within 120 seconds are automatically denied.
 
 ### Dashboard Security
 
@@ -2038,6 +2174,10 @@ cargo install bpf-linker
 | **Dashboard CDN dependency** | First load requires internet for TailwindCSS/htmx/Alpine.js | Bundle libraries locally via rust-embed |
 | **Policy edits don't update BPF maps** | Kernel enforcement rules unchanged until reload | Use "Reload Config" button or SIGHUP |
 | **Config comments lost on dashboard save** | TOML write-back removes original comments | Use version control for config files |
+| **Permission requests require open dashboard** | If no browser tab is open, requests time out after 120s | Keep a dashboard tab open when agents are running |
+| **120s fixed permission timeout** | Cannot configure per-agent or per-request timeouts | Change `PERMISSION_TIMEOUT_SECS` constant and rebuild |
+| **Permission audit trail in-memory only** | Resolved history (last 100) is lost on daemon restart | Use webhook/JSON log for persistent audit records |
+| **No auto-approve rules** | Cannot pre-approve certain request patterns | Use static allow rules for known-safe patterns |
 
 ---
 
@@ -2081,7 +2221,7 @@ cargo install bpf-linker
 - [x] Config hot-reload via SIGHUP signal
 - [x] Preset configuration templates (minimal, recommended, strict, development)
 
-### Phase 5 - Dashboard & UI ✅ (Current)
+### Phase 5 - Dashboard & UI ✅
 - [x] Embedded web dashboard (axum + htmx + Alpine.js + TailwindCSS)
 - [x] Real-time event streaming via SSE (Server-Sent Events)
 - [x] Live event feed with severity/action filtering
@@ -2093,3 +2233,16 @@ cargo install bpf-linker
 - [x] Config reload from dashboard (no SIGHUP needed)
 - [x] Prometheus metrics integrated into dashboard server
 - [x] Single binary deployment (templates compiled in, static files embedded)
+
+### Phase 6 - Interactive Permission Requests ✅ (Current)
+- [x] Interactive permission request protocol (`guardian-ctl request-permission`)
+- [x] Long-poll IPC with oneshot channels (agent blocks while waiting for human)
+- [x] Real-time permission notification banner on all dashboard pages
+- [x] Dedicated `/requests` page with pending requests and resolved history
+- [x] Approve/deny with configurable grant duration (1 min to 1 hour)
+- [x] 120-second auto-deny timeout (fail-secure)
+- [x] SSE stream merging (alert events + permission events on single connection)
+- [x] Alpine.js global permission store with countdown timer
+- [x] Sidebar badge showing pending request count
+- [x] Exec grant type support (in addition to file access grants)
+- [x] Resolved permission audit trail (last 100 entries)

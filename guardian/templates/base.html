@@ -56,6 +56,15 @@
           </a>
         </li>
         <li>
+          <a href="/requests" class="{% block nav_requests %}{% endblock %}" style="position: relative;">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            Requests
+            <template x-if="$store.perms.pending.length > 0">
+              <span class="nav-badge" x-text="$store.perms.pending.length"></span>
+            </template>
+          </a>
+        </li>
+        <li>
           <a href="/alerts" class="{% block nav_alerts %}{% endblock %}">
             <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
             Alerts
@@ -78,9 +87,116 @@
 
     <!-- Main Content -->
     <main class="main-content">
+      <!-- Permission Request Banner (global, all pages) -->
+      <template x-for="req in $store.perms.pending" :key="req.id">
+        <div class="perm-banner" x-data="{ dur: 600 }">
+          <div class="perm-banner-header">
+            <div class="perm-banner-title">
+              <span class="perm-banner-icon">?</span>
+              Permission Request from
+              <strong x-text="req.agent_name"></strong>
+            </div>
+            <div class="perm-banner-timer">
+              <span x-text="$store.perms.remaining(req)"></span>s left
+            </div>
+          </div>
+          <div class="perm-banner-body">
+            <div class="perm-banner-detail">
+              Wants to <span class="badge" :class="req.resource_type === 'exec' ? 'badge-purple' : 'badge-info'" x-text="req.resource_type.toUpperCase()"></span>
+              <code class="inline" x-text="req.resource_path"></code>
+            </div>
+            <div class="perm-banner-reason" x-show="req.justification" x-text="req.justification"></div>
+          </div>
+          <div class="perm-banner-actions">
+            <select x-model="dur" class="perm-banner-select">
+              <option value="60">1 min</option>
+              <option value="300">5 min</option>
+              <option value="600" selected>10 min</option>
+              <option value="1800">30 min</option>
+              <option value="3600">1 hour</option>
+            </select>
+            <button class="btn btn-primary btn-sm" @click="$store.perms.approve(req.id, dur)">Approve</button>
+            <button class="btn btn-danger btn-sm" @click="$store.perms.deny(req.id)">Deny</button>
+          </div>
+        </div>
+      </template>
+
       <div id="toast" class="mb-md"></div>
       {% block content %}{% endblock %}
     </main>
   </div>
+
+  <script>
+  document.addEventListener('alpine:init', () => {
+    Alpine.store('perms', {
+      pending: [],
+      _tick: 0,
+
+      init() {
+        const self = this;
+
+        // Tick every second to drive countdown reactivity
+        setInterval(() => { self._tick++; }, 1000);
+
+        // Fetch any existing pending requests on page load
+        fetch('/api/permissions/pending')
+          .then(r => r.json())
+          .then(data => {
+            data.forEach(req => {
+              req.deadline = new Date(req.requested_at).getTime() + req.timeout_secs * 1000;
+              req.grantDuration = 600;
+              // Avoid duplicates
+              if (!self.pending.find(p => p.id === req.id)) {
+                self.pending.push(req);
+              }
+            });
+          })
+          .catch(() => {});
+
+        // Listen for real-time permission events via SSE
+        const sse = new EventSource('/events/stream');
+        sse.addEventListener('permission', function(e) {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.kind === 'request') {
+              data.deadline = new Date(data.requested_at).getTime() + data.timeout_secs * 1000;
+              data.grantDuration = 600;
+              if (!self.pending.find(p => p.id === data.id)) {
+                self.pending.push(data);
+              }
+            } else if (data.kind === 'resolved') {
+              self.dismiss(data.id);
+            }
+          } catch(err) {}
+        });
+      },
+
+      remaining(req) {
+        void this._tick; // Access to create Alpine dependency
+        return Math.max(0, Math.ceil((req.deadline - Date.now()) / 1000));
+      },
+
+      dismiss(id) {
+        this.pending = this.pending.filter(p => p.id !== id);
+      },
+
+      approve(id, duration) {
+        const self = this;
+        fetch('/api/permissions/' + id + '/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'duration=' + duration
+        }).then(() => self.dismiss(id));
+      },
+
+      deny(id) {
+        const self = this;
+        fetch('/api/permissions/' + id + '/deny', {
+          method: 'POST'
+        }).then(() => self.dismiss(id));
+      }
+    });
+  });
+  </script>
 </body>
 </html>

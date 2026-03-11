@@ -149,6 +149,18 @@ pub mod ipc {
             path: String,
             duration_secs: u64,
         },
+
+        /// Request permission for a resource (agent asks, human approves via dashboard).
+        #[serde(rename = "request_permission")]
+        RequestPermission {
+            agent_name: String,
+            /// "file" or "exec"
+            resource_type: String,
+            /// Path to resource (e.g., "/usr/bin/grep" or "/etc/passwd")
+            resource_path: String,
+            /// Human-readable justification for why this access is needed
+            justification: Option<String>,
+        },
     }
 
     /// Response from the Guardian daemon.
@@ -166,6 +178,15 @@ pub mod ipc {
         /// List of running agents.
         #[serde(rename = "agents")]
         AgentList { agents: Vec<AgentStatus> },
+
+        /// Permission decision (response to RequestPermission).
+        #[serde(rename = "permission_decision")]
+        PermissionDecision {
+            approved: bool,
+            reason: String,
+            /// If approved, how long the grant lasts (seconds).
+            grant_duration_secs: Option<u64>,
+        },
     }
 
     /// Status of a registered agent.

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,7 +9,7 @@ use guardian_common::MAX_FILENAME_LEN;
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex, oneshot};
 
 use crate::config::Config;
 
@@ -26,14 +26,84 @@ pub struct RegisteredAgent {
     pub registered_at: Instant,
 }
 
+/// The type of temporary grant.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GrantType {
+    /// File access grant (path added to BPF allow maps)
+    FileAccess,
+    /// Exec grant (command added to agent's exec policy allow list)
+    Exec,
+}
+
 /// A temporary access grant with an expiry time.
 #[derive(Debug, Clone)]
 pub struct TemporaryGrant {
     pub agent_name: String,
     pub path: String,
     pub is_prefix: bool,
+    pub grant_type: GrantType,
     pub expires_at: Instant,
 }
+
+// =============================================================================
+// Permission Request Types
+// =============================================================================
+
+/// Decision sent back to an agent waiting for permission.
+pub struct PermissionDecision {
+    pub approved: bool,
+    pub reason: String,
+    pub grant_duration_secs: Option<u64>,
+}
+
+/// A pending permission request from an agent, waiting for human approval.
+pub struct PendingPermission {
+    pub id: u64,
+    pub agent_name: String,
+    pub resource_type: String,
+    pub resource_path: String,
+    pub justification: Option<String>,
+    pub requested_at: Instant,
+    pub requested_at_utc: chrono::DateTime<chrono::Utc>,
+    pub timeout_secs: u64,
+    pub responder: Option<oneshot::Sender<PermissionDecision>>,
+}
+
+/// A resolved (completed) permission request, kept for audit trail.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ResolvedPermission {
+    pub id: u64,
+    pub agent_name: String,
+    pub resource_type: String,
+    pub resource_path: String,
+    pub justification: Option<String>,
+    pub requested_at: String,
+    pub resolved_at: String,
+    pub approved: bool,
+    pub reason: String,
+    pub grant_duration_secs: Option<u64>,
+}
+
+/// SSE event for permission requests/resolutions, broadcast to dashboard.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PermissionEvent {
+    pub id: u64,
+    /// "request" or "resolved"
+    pub kind: String,
+    pub agent_name: String,
+    pub resource_type: String,
+    pub resource_path: String,
+    pub justification: Option<String>,
+    pub timeout_secs: u64,
+    pub requested_at: String,
+    pub approved: Option<bool>,
+    pub reason: Option<String>,
+}
+
+/// Default timeout for permission requests (seconds).
+pub const PERMISSION_TIMEOUT_SECS: u64 = 120;
+/// Maximum number of resolved permissions to keep in memory.
+const MAX_RESOLVED_HISTORY: usize = 100;
 
 /// Shared state for BPF maps that support dynamic cgroup updates.
 pub struct CgroupBpfMaps {
@@ -56,6 +126,11 @@ pub struct IpcState {
     pub policy_maps: Option<PolicyBpfMaps>,
     pub config: Config,
     pub enforce_mode: bool,
+    // Permission request state
+    pub pending_permissions: Vec<PendingPermission>,
+    pub resolved_permissions: VecDeque<ResolvedPermission>,
+    pub next_permission_id: u64,
+    pub permission_bus: Option<broadcast::Sender<PermissionEvent>>,
 }
 
 pub type SharedIpcState = Arc<Mutex<IpcState>>;
@@ -152,6 +227,22 @@ async fn process_request(request: IpcRequest, state: &SharedIpcState) -> IpcResp
             path,
             duration_secs,
         } => handle_grant_access(state, &agent_name, &path, duration_secs).await,
+
+        IpcRequest::RequestPermission {
+            agent_name,
+            resource_type,
+            resource_path,
+            justification,
+        } => {
+            handle_request_permission(
+                state,
+                agent_name,
+                resource_type,
+                resource_path,
+                justification,
+            )
+            .await
+        }
     }
 }
 
@@ -329,6 +420,7 @@ async fn handle_grant_access(
         agent_name: agent_name.to_string(),
         path: path.to_string(),
         is_prefix,
+        grant_type: GrantType::FileAccess,
         expires_at,
     });
 
@@ -338,6 +430,278 @@ async fn handle_grant_access(
     );
 
     IpcResponse::Ack
+}
+
+// =============================================================================
+// Permission Request Handler
+// =============================================================================
+
+async fn handle_request_permission(
+    state: &SharedIpcState,
+    agent_name: String,
+    resource_type: String,
+    resource_path: String,
+    justification: Option<String>,
+) -> IpcResponse {
+    let (tx, rx) = oneshot::channel::<PermissionDecision>();
+    let request_id;
+    let timeout_secs;
+
+    {
+        let mut s = state.lock().await;
+
+        // Verify agent exists
+        let agent_exists = s.agents.contains_key(&agent_name)
+            || s.config.agents.iter().any(|a| a.name == agent_name);
+        if !agent_exists {
+            return IpcResponse::Error {
+                message: format!("Agent '{}' not found", agent_name),
+            };
+        }
+
+        // Check if dashboard/permission bus is available
+        if s.permission_bus.is_none() {
+            return IpcResponse::PermissionDecision {
+                approved: false,
+                reason: "Dashboard not enabled — no one to approve requests".to_string(),
+                grant_duration_secs: None,
+            };
+        }
+
+        // Assign ID and store pending request
+        request_id = s.next_permission_id;
+        s.next_permission_id += 1;
+        timeout_secs = PERMISSION_TIMEOUT_SECS;
+
+        let now_utc = chrono::Utc::now();
+
+        s.pending_permissions.push(PendingPermission {
+            id: request_id,
+            agent_name: agent_name.clone(),
+            resource_type: resource_type.clone(),
+            resource_path: resource_path.clone(),
+            justification: justification.clone(),
+            requested_at: Instant::now(),
+            requested_at_utc: now_utc,
+            timeout_secs,
+            responder: Some(tx),
+        });
+
+        // Broadcast to dashboard
+        if let Some(ref bus) = s.permission_bus {
+            let _ = bus.send(PermissionEvent {
+                id: request_id,
+                kind: "request".to_string(),
+                agent_name: agent_name.clone(),
+                resource_type: resource_type.clone(),
+                resource_path: resource_path.clone(),
+                justification: justification.clone(),
+                timeout_secs,
+                requested_at: now_utc.to_rfc3339(),
+                approved: None,
+                reason: None,
+            });
+        }
+
+        info!(
+            "Permission request #{}: agent='{}' type='{}' path='{}' justification={:?}",
+            request_id, agent_name, resource_type, resource_path, justification
+        );
+    } // Lock released — agent now blocks waiting for human decision
+
+    // Wait for approval/denial with timeout
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), rx).await {
+        Ok(Ok(decision)) => {
+            info!(
+                "Permission #{} resolved: approved={} reason='{}'",
+                request_id, decision.approved, decision.reason
+            );
+            IpcResponse::PermissionDecision {
+                approved: decision.approved,
+                reason: decision.reason,
+                grant_duration_secs: decision.grant_duration_secs,
+            }
+        }
+        _ => {
+            // Timeout or channel closed (sender dropped)
+            info!(
+                "Permission #{} timed out after {}s — auto-denied",
+                request_id, timeout_secs
+            );
+
+            let mut s = state.lock().await;
+
+            // Clean up pending and record as resolved
+            if let Some(pos) = s.pending_permissions.iter().position(|p| p.id == request_id) {
+                let pending = s.pending_permissions.remove(pos);
+                s.resolved_permissions.push_back(ResolvedPermission {
+                    id: pending.id,
+                    agent_name: pending.agent_name.clone(),
+                    resource_type: pending.resource_type.clone(),
+                    resource_path: pending.resource_path.clone(),
+                    justification: pending.justification.clone(),
+                    requested_at: pending.requested_at_utc.to_rfc3339(),
+                    resolved_at: chrono::Utc::now().to_rfc3339(),
+                    approved: false,
+                    reason: "Timed out".to_string(),
+                    grant_duration_secs: None,
+                });
+                while s.resolved_permissions.len() > MAX_RESOLVED_HISTORY {
+                    s.resolved_permissions.pop_front();
+                }
+            }
+
+            // Broadcast resolution
+            if let Some(ref bus) = s.permission_bus {
+                let _ = bus.send(PermissionEvent {
+                    id: request_id,
+                    kind: "resolved".to_string(),
+                    agent_name,
+                    resource_type,
+                    resource_path,
+                    justification,
+                    timeout_secs,
+                    requested_at: String::new(),
+                    approved: Some(false),
+                    reason: Some("Timed out".to_string()),
+                });
+            }
+
+            IpcResponse::PermissionDecision {
+                approved: false,
+                reason: format!(
+                    "Request timed out (no response within {} seconds)",
+                    timeout_secs
+                ),
+                grant_duration_secs: None,
+            }
+        }
+    }
+}
+
+/// Resolve a pending permission request (called from dashboard API).
+/// Returns Ok(()) if resolved, Err(msg) if not found.
+pub async fn resolve_permission(
+    state: &SharedIpcState,
+    permission_id: u64,
+    approved: bool,
+    reason: String,
+    grant_duration_secs: Option<u64>,
+) -> std::result::Result<(), String> {
+    let mut s = state.lock().await;
+
+    let pos = s
+        .pending_permissions
+        .iter()
+        .position(|p| p.id == permission_id)
+        .ok_or_else(|| format!("Permission request #{} not found or already resolved", permission_id))?;
+
+    let mut pending = s.pending_permissions.remove(pos);
+
+    // Send decision to the waiting agent via oneshot
+    if let Some(responder) = pending.responder.take() {
+        let _ = responder.send(PermissionDecision {
+            approved,
+            reason: reason.clone(),
+            grant_duration_secs,
+        });
+    }
+
+    // If approved, create a temporary grant
+    if approved {
+        if let Some(duration) = grant_duration_secs {
+            let expires_at = Instant::now() + Duration::from_secs(duration);
+            let is_prefix = pending.resource_path.ends_with("/**");
+
+            if pending.resource_type == "exec" {
+                // Add to agent's exec policy allow list
+                if let Some(agent_cfg) = s.config.agents.iter_mut().find(|a| a.name == pending.agent_name) {
+                    let exec = agent_cfg.exec_policy.get_or_insert(crate::config::ExecPolicy {
+                        default: "deny".to_string(),
+                        allow: vec![],
+                        deny: vec![],
+                    });
+                    if !exec.allow.contains(&pending.resource_path) {
+                        exec.allow.push(pending.resource_path.clone());
+                    }
+                }
+                s.grants.push(TemporaryGrant {
+                    agent_name: pending.agent_name.clone(),
+                    path: pending.resource_path.clone(),
+                    is_prefix,
+                    grant_type: GrantType::Exec,
+                    expires_at,
+                });
+            } else {
+                // File access — add to BPF allow maps
+                if let Some(ref mut policy_maps) = s.policy_maps {
+                    if is_prefix {
+                        let prefix = format!("{}/", &pending.resource_path[..pending.resource_path.len() - 3]);
+                        let key = path_to_lpm_key(prefix.as_bytes());
+                        let _ = policy_maps.allow_prefixes.insert(&key, 1, 0);
+                    } else {
+                        let key = path_to_map_key(pending.resource_path.as_bytes());
+                        let _ = policy_maps.allow_exact.insert(key, 1, 0);
+                    }
+                }
+                s.grants.push(TemporaryGrant {
+                    agent_name: pending.agent_name.clone(),
+                    path: pending.resource_path.clone(),
+                    is_prefix,
+                    grant_type: GrantType::FileAccess,
+                    expires_at,
+                });
+            }
+
+            info!(
+                "Permission #{} approved: agent='{}' {}='{}' for {}s",
+                permission_id, pending.agent_name, pending.resource_type,
+                pending.resource_path, duration
+            );
+        }
+    } else {
+        info!(
+            "Permission #{} denied: agent='{}' {}='{}' reason='{}'",
+            permission_id, pending.agent_name, pending.resource_type,
+            pending.resource_path, reason
+        );
+    }
+
+    // Record in resolved history
+    let resolved = ResolvedPermission {
+        id: pending.id,
+        agent_name: pending.agent_name.clone(),
+        resource_type: pending.resource_type.clone(),
+        resource_path: pending.resource_path.clone(),
+        justification: pending.justification.clone(),
+        requested_at: pending.requested_at_utc.to_rfc3339(),
+        resolved_at: chrono::Utc::now().to_rfc3339(),
+        approved,
+        reason: reason.clone(),
+        grant_duration_secs,
+    };
+    s.resolved_permissions.push_back(resolved);
+    while s.resolved_permissions.len() > MAX_RESOLVED_HISTORY {
+        s.resolved_permissions.pop_front();
+    }
+
+    // Broadcast resolution
+    if let Some(ref bus) = s.permission_bus {
+        let _ = bus.send(PermissionEvent {
+            id: permission_id,
+            kind: "resolved".to_string(),
+            agent_name: pending.agent_name,
+            resource_type: pending.resource_type,
+            resource_path: pending.resource_path,
+            justification: pending.justification,
+            timeout_secs: pending.timeout_secs,
+            requested_at: pending.requested_at_utc.to_rfc3339(),
+            approved: Some(approved),
+            reason: Some(reason),
+        });
+    }
+
+    Ok(())
 }
 
 // =============================================================================
@@ -382,22 +746,37 @@ pub async fn cgroup_cleanup_task(state: SharedIpcState) {
         for &idx in expired.iter().rev() {
             let grant = state.grants.remove(idx);
 
-            // Remove from BPF maps
-            if let Some(ref mut policy_maps) = state.policy_maps {
-                if grant.is_prefix {
-                    let prefix = format!("{}/", &grant.path[..grant.path.len() - 3]);
-                    let key = path_to_lpm_key(prefix.as_bytes());
-                    let _ = policy_maps.allow_prefixes.remove(&key);
-                } else {
-                    let key = path_to_map_key(grant.path.as_bytes());
-                    let _ = policy_maps.allow_exact.remove(&key);
+            match grant.grant_type {
+                GrantType::FileAccess => {
+                    // Remove from BPF maps
+                    if let Some(ref mut policy_maps) = state.policy_maps {
+                        if grant.is_prefix {
+                            let prefix = format!("{}/", &grant.path[..grant.path.len() - 3]);
+                            let key = path_to_lpm_key(prefix.as_bytes());
+                            let _ = policy_maps.allow_prefixes.remove(&key);
+                        } else {
+                            let key = path_to_map_key(grant.path.as_bytes());
+                            let _ = policy_maps.allow_exact.remove(&key);
+                        }
+                    }
+                    info!(
+                        "Temporary grant expired: agent='{}' file path='{}'",
+                        grant.agent_name, grant.path
+                    );
+                }
+                GrantType::Exec => {
+                    // Remove from agent's exec policy allow list
+                    if let Some(agent_cfg) = state.config.agents.iter_mut().find(|a| a.name == grant.agent_name) {
+                        if let Some(ref mut exec) = agent_cfg.exec_policy {
+                            exec.allow.retain(|r| r != &grant.path);
+                        }
+                    }
+                    info!(
+                        "Temporary grant expired: agent='{}' exec command='{}'",
+                        grant.agent_name, grant.path
+                    );
                 }
             }
-
-            info!(
-                "Temporary grant expired: agent='{}' path='{}'",
-                grant.agent_name, grant.path
-            );
         }
     }
 }

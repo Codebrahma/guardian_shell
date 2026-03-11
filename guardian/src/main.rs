@@ -258,7 +258,9 @@ async fn main() -> Result<()> {
     setup_file_event_readers(&mut bpf, &cpus, &config, alert_tx.clone())?;
     setup_exec_event_readers(&mut bpf, &cpus, &config, alert_tx.clone())?;
 
-    // Step 8: Create shared IPC state
+    // Step 8: Create permission bus and shared IPC state
+    let (permission_bus_tx, _permission_bus_rx) = broadcast::channel::<ipc::PermissionEvent>(256);
+
     let ipc_state: SharedIpcState = Arc::new(Mutex::new(IpcState {
         agents: collections::HashMap::new(),
         grants: Vec::new(),
@@ -266,6 +268,10 @@ async fn main() -> Result<()> {
         policy_maps,
         config: config.clone(),
         enforce_mode,
+        pending_permissions: Vec::new(),
+        resolved_permissions: collections::VecDeque::new(),
+        next_permission_id: 1,
+        permission_bus: None, // Set below if dashboard is enabled
     }));
 
     // Step 8b: Start Dashboard (Phase 5) with SQLite event storage
@@ -327,10 +333,17 @@ async fn main() -> Result<()> {
             }
         });
 
+        // Enable permission bus on IPC state now that dashboard is active
+        {
+            let mut s = ipc_state.lock().await;
+            s.permission_bus = Some(permission_bus_tx.clone());
+        }
+
         let dash_state = Arc::new(dashboard::DashboardState {
             ipc_state: ipc_state.clone(),
             alert_sender: alert_tx.clone(),
             event_bus: event_bus_tx.clone(),
+            permission_bus: permission_bus_tx.clone(),
             config_path: args.config.clone(),
             db,
         });

@@ -24,8 +24,11 @@ pub fn router(state: Arc<DashboardState>) -> Router {
         .route("/policy", get(routes::pages::policy))
         .route("/alerts", get(routes::pages::alerts))
         .route("/events", get(routes::pages::events))
+        .route("/requests", get(routes::pages::requests))
         // JSON API endpoints
         .route("/api/events", get(routes::api::query_events))
+        .route("/api/permissions/pending", get(routes::api::list_pending_permissions))
+        .route("/api/permissions/resolved", get(routes::api::list_resolved_permissions))
         // htmx API endpoints
         .route("/api/agents/{name}/stop", post(routes::api::stop_agent))
         .route("/api/agents/{name}/grant", post(routes::api::grant_access))
@@ -33,6 +36,8 @@ pub fn router(state: Arc<DashboardState>) -> Router {
         .route("/api/alerts", put(routes::api::update_alerts))
         .route("/api/config/reload", post(routes::api::reload_config))
         .route("/api/status", get(routes::api::status_summary))
+        .route("/api/permissions/{id}/approve", post(routes::api::approve_permission))
+        .route("/api/permissions/{id}/deny", post(routes::api::deny_permission))
         // SSE live event stream
         .route("/events/stream", get(routes::sse::event_stream))
         // Prometheus metrics

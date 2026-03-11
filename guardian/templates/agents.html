@@ -85,18 +85,29 @@
                 <button @click="showGrant = !showGrant" class="btn btn-accent btn-sm">
                   Grant
                 </button>
-                <div x-show="showGrant" x-cloak class="popover" style="position: absolute; top: 36px; right: 0; width: 260px;">
+                <div x-show="showGrant" x-cloak class="popover" style="position: absolute; top: 36px; right: 0; width: 280px;">
                   <form hx-post="/api/agents/{{ agent.name }}/grant" hx-target="#toast" hx-swap="innerHTML"
-                        @htmx:after-request="showGrant = false">
+                        @htmx:after-request="showGrant = false"
+                        x-data="{ grantType: 'file' }">
                     <div class="form-group">
-                      <label>Path</label>
-                      <input name="path" placeholder="/path/to/file" required>
+                      <label>Grant Type</label>
+                      <select name="grant_type" x-model="grantType" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-primary);">
+                        <option value="file">File Access</option>
+                        <option value="exec">Exec Command</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label x-text="grantType === 'exec' ? 'Command Path' : 'File Path'">File Path</label>
+                      <input name="path"
+                             :placeholder="grantType === 'exec' ? '/usr/bin/grep' : '/path/to/file'"
+                             required>
                     </div>
                     <div class="form-group">
                       <label>Duration (seconds)</label>
-                      <input name="duration" type="number" value="60" min="1" required>
+                      <input name="duration" type="number" value="600" min="1" required>
                     </div>
-                    <button type="submit" class="btn btn-primary btn-sm btn-block">
+                    <button type="submit" class="btn btn-primary btn-sm btn-block"
+                            x-text="grantType === 'exec' ? 'Grant Exec Access' : 'Grant File Access'">
                       Grant Access
                     </button>
                   </form>

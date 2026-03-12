@@ -168,6 +168,44 @@
   </div>
 
   <script>
+  // Single shared SSE connection — prevents HTTP/1.1 connection exhaustion.
+  // Child pages listen to custom DOM events instead of opening their own EventSource.
+  (function() {
+    var sse = null;
+
+    function connectSSE() {
+      if (sse) { sse.close(); }
+      sse = new EventSource('/events/stream');
+      window.__guardianSSE = sse;
+
+      sse.onopen = function() {
+        document.dispatchEvent(new CustomEvent('guardian:sse-open'));
+      };
+      sse.onerror = function() {
+        document.dispatchEvent(new CustomEvent('guardian:sse-error'));
+        // Browser auto-reconnects EventSource; no manual retry needed
+      };
+
+      // Relay SSE event types as custom DOM events for child page components
+      sse.addEventListener('event', function(e) {
+        document.dispatchEvent(new CustomEvent('guardian:event', { detail: e.data }));
+      });
+      sse.addEventListener('lag', function(e) {
+        document.dispatchEvent(new CustomEvent('guardian:lag', { detail: e.data }));
+      });
+      sse.addEventListener('permission', function(e) {
+        document.dispatchEvent(new CustomEvent('guardian:permission', { detail: e.data }));
+      });
+    }
+
+    connectSSE();
+
+    // Close SSE on page navigation to free the connection slot
+    window.addEventListener('beforeunload', function() {
+      if (sse) { sse.close(); sse = null; window.__guardianSSE = null; }
+    });
+  })();
+
   document.addEventListener('alpine:init', () => {
     Alpine.store('perms', {
       pending: [],
@@ -191,7 +229,6 @@
               req.wait_seconds = req.wait_seconds || 0;
               req.requires_type_confirm = req.requires_type_confirm || false;
               req.justification_warnings = req.justification_warnings || [];
-              // Avoid duplicates
               if (!self.pending.find(p => p.id === req.id)) {
                 self.pending.push(req);
               }
@@ -199,11 +236,10 @@
           })
           .catch(() => {});
 
-        // Listen for real-time permission events via SSE
-        const sse = new EventSource('/events/stream');
-        sse.addEventListener('permission', function(e) {
+        // Listen for permission events relayed from the shared SSE connection
+        document.addEventListener('guardian:permission', function(e) {
           try {
-            const data = JSON.parse(e.data);
+            const data = JSON.parse(e.detail);
             if (data.kind === 'request') {
               data.deadline = new Date(data.requested_at).getTime() + data.timeout_secs * 1000;
               data.grantDuration = 600;

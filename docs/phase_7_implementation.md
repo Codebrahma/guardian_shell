@@ -50,6 +50,10 @@ Phase 7 addresses all five through a combination of userspace path normalization
 | `guardian/templates/base.html` | Rewrote permission banner with risk-colored borders, risk badge, justification warnings, risk flags, mandatory wait timer countdown, type-to-confirm input for CRITICAL; updated Alpine.js store to handle risk fields from SSE and fetch |
 | `guardian/templates/requests.html` | Added Risk column to both pending and resolved tables; added wait timer on approve button with Alpine.js countdown; added type-to-confirm for CRITICAL risk rows; expanded colspan from 7 to 8 |
 | `guardian/static/app.css` | Added risk badge styles (`.badge-risk-low/medium/high/critical`); added risk-colored banner variants (`.perm-banner.risk-*`); added justification warning tag styles; added type-to-confirm input styles |
+| `guardian-common/src/lib.rs` | Added `NetworkEvent` struct (52 bytes), new map name constants for exec enforcement and network monitoring |
+| `guardian-ebpf/src/main.rs` | Added 9 new BPF maps (7 exec enforcement + 2 network), `evaluate_exec_policy()`, `guardian_enforce_exec` LSM hook, `guardian_file_open_legacy` tracepoint, `guardian_net_connect` tracepoint |
+| `guardian/src/alerting/mod.rs` | Added `NetworkConnect` variant to `EventType` enum |
+| `guardian/src/config.rs` | Added `NetworkPolicy` struct with port-based allow/deny rules, `check_network_policy()` function, `network_policy` field to `AgentConfig` |
 | `CLAUDE.md` | Updated current state to Phase 7; updated project structure; updated known limitations; added Phase 7 design decisions; updated test counts |
 
 ---
@@ -748,14 +752,17 @@ If the `[permissions]` section is omitted, all features still work with sensible
 | One-click approve of `/etc/shadow` | Same UI as `/tmp/file.txt` | 10s wait + type "CONFIRM" required |
 | Persistent re-denial attack | No escalation | Exponential backoff: 30s → 60s → 120s → ... → 10min |
 | Audit trail lost on restart | In-memory only | SQLite persistence survives restarts |
+| Exec bypass (log-only) | Exec events logged but never blocked | Full enforcement via LSM bprm_check_security |
+| Legacy `open` syscall | Completely unmonitored | Hooked via sys_enter_open tracepoint |
+| Network exfiltration | Not monitored at all | Outbound connections logged with port-based policy |
 
 ### What Phase 7 Does NOT Fix (Future Work)
 
 | Attack Vector | Status | Fix |
 |--------------|--------|-----|
 | Symlink to sensitive file | **Open** | LSM `file_open` with `bpf_d_path()` (Phase 7a #2) |
-| Exec enforcement | **Open** | LSM `bprm_check_security` (Phase 7a #3) |
-| Network exfiltration | **Open** | `cgroup/connect4` BPF program (Phase 7b) |
+| Exec enforcement | **Fixed** | LSM `bprm_check_security` with PENDING_EXEC_DENY map |
+| Network exfiltration | **Partially Fixed** | `sys_enter_connect` tracepoint with port-based policy (monitoring + userspace policy; kernel-side enforcement deferred) |
 | `rename()` policy bypass | **Open** | LSM `inode_rename` (Phase 7a #6) |
 | `unlink()` file deletion | **Open** | LSM `inode_unlink` (Phase 7a #7) |
 | Hardlink to sensitive file | **Open** | LSM `inode_link` (Phase 7d #23) |
@@ -890,6 +897,242 @@ Complete permission hardening module:
 |--------|------|--------|
 | GET | `/api/permissions/pending` | **Modified:** Now includes `risk_level`, `risk_flags`, `wait_seconds`, `requires_type_confirm`, `justification_warnings` |
 | GET | `/api/permissions/audit` | **New:** Query persistent SQLite audit trail. Params: `?limit=100` |
+
+---
+
+## Phase 7d: Exec Enforcement, Legacy Open Hook, Network Monitoring
+
+### Exec Enforcement (LSM bprm_check_security)
+
+Phase 7 upgrades exec monitoring from log-only (Phase 2) to full kernel-side enforcement. Previously, exec events were captured by the `sys_enter_execve` tracepoint and logged, but the binary was never blocked from executing. Now, a new LSM hook on `bprm_check_security` can deny exec at the kernel level, preventing the binary from ever running.
+
+#### New BPF Maps (7 maps)
+
+Exec enforcement requires its own set of BPF maps, structurally mirroring the file access maps:
+
+| Map | Type | Purpose |
+|-----|------|---------|
+| `EXEC_DENY_EXACT` | HashMap | Exact-match deny rules for exec paths |
+| `EXEC_DENY_PREFIXES` | Array | Prefix-based deny rules for exec paths |
+| `EXEC_ALLOW_EXACT` | HashMap | Exact-match allow rules for exec paths |
+| `EXEC_ALLOW_PREFIXES` | Array | Prefix-based allow rules for exec paths |
+| `EXEC_DEFAULT_ACTION` | Array | Global default action for exec (allow/deny) |
+| `EXEC_CGROUP_DEFAULT_ACTION` | HashMap | Per-cgroup default action for exec |
+| `PENDING_EXEC_DENY` | HashMap | Pending exec denials keyed by pid_tgid |
+
+#### New `evaluate_exec_policy()` Function
+
+Added to `guardian-ebpf/src/main.rs`. Structurally identical to `evaluate_policy()` but reads from the exec-specific maps (`EXEC_DENY_EXACT`, `EXEC_DENY_PREFIXES`, `EXEC_ALLOW_EXACT`, `EXEC_ALLOW_PREFIXES`, `EXEC_DEFAULT_ACTION`, `EXEC_CGROUP_DEFAULT_ACTION`). This separation ensures exec policy evaluation is completely independent of file access policy evaluation.
+
+#### Modified `guardian_exec_monitor` Tracepoint
+
+The existing `sys_enter_execve` tracepoint handler now calls `evaluate_exec_policy()` after capturing the exec path. When the policy evaluates to deny, it sets `PENDING_EXEC_DENY[pid_tgid]` to signal the LSM hook. The event is still sent to userspace via the perf event array for logging.
+
+#### New LSM Hook: `guardian_enforce_exec`
+
+Attached to the `bprm_check_security` LSM hook point. This hook fires during exec processing after the kernel has loaded the binary. It checks the `PENDING_EXEC_DENY` map for the current `pid_tgid`:
+
+- If found: deletes the map entry and returns `-EPERM` (the binary never executes)
+- If not found: returns `0` (exec proceeds normally)
+
+This follows the same PENDING pattern used for file enforcement (`PENDING_DENY` + `file_open` LSM).
+
+#### Timing Guarantee
+
+The `sys_enter_execve` tracepoint fires at syscall entry, before the kernel begins processing the exec. The kernel then opens the binary file internally and calls `bprm_check_security` during exec processing. This guarantees the tracepoint has already evaluated policy and populated `PENDING_EXEC_DENY` before the LSM hook checks it:
+
+```
+sys_enter_execve fires --> exec tracepoint evaluates exec policy --> sets PENDING_EXEC_DENY
+    --> kernel opens binary internally (no sys_enter_openat fires)
+    --> file_open LSM fires --> checks PENDING_DENY --> empty --> allows
+    --> bprm_check_security fires --> checks PENDING_EXEC_DENY --> -EPERM --> exec BLOCKED
+```
+
+#### Why Separate PENDING_EXEC_DENY Map
+
+During `execve`, the kernel internally opens the binary file to read its contents. This internal open triggers the `file_open` LSM hook. If exec denials were stored in the same `PENDING_DENY` map used for file access enforcement, the `file_open` hook would consume the denial entry (delete it after reading), and the `bprm_check_security` hook would find nothing. The binary would be read (file open allowed) but the exec denial would be lost. Separate maps ensure clean isolation between file access enforcement and exec enforcement.
+
+#### Graceful Fallback
+
+The `load_lsm()` and `attach_lsm()` helper functions were generalized to accept a program name and hook name as parameters, allowing them to load both `file_open` and `bprm_check_security` LSM programs. If `bprm_check_security` attachment fails (kernel does not support it, or BPF LSM is not enabled), exec falls back to monitor-only mode. The daemon logs a warning and continues operating with file enforcement intact.
+
+#### Daemon Changes
+
+- `populate_exec_enforcement_maps()` in `main.rs` populates the 7 exec maps from the agent configuration, mirroring how `populate_enforcement_maps()` works for file access.
+- `process_exec_event()` updated to log "BLOCKED" (not just "DENY") when the daemon is in enforce mode and the policy denies the exec.
+- Path normalization (via `normalize_path()`) applied to exec events before policy evaluation, consistent with file access events.
+
+---
+
+### Legacy `open` Syscall Hook
+
+On modern Linux (glibc 2.26+, released 2017), the `open()` C library function is implemented as `openat(AT_FDCWD, ...)`, so the existing `sys_enter_openat` tracepoint already captures these calls. However, ancient statically-linked binaries or hand-rolled assembly may still invoke the raw `open` syscall (syscall number 2 on x86_64) directly, bypassing `openat` entirely.
+
+As a belt-and-suspenders measure, Phase 7 adds a `guardian_file_open_legacy` tracepoint attached to `sys_enter_open`:
+
+- **Tracepoint field offsets (x86_64):** filename pointer at offset 16, flags at offset 24
+- **Same logic as `guardian_file_open`:** calls `evaluate_policy()` to check file access rules, sets `PENDING_DENY[pid_tgid]` on denial, and sends the event to userspace via the perf event array
+- **Reuses existing maps:** `EVENT_BUF`, `EVENTS`, and `PENDING_DENY` are shared with the `openat` handler. No new BPF maps are needed.
+- **Graceful fallback:** The tracepoint is loaded and attached with an `is_ok()` check. If `sys_enter_open` does not exist on the running kernel (some architectures have removed it), the daemon continues with `openat`-only and `openat2` coverage. A warning is logged but operation is not affected.
+
+---
+
+### Network Connection Monitoring
+
+Phase 7 adds monitoring of outbound network connections, allowing administrators to detect and log when agents connect to external hosts. This is monitoring-only — no kernel-side enforcement is implemented yet.
+
+#### New `NetworkEvent` Struct
+
+Added to `guardian-common/src/lib.rs`. A 52-byte `#[repr(C)]` struct containing:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pid` | `u32` | Process ID |
+| `tgid` | `u32` | Thread group ID |
+| `uid` | `u32` | User ID |
+| `family` | `u16` | Address family (AF_INET=2 or AF_INET6=10) |
+| `dest_port` | `u16` | Destination port (network byte order converted to host) |
+| `dest_addr4` | `u32` | IPv4 destination address (for AF_INET) |
+| `dest_addr6` | `[u8; 16]` | IPv6 destination address (for AF_INET6) |
+| `comm` | `[u8; 16]` | Process command name |
+
+#### New BPF Maps
+
+| Map | Type | Purpose |
+|-----|------|---------|
+| `NET_EVENT_BUF` | PerCpuArray | Scratch buffer for building `NetworkEvent` (avoids 512-byte stack limit) |
+| `NET_EVENTS` | PerfEventArray | Sends network events to userspace daemon |
+
+#### New `guardian_net_connect` Tracepoint
+
+Attached to `sys_enter_connect`, this tracepoint monitors outbound connection attempts:
+
+1. Reads the `sockaddr *` pointer from the tracepoint args at offset 24
+2. Reads `sa_family` (first 2 bytes of sockaddr) to determine the address family
+3. For **AF_INET** (family=2): reads the 8-byte `sockaddr_in` structure — port at byte offset 2, IPv4 address at byte offset 4
+4. For **AF_INET6** (family=10): reads the 28-byte `sockaddr_in6` structure — port at byte offset 2, IPv6 address at byte offset 8
+5. Skips non-IP connections (Unix domain sockets, netlink, etc.) by returning early for unrecognized families
+6. Populates the `NetworkEvent` in `NET_EVENT_BUF` and sends it to userspace via `NET_EVENTS`
+
+#### New `NetworkPolicy` Struct
+
+Added to `guardian/src/config.rs`:
+
+```rust
+pub struct NetworkPolicy {
+    pub default: String,      // "allow" or "deny"
+    pub allow_ports: Vec<u16>,
+    pub deny_ports: Vec<u16>,
+}
+```
+
+Configuration example in `config.toml`:
+
+```toml
+[agents.network_policy]
+default = "allow"
+deny_ports = [22, 25, 445]
+allow_ports = [80, 443, 53]
+```
+
+#### Userspace Policy Evaluation
+
+- `check_network_policy()` evaluates port-based network rules following the same deny-takes-precedence model as file access policy. If a port appears in both `allow_ports` and `deny_ports`, the deny rule wins.
+- `process_net_event()` formats IPv4 addresses as dotted-quad notation and IPv6 addresses as colon-separated hex, then dispatches the event to the alerting system.
+
+#### Monitoring-Only (No Kernel Enforcement)
+
+Network monitoring is monitoring-only in this phase. There is no LSM `socket_connect` hook — policy violations are logged as warnings but connections are not blocked at the kernel level. Kernel-side network enforcement is deferred to a future phase.
+
+#### New `EventType::NetworkConnect`
+
+Added to `guardian/src/alerting/mod.rs` to support network events in the alerting pipeline. Network events flow through the same `AlertManager` dispatch path as file and exec events, supporting deduplication, severity filtering, and all configured alert outputs (JSON log, webhook, Slack, email).
+
+#### Graceful Fallback
+
+The network tracepoint is loaded and attached with an `is_ok()` check. If `sys_enter_connect` attachment fails, network monitoring is silently disabled and the daemon continues with file and exec monitoring only.
+
+---
+
+## Bug Fixes
+
+### Dashboard Hang: SSE Connection Exhaustion
+
+**Symptom:** The dashboard becomes completely unresponsive after visiting 3-4 pages. No page loads, no API responses — the browser appears to hang indefinitely.
+
+**Root Cause:** HTTP/1.1 browsers enforce a limit of ~6 concurrent connections per origin (per the HTTP/1.1 spec, RFC 7230). Server-Sent Events (SSE) connections are long-lived — they stay open for the lifetime of the page. The dashboard was creating multiple SSE connections per page load without ever closing them:
+
+1. **`base.html`** (Alpine.js store `init()`): Created `new EventSource('/events/stream')` on every page — this runs on ALL pages since every template extends `base.html`
+2. **`index.html`** (`recentEvents()` component): Created a SECOND `EventSource('/events/stream')` for the live event table
+3. **`events.html`** (`eventFilter()` component): Created a SECOND `EventSource('/events/stream')` for the live event stream with filtering
+
+Each page navigation created 1-2 new SSE connections that were never closed (no `beforeunload` cleanup). The connection lifecycle looked like:
+
+```
+Visit /          → 2 SSE connections (base.html + index.html)     = 2 total
+Navigate /events → 2 SSE connections (base.html + events.html)    = 4 total
+Navigate /agents → 1 SSE connection  (base.html)                  = 5 total
+Navigate /policy → 1 SSE connection  (base.html)                  = 6 total  ← LIMIT HIT
+Navigate /alerts → Browser queues request, waits for a free slot  ← HANGS
+```
+
+At 6 connections, all HTTP/1.1 connection slots are consumed by stale SSE connections from previous pages. The browser queues all new requests (page loads, API calls, htmx requests) waiting for a slot to free up. Since SSE connections never close on their own, the dashboard is permanently stuck.
+
+**Fix (3 files changed):**
+
+1. **`base.html`** — Single shared SSE connection architecture:
+   - Moved SSE creation to a standalone IIFE that runs before Alpine initializes
+   - Stores the connection as `window.__guardianSSE`
+   - Relays SSE event types (`event`, `lag`, `permission`) as custom DOM events (`guardian:event`, `guardian:lag`, `guardian:permission`)
+   - Added `beforeunload` event listener to close the SSE connection when navigating away from the page
+   - Alpine.js store now listens to `guardian:permission` DOM events instead of directly to the EventSource
+
+   ```javascript
+   // Single shared SSE — runs once, before Alpine
+   (function() {
+     var sse = new EventSource('/events/stream');
+     window.__guardianSSE = sse;
+
+     // Relay to DOM events so child pages don't need their own SSE
+     sse.addEventListener('event', function(e) {
+       document.dispatchEvent(new CustomEvent('guardian:event', { detail: e.data }));
+     });
+     sse.addEventListener('permission', function(e) {
+       document.dispatchEvent(new CustomEvent('guardian:permission', { detail: e.data }));
+     });
+
+     // Close on navigation to free the connection slot
+     window.addEventListener('beforeunload', function() {
+       if (sse) { sse.close(); }
+     });
+   })();
+   ```
+
+2. **`index.html`** — `recentEvents()` component:
+   - Removed `sse`, `retryDelay` fields and `connect()` method entirely
+   - `init()` now listens to `guardian:event`, `guardian:sse-open`, `guardian:sse-error` DOM events
+   - Connection status derived from `window.__guardianSSE.readyState`
+   - Zero EventSource instances created by this page
+
+3. **`events.html`** — `eventFilter()` component:
+   - Same treatment as `index.html`: removed `sse`, `retryDelay`, `connect()` method
+   - Listens to `guardian:event`, `guardian:lag`, `guardian:sse-open`, `guardian:sse-error` DOM events
+   - Zero EventSource instances created by this page
+
+**After fix — connection lifecycle:**
+
+```
+Visit /          → 1 SSE connection (shared from base.html)
+Navigate /events → old SSE closed (beforeunload), 1 new SSE  = 1 total
+Navigate /agents → old SSE closed (beforeunload), 1 new SSE  = 1 total
+Navigate /policy → old SSE closed (beforeunload), 1 new SSE  = 1 total
+... (always exactly 1 SSE connection, properly cleaned up)
+```
+
+**Design decision:** Custom DOM events (`CustomEvent`) were chosen over having child pages directly reference `window.__guardianSSE` because:
+- Decoupled: child pages don't need to know about EventSource API or manage listeners
+- Timing-safe: DOM events work regardless of whether the SSE was open before or after the child component initialized
+- Single responsibility: base.html owns the connection lifecycle; child pages just consume events
 
 ---
 

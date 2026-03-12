@@ -13,7 +13,7 @@ use aya::{
 };
 use bytes::BytesMut;
 use clap::Parser;
-use guardian_common::{ExecEvent, FileAccessEvent, MAX_FILENAME_LEN};
+use guardian_common::{ExecEvent, FileAccessEvent, NetworkEvent, MAX_FILENAME_LEN};
 use log::{debug, error, info, warn};
 use std::collections;
 use std::path::PathBuf;
@@ -22,7 +22,7 @@ use std::time::Duration;
 use tokio::{signal, sync::Mutex, sync::broadcast, time};
 
 use crate::alerting::{Action, AlertEvent, AlertSender, EventType, Severity};
-use crate::config::{check_exec_policy, check_file_policy, normalize_path, Config};
+use crate::config::{check_exec_policy, check_file_policy, check_network_policy, normalize_path, Config};
 use crate::ipc::{CgroupBpfMaps, IpcState, PolicyBpfMaps, SharedIpcState};
 
 // =============================================================================
@@ -169,13 +169,23 @@ async fn main() -> Result<()> {
     load_tracepoint(&mut bpf, "guardian_file_open")?;
     // openat2 tracepoint (Linux 5.6+) — may not exist on older kernels
     let has_openat2 = load_tracepoint(&mut bpf, "guardian_file_openat2").is_ok();
+    // Legacy open syscall (rare on modern Linux, belt-and-suspenders)
+    let has_open_legacy = load_tracepoint(&mut bpf, "guardian_file_open_legacy").is_ok();
     load_tracepoint(&mut bpf, "guardian_exec_monitor")?;
     load_tracepoint(&mut bpf, "guardian_fork_track")?;
     load_tracepoint(&mut bpf, "guardian_exit_track")?;
+    // Network connection monitoring
+    let has_net_connect = load_tracepoint(&mut bpf, "guardian_net_connect").is_ok();
     if enforce_mode {
-        if let Err(e) = load_lsm(&mut bpf) {
+        if let Err(e) = load_lsm(&mut bpf, "guardian_enforce_file_open", "file_open") {
             warn!(
-                "Failed to load LSM program: {}. Falling back to monitor-only mode.",
+                "Failed to load LSM file_open: {}. Falling back to monitor-only mode.",
+                e
+            );
+        }
+        if let Err(e) = load_lsm(&mut bpf, "guardian_enforce_exec", "bprm_check_security") {
+            warn!(
+                "Failed to load LSM bprm_check_security: {}. Exec enforcement unavailable.",
                 e
             );
         }
@@ -200,7 +210,16 @@ async fn main() -> Result<()> {
         None
     };
 
-    // 4c: Cgroup maps (Phase 3 — taken for dynamic updates via IPC)
+    // 4c: Exec enforcement maps (Phase 7 — kernel-side exec blocking)
+    if enforce_mode {
+        if let Err(e) = populate_exec_enforcement_maps(&mut bpf, &config) {
+            warn!("Failed to populate exec enforcement maps: {}. Exec enforcement unavailable.", e);
+        } else {
+            info!("Exec enforcement maps populated");
+        }
+    }
+
+    // 4d: Cgroup maps (Phase 3 — taken for dynamic updates via IPC)
     let cgroup_maps = take_cgroup_maps(&mut bpf)?;
 
     // Step 5: Attach eBPF Programs to hooks
@@ -214,13 +233,20 @@ async fn main() -> Result<()> {
         }
     }
 
+    if has_open_legacy {
+        match attach_tracepoint(&mut bpf, "guardian_file_open_legacy", "syscalls", "sys_enter_open") {
+            Ok(()) => info!("Attached: syscalls/sys_enter_open (legacy open monitoring)"),
+            Err(e) => warn!("Legacy open tracepoint not available: {}", e),
+        }
+    }
+
     attach_tracepoint(
         &mut bpf,
         "guardian_exec_monitor",
         "syscalls",
         "sys_enter_execve",
     )?;
-    info!("Attached: syscalls/sys_enter_execve (exec monitoring)");
+    info!("Attached: syscalls/sys_enter_execve (exec monitoring + enforcement)");
 
     attach_tracepoint(
         &mut bpf,
@@ -238,13 +264,29 @@ async fn main() -> Result<()> {
     )?;
     info!("Attached: sched/sched_process_exit (cleanup)");
 
+    if has_net_connect {
+        match attach_tracepoint(&mut bpf, "guardian_net_connect", "syscalls", "sys_enter_connect") {
+            Ok(()) => info!("Attached: syscalls/sys_enter_connect (network monitoring)"),
+            Err(e) => warn!("Network connect tracepoint not available: {}", e),
+        }
+    }
+
     if enforce_mode {
-        match attach_lsm(&mut bpf) {
-            Ok(()) => info!("Attached: LSM file_open (enforcement ACTIVE)"),
+        match attach_lsm(&mut bpf, "guardian_enforce_file_open") {
+            Ok(()) => info!("Attached: LSM file_open (file enforcement ACTIVE)"),
             Err(e) => {
                 warn!(
-                    "Failed to attach LSM program: {}. Falling back to monitor-only mode. \
+                    "Failed to attach LSM file_open: {}. File enforcement unavailable. \
                      Ensure CONFIG_BPF_LSM=y and 'bpf' is in the LSM list.",
+                    e
+                );
+            }
+        }
+        match attach_lsm(&mut bpf, "guardian_enforce_exec") {
+            Ok(()) => info!("Attached: LSM bprm_check_security (exec enforcement ACTIVE)"),
+            Err(e) => {
+                warn!(
+                    "Failed to attach LSM bprm_check_security: {}. Exec enforcement unavailable.",
                     e
                 );
             }
@@ -267,6 +309,9 @@ async fn main() -> Result<()> {
 
     setup_file_event_readers(&mut bpf, &cpus, &config, alert_tx.clone())?;
     setup_exec_event_readers(&mut bpf, &cpus, &config, alert_tx.clone())?;
+    if has_net_connect {
+        setup_net_event_readers(&mut bpf, &cpus, &config, alert_tx.clone())?;
+    }
 
     // Step 8: Create permission bus and shared IPC state
     let (permission_bus_tx, _permission_bus_rx) = broadcast::channel::<ipc::PermissionEvent>(256);
@@ -648,6 +693,87 @@ fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<PolicyBp
     })
 }
 
+/// Populate exec enforcement BPF maps from config.
+fn populate_exec_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()> {
+    let mut exec_deny_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        LpmTrie::try_from(bpf.take_map("EXEC_DENY_PREFIXES").context("EXEC_DENY_PREFIXES map not found")?)?;
+
+    let mut exec_deny_exact: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        HashMap::try_from(bpf.take_map("EXEC_DENY_EXACT").context("EXEC_DENY_EXACT map not found")?)?;
+
+    let mut exec_allow_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        LpmTrie::try_from(bpf.take_map("EXEC_ALLOW_PREFIXES").context("EXEC_ALLOW_PREFIXES map not found")?)?;
+
+    let mut exec_allow_exact: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        HashMap::try_from(bpf.take_map("EXEC_ALLOW_EXACT").context("EXEC_ALLOW_EXACT map not found")?)?;
+
+    let mut exec_default_action: HashMap<MapData, [u8; 16], u8> =
+        HashMap::try_from(bpf.take_map("EXEC_DEFAULT_ACTION").context("EXEC_DEFAULT_ACTION map not found")?)?;
+
+    let exec_cgroup_default: HashMap<MapData, u64, u8> =
+        HashMap::try_from(bpf.take_map("EXEC_CGROUP_DEFAULT_ACTION").context("EXEC_CGROUP_DEFAULT_ACTION map not found")?)?;
+
+    // Also take the PENDING_EXEC_DENY map so aya owns it
+    let _pending_exec_deny: HashMap<MapData, u64, u8> =
+        HashMap::try_from(bpf.take_map("PENDING_EXEC_DENY").context("PENDING_EXEC_DENY map not found")?)?;
+
+    let mut deny_count = 0u32;
+    let mut allow_count = 0u32;
+
+    for agent in &config.agents {
+        let exec_policy = match &agent.exec_policy {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Set default action for comm-based agents
+        if agent.effective_identity() == "comm" {
+            let comm_key = comm_to_key(agent.effective_process_name());
+            let default_val = if exec_policy.default == "deny" { 0u8 } else { 1u8 };
+            exec_default_action.insert(comm_key, default_val, 0)?;
+        }
+
+        for pattern in &exec_policy.deny {
+            if pattern.ends_with("/**") {
+                let prefix = format!("{}/", &pattern[..pattern.len() - 3]);
+                let key = path_to_lpm_key(prefix.as_bytes());
+                exec_deny_prefixes.insert(&key, 1, 0)?;
+                let exact = path_to_map_key(pattern[..pattern.len() - 3].as_bytes());
+                let _ = exec_deny_exact.insert(exact, 1, 0);
+            } else {
+                let key = path_to_map_key(pattern.as_bytes());
+                exec_deny_exact.insert(key, 1, 0)?;
+            }
+            deny_count += 1;
+        }
+
+        for pattern in &exec_policy.allow {
+            if pattern.ends_with("/**") {
+                let prefix = format!("{}/", &pattern[..pattern.len() - 3]);
+                let key = path_to_lpm_key(prefix.as_bytes());
+                exec_allow_prefixes.insert(&key, 1, 0)?;
+                let exact = path_to_map_key(pattern[..pattern.len() - 3].as_bytes());
+                let _ = exec_allow_exact.insert(exact, 1, 0);
+            } else {
+                let key = path_to_map_key(pattern.as_bytes());
+                exec_allow_exact.insert(key, 1, 0)?;
+            }
+            allow_count += 1;
+        }
+    }
+
+    // Store cgroup exec defaults (set dynamically during registration)
+    // For now, just take the map. Cgroup exec defaults will be set in IPC register handler.
+    let _ = exec_cgroup_default;
+
+    info!(
+        "Loaded {} exec deny rules, {} exec allow rules into BPF",
+        deny_count, allow_count
+    );
+
+    Ok(())
+}
+
 /// Take cgroup-related BPF maps for dynamic updates via IPC.
 fn take_cgroup_maps(bpf: &mut Ebpf) -> Result<CgroupBpfMaps> {
     let watched_cgroups: HashMap<MapData, u64, u8> = HashMap::try_from(
@@ -723,30 +849,30 @@ fn attach_tracepoint(
     Ok(())
 }
 
-fn load_lsm(bpf: &mut Ebpf) -> Result<()> {
+fn load_lsm(bpf: &mut Ebpf, prog_name: &str, hook_name: &str) -> Result<()> {
     let btf = Btf::from_sys_fs().context("Failed to load BTF from /sys/kernel/btf/vmlinux")?;
 
     let program: &mut Lsm = bpf
-        .program_mut("guardian_enforce_file_open")
-        .context("LSM program 'guardian_enforce_file_open' not found")?
+        .program_mut(prog_name)
+        .with_context(|| format!("LSM program '{}' not found", prog_name))?
         .try_into()
-        .context("'guardian_enforce_file_open' is not an LSM program")?;
+        .with_context(|| format!("'{}' is not an LSM program", prog_name))?;
 
     program
-        .load("file_open", &btf)
-        .context("Failed to load LSM program")?;
+        .load(hook_name, &btf)
+        .with_context(|| format!("Failed to load LSM program '{}' (hook: {})", prog_name, hook_name))?;
 
     Ok(())
 }
 
-fn attach_lsm(bpf: &mut Ebpf) -> Result<()> {
+fn attach_lsm(bpf: &mut Ebpf, prog_name: &str) -> Result<()> {
     let program: &mut Lsm = bpf
-        .program_mut("guardian_enforce_file_open")
-        .context("LSM program 'guardian_enforce_file_open' not found")?
+        .program_mut(prog_name)
+        .with_context(|| format!("LSM program '{}' not found", prog_name))?
         .try_into()
-        .context("'guardian_enforce_file_open' is not an LSM program")?;
+        .with_context(|| format!("'{}' is not an LSM program", prog_name))?;
 
-    program.attach().context("Failed to attach LSM program")?;
+    program.attach().with_context(|| format!("Failed to attach LSM program '{}'", prog_name))?;
 
     Ok(())
 }
@@ -858,6 +984,57 @@ fn setup_exec_event_readers(
     Ok(())
 }
 
+fn setup_net_event_readers(
+    bpf: &mut Ebpf,
+    cpus: &[u32],
+    config: &Config,
+    alert_tx: AlertSender,
+) -> Result<()> {
+    let mut perf_array = AsyncPerfEventArray::try_from(
+        bpf.take_map("NET_EVENTS")
+            .context("NET_EVENTS map not found")?,
+    )?;
+
+    for &cpu_id in cpus {
+        let mut buf = perf_array
+            .open(cpu_id, None)
+            .with_context(|| format!("Failed to open net perf buffer for CPU {}", cpu_id))?;
+
+        let config = config.clone();
+        let alert_tx = alert_tx.clone();
+
+        tokio::spawn(async move {
+            let mut buffers = (0..10)
+                .map(|_| BytesMut::with_capacity(std::mem::size_of::<NetworkEvent>()))
+                .collect::<Vec<_>>();
+
+            loop {
+                let events = match buf.read_events(&mut buffers).await {
+                    Ok(events) => events,
+                    Err(e) => {
+                        error!("Error reading net events from CPU {}: {}", cpu_id, e);
+                        continue;
+                    }
+                };
+
+                if events.lost > 0 {
+                    warn!("Lost {} net events on CPU {}", events.lost, cpu_id);
+                    alert_tx.metrics.events_lost.inc_by(events.lost as u64);
+                }
+
+                for i in 0..events.read {
+                    let event = unsafe {
+                        (buffers[i].as_ptr() as *const NetworkEvent).read_unaligned()
+                    };
+                    process_net_event(&event, &config, &alert_tx);
+                }
+            }
+        });
+    }
+
+    Ok(())
+}
+
 // =============================================================================
 // Event Processing
 // =============================================================================
@@ -950,8 +1127,12 @@ fn process_file_event(
 }
 
 fn process_exec_event(event: &ExecEvent, config: &Config, alert_tx: &AlertSender) {
-    let filename = std::str::from_utf8(event.filename_bytes()).unwrap_or("<invalid-utf8>");
+    let raw_filename = std::str::from_utf8(event.filename_bytes()).unwrap_or("<invalid-utf8>");
     let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
+    let enforce_mode = config.global.mode == "enforce";
+
+    let filename = normalize_path(raw_filename);
+    let filename = filename.as_str();
 
     let agent_config = find_agent_for_event(config, comm);
 
@@ -962,8 +1143,12 @@ fn process_exec_event(event: &ExecEvent, config: &Config, alert_tx: &AlertSender
                 None => true,
             };
 
+            let mode_tag = if enforce_mode { "ENFORCE" } else { "MONITOR" };
+
             let (severity, action) = if allowed {
                 (Severity::Info, Action::Allow)
+            } else if enforce_mode {
+                (Severity::Critical, Action::Blocked)
             } else {
                 (Severity::Warning, Action::Deny)
             };
@@ -973,10 +1158,15 @@ fn process_exec_event(event: &ExecEvent, config: &Config, alert_tx: &AlertSender
                     "[EXEC|ALLOW] agent='{}' pid={} comm='{}' cmd='{}'",
                     agent.name, event.tgid, comm, filename
                 );
+            } else if enforce_mode {
+                warn!(
+                    "[EXEC|BLOCKED|{}] agent='{}' pid={} comm='{}' cmd='{}'",
+                    mode_tag, agent.name, event.tgid, comm, filename
+                );
             } else {
                 warn!(
-                    "[EXEC|DENY] agent='{}' pid={} comm='{}' cmd='{}'",
-                    agent.name, event.tgid, comm, filename
+                    "[EXEC|DENY|{}] agent='{}' pid={} comm='{}' cmd='{}' (not blocked)",
+                    mode_tag, agent.name, event.tgid, comm, filename
                 );
             }
 
@@ -998,6 +1188,77 @@ fn process_exec_event(event: &ExecEvent, config: &Config, alert_tx: &AlertSender
             debug!(
                 "[EXEC|UNKNOWN] pid={} comm='{}' cmd='{}'",
                 event.tgid, comm, filename
+            );
+        }
+    }
+}
+
+fn process_net_event(event: &NetworkEvent, config: &Config, alert_tx: &AlertSender) {
+    let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
+
+    let dest_addr = if event.family == 2 {
+        // AF_INET
+        let octets = event.dest_addr4.to_ne_bytes();
+        format!("{}.{}.{}.{}:{}", octets[0], octets[1], octets[2], octets[3], event.dest_port)
+    } else {
+        // AF_INET6
+        format!("[{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}]:{}",
+            u16::from_be_bytes([event.dest_addr6[0], event.dest_addr6[1]]),
+            u16::from_be_bytes([event.dest_addr6[2], event.dest_addr6[3]]),
+            u16::from_be_bytes([event.dest_addr6[4], event.dest_addr6[5]]),
+            u16::from_be_bytes([event.dest_addr6[6], event.dest_addr6[7]]),
+            u16::from_be_bytes([event.dest_addr6[8], event.dest_addr6[9]]),
+            u16::from_be_bytes([event.dest_addr6[10], event.dest_addr6[11]]),
+            u16::from_be_bytes([event.dest_addr6[12], event.dest_addr6[13]]),
+            u16::from_be_bytes([event.dest_addr6[14], event.dest_addr6[15]]),
+            event.dest_port)
+    };
+
+    let agent_config = find_agent_for_event(config, comm);
+
+    match agent_config {
+        Some(agent) => {
+            let allowed = match &agent.network_policy {
+                Some(policy) => check_network_policy(policy, event.dest_port),
+                None => true,
+            };
+
+            let (severity, action) = if allowed {
+                (Severity::Info, Action::Allow)
+            } else {
+                (Severity::Warning, Action::Deny)
+            };
+
+            if allowed {
+                debug!(
+                    "[NET|ALLOW] agent='{}' pid={} comm='{}' dest='{}'",
+                    agent.name, event.tgid, comm, dest_addr
+                );
+            } else {
+                warn!(
+                    "[NET|DENY] agent='{}' pid={} comm='{}' dest='{}'",
+                    agent.name, event.tgid, comm, dest_addr
+                );
+            }
+
+            alert_tx.send(AlertEvent {
+                timestamp: chrono::Utc::now(),
+                severity,
+                event_type: EventType::NetworkConnect,
+                action,
+                agent_name: agent.name.clone(),
+                pid: event.tgid,
+                comm: comm.to_string(),
+                path: dest_addr,
+                access_mode: format!("port:{}", event.dest_port),
+                identity_method: agent.effective_identity().to_string(),
+                policy_mode: config.global.mode.clone(),
+            });
+        }
+        None => {
+            debug!(
+                "[NET|UNKNOWN] pid={} comm='{}' dest='{}'",
+                event.tgid, comm, dest_addr
             );
         }
     }

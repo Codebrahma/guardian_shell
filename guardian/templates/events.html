@@ -152,28 +152,23 @@
 function eventFilter() {
   return {
     tab: 'live', events: [], severityFilter: '', actionFilter: '',
-    nextId: 0, connected: false, missedEvents: 0, sse: null, retryDelay: 1000,
+    nextId: 0, connected: false, missedEvents: 0,
     historyEvents: [], historySearch: { agent_name: '', path_contains: '', event_type: '' },
     historyTotal: 0, historyOffset: 0, historyLimit: 100, historyLoading: false,
 
-    init() { this.connect(); },
+    init() {
+      const self = this;
+      self.connected = !!(window.__guardianSSE && window.__guardianSSE.readyState === EventSource.OPEN);
 
-    connect() {
-      if (this.sse) { this.sse.close(); this.sse = null; }
-      this.sse = new EventSource('/events/stream');
-      this.sse.onopen = () => { this.connected = true; this.retryDelay = 1000; };
-      this.sse.addEventListener('event', (e) => {
-        try { const data = JSON.parse(e.data); data.id = this.nextId++; this.events.unshift(data); if (this.events.length > 500) this.events.pop(); } catch(err) {}
+      // Listen to events relayed from the shared SSE in base.html
+      document.addEventListener('guardian:event', function(e) {
+        try { const data = JSON.parse(e.detail); data.id = self.nextId++; self.events.unshift(data); if (self.events.length > 500) self.events.pop(); } catch(err) {}
       });
-      this.sse.addEventListener('lag', (e) => {
-        try { const data = JSON.parse(e.data); this.missedEvents += data.missed; } catch(err) {}
+      document.addEventListener('guardian:lag', function(e) {
+        try { const data = JSON.parse(e.detail); self.missedEvents += data.missed; } catch(err) {}
       });
-      this.sse.onerror = () => {
-        this.connected = false; this.sse.close(); this.sse = null;
-        const delay = Math.min(this.retryDelay, 30000);
-        this.retryDelay = Math.min(this.retryDelay * 2, 30000);
-        setTimeout(() => this.connect(), delay);
-      };
+      document.addEventListener('guardian:sse-open', function() { self.connected = true; });
+      document.addEventListener('guardian:sse-error', function() { self.connected = false; });
     },
 
     async loadHistory() {

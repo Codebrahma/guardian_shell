@@ -76,6 +76,38 @@ impl ExecEvent {
     }
 }
 
+/// Network connection event captured by the eBPF tracepoint on sys_enter_connect.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NetworkEvent {
+    pub pid: u32,
+    pub tgid: u32,
+    pub uid: u32,
+    pub family: u8,       // AF_INET=2, AF_INET6=10
+    pub _pad_proto: u8,
+    pub dest_port: u16,   // destination port (host byte order)
+    pub dest_addr4: u32,  // IPv4 address (network byte order), 0 for IPv6
+    pub dest_addr6: [u8; 16], // IPv6 address, zeroed for IPv4
+    pub comm: [u8; MAX_COMM_LEN],
+}
+
+impl NetworkEvent {
+    pub fn comm_bytes(&self) -> &[u8] {
+        let len = self
+            .comm
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(MAX_COMM_LEN);
+        &self.comm[..len]
+    }
+
+    /// Format the destination address as a string.
+    pub fn dest_addr_str(&self) -> &str {
+        // This is a no_std stub; actual formatting done in userspace
+        ""
+    }
+}
+
 /// Policy rule stored in BPF maps for kernel-side enforcement.
 ///
 /// match_type: 0 = exact, 1 = prefix (/**), 2 = single-level (/*)
@@ -105,6 +137,19 @@ pub const MAP_WATCHED_CGROUPS: &str = "WATCHED_CGROUPS";
 pub const MAP_ENFORCE_CGROUPS: &str = "ENFORCE_CGROUPS";
 pub const MAP_CGROUP_DEFAULT_ACTION: &str = "CGROUP_DEFAULT_ACTION";
 
+// Exec enforcement maps (Phase 7)
+pub const MAP_EXEC_DENY_EXACT: &str = "EXEC_DENY_EXACT";
+pub const MAP_EXEC_DENY_PREFIXES: &str = "EXEC_DENY_PREFIXES";
+pub const MAP_EXEC_ALLOW_EXACT: &str = "EXEC_ALLOW_EXACT";
+pub const MAP_EXEC_ALLOW_PREFIXES: &str = "EXEC_ALLOW_PREFIXES";
+pub const MAP_EXEC_DEFAULT_ACTION: &str = "EXEC_DEFAULT_ACTION";
+pub const MAP_EXEC_CGROUP_DEFAULT_ACTION: &str = "EXEC_CGROUP_DEFAULT_ACTION";
+pub const MAP_PENDING_EXEC_DENY: &str = "PENDING_EXEC_DENY";
+
+// Network monitoring maps (Phase 7)
+pub const MAP_NET_EVENTS: &str = "NET_EVENTS";
+pub const MAP_NET_EVENT_BUF: &str = "NET_EVENT_BUF";
+
 // =============================================================================
 // Aya Pod Implementations (userspace only)
 // =============================================================================
@@ -113,6 +158,8 @@ pub const MAP_CGROUP_DEFAULT_ACTION: &str = "CGROUP_DEFAULT_ACTION";
 unsafe impl aya::Pod for FileAccessEvent {}
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for ExecEvent {}
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for NetworkEvent {}
 
 // =============================================================================
 // IPC Protocol Types (userspace only)

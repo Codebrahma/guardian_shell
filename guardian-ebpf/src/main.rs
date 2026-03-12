@@ -14,7 +14,7 @@ use aya_ebpf::{
     programs::{LsmContext, TracePointContext},
 };
 use aya_ebpf::maps::lpm_trie::Key;
-use guardian_common::{ExecEvent, FileAccessEvent, MAX_FILENAME_LEN};
+use guardian_common::{ExecEvent, FileAccessEvent, NetworkEvent, MAX_FILENAME_LEN};
 
 // =============================================================================
 // Maps
@@ -101,6 +101,55 @@ static WATCHED_TGIDS: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
 static ENFORCE_TGIDS: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
 
 // =============================================================================
+// Exec Enforcement Maps (Phase 7)
+// =============================================================================
+
+/// Exec deny rules: exact path matching.
+#[map]
+static EXEC_DENY_EXACT: HashMap<[u8; MAX_FILENAME_LEN], u8> =
+    HashMap::with_max_entries(256, 0);
+
+/// Exec deny rules: LPM trie for prefix matching (/** patterns).
+#[map]
+static EXEC_DENY_PREFIXES: LpmTrie<[u8; MAX_FILENAME_LEN], u8> =
+    LpmTrie::with_max_entries(256, 0);
+
+/// Exec allow rules: exact path matching.
+#[map]
+static EXEC_ALLOW_EXACT: HashMap<[u8; MAX_FILENAME_LEN], u8> =
+    HashMap::with_max_entries(256, 0);
+
+/// Exec allow rules: LPM trie for prefix matching (/** patterns).
+#[map]
+static EXEC_ALLOW_PREFIXES: LpmTrie<[u8; MAX_FILENAME_LEN], u8> =
+    LpmTrie::with_max_entries(256, 0);
+
+/// Default exec action per comm: key = comm, value: 0 = deny, 1 = allow.
+#[map]
+static EXEC_DEFAULT_ACTION: HashMap<[u8; 16], u8> = HashMap::with_max_entries(256, 0);
+
+/// Default exec action per cgroup: key = cgroup_id, value: 0 = deny, 1 = allow.
+#[map]
+static EXEC_CGROUP_DEFAULT_ACTION: HashMap<u64, u8> = HashMap::with_max_entries(256, 0);
+
+/// Pending exec deny decisions: key = pid_tgid, value = 1.
+/// Set by the execve tracepoint, consumed by the bprm_check_security LSM hook.
+#[map]
+static PENDING_EXEC_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+
+// =============================================================================
+// Network Monitoring Maps (Phase 7)
+// =============================================================================
+
+/// Per-CPU scratch buffer for network events.
+#[map]
+static NET_EVENT_BUF: PerCpuArray<NetworkEvent> = PerCpuArray::with_max_entries(1, 0);
+
+/// Perf buffer for network events to userspace.
+#[map]
+static NET_EVENTS: PerfEventArray<NetworkEvent> = PerfEventArray::new(0);
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
@@ -130,6 +179,39 @@ fn is_process_enforcing(comm: &[u8; 16], tgid: u32, cgroup_id: u64) -> bool {
     // Priority 2: Comm/TGID-based enforcement
     unsafe { ENFORCE_COMMS.get(comm) }.is_some()
         || unsafe { ENFORCE_TGIDS.get(&tgid) }.is_some()
+}
+
+/// Evaluate exec deny/allow rules using map lookups (no loops).
+/// Returns true if execution is allowed.
+#[inline(always)]
+fn evaluate_exec_policy(
+    filename: &[u8; MAX_FILENAME_LEN],
+    filename_len: usize,
+    comm: &[u8; 16],
+    cgroup_id: u64,
+) -> bool {
+    let prefix_bits = (filename_len as u32) * 8;
+    let lpm_key = Key::new(prefix_bits, *filename);
+
+    if unsafe { EXEC_DENY_EXACT.get(filename) }.is_some() {
+        return false;
+    }
+    if EXEC_DENY_PREFIXES.get(&lpm_key).is_some() {
+        return false;
+    }
+    if unsafe { EXEC_ALLOW_EXACT.get(filename) }.is_some() {
+        return true;
+    }
+    if EXEC_ALLOW_PREFIXES.get(&lpm_key).is_some() {
+        return true;
+    }
+    if let Some(&action) = unsafe { EXEC_CGROUP_DEFAULT_ACTION.get(&cgroup_id) } {
+        return action == 1;
+    }
+    match unsafe { EXEC_DEFAULT_ACTION.get(comm) } {
+        Some(&action) => action == 1,
+        None => true, // fail-open if no exec default configured
+    }
 }
 
 /// Evaluate deny/allow rules using map lookups (no loops).
@@ -384,6 +466,14 @@ fn try_guardian_exec_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
         }
     }
 
+    // Phase 7: Kernel-side exec policy evaluation for enforcement
+    if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
+        let allowed = evaluate_exec_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
+        if !allowed {
+            let _ = PENDING_EXEC_DENY.insert(&pid_tgid, &1u8, 0);
+        }
+    }
+
     EXEC_EVENTS.output(ctx, event, 0);
 
     Ok(0)
@@ -435,6 +525,170 @@ fn try_guardian_exit_track(_ctx: &TracePointContext) -> Result<u32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
     let _ = CHILD_PIDS.remove(&tgid);
+    Ok(0)
+}
+
+// =============================================================================
+// LSM: bprm_check_security (exec enforcement — blocks command execution)
+// =============================================================================
+
+#[lsm(hook = "bprm_check_security")]
+pub fn guardian_enforce_exec(ctx: LsmContext) -> i32 {
+    match try_enforce_exec(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0, // fail-open on error
+    }
+}
+
+fn try_enforce_exec(_ctx: &LsmContext) -> Result<i32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+
+    if unsafe { PENDING_EXEC_DENY.get(&pid_tgid) }.is_some() {
+        let _ = PENDING_EXEC_DENY.remove(&pid_tgid);
+        return Ok(-1); // -EPERM
+    }
+
+    Ok(0)
+}
+
+// =============================================================================
+// Tracepoint: sys_enter_open (legacy open syscall — belt-and-suspenders)
+// =============================================================================
+
+#[tracepoint]
+pub fn guardian_file_open_legacy(ctx: TracePointContext) -> u32 {
+    match try_guardian_file_open_legacy(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0,
+    }
+}
+
+fn try_guardian_file_open_legacy(ctx: &TracePointContext) -> Result<u32, i64> {
+    let comm = bpf_get_current_comm().map_err(|e| e)?;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    if !is_process_watched(&comm, tgid, cgroup_id) {
+        return Ok(0);
+    }
+
+    let event = unsafe {
+        let ptr = EVENT_BUF.get_ptr_mut(0).ok_or(1i64)?;
+        &mut *ptr
+    };
+
+    event.tgid = tgid;
+    event.pid = pid_tgid as u32;
+    event.uid = (bpf_get_current_uid_gid() & 0xFFFF_FFFF) as u32;
+    event.comm = comm;
+
+    // sys_enter_open (x86_64): filename at offset 16, flags at offset 24
+    let filename_ptr: u64 = unsafe { ctx.read_at(16)? };
+    let flags: u64 = unsafe { ctx.read_at(24)? };
+    event.flags = flags as u32;
+
+    match unsafe {
+        bpf_probe_read_user_str_bytes(filename_ptr as *const u8, &mut event.filename)
+    } {
+        Ok(name_bytes) => {
+            event.filename_len = name_bytes.len() as u32;
+        }
+        Err(_) => {
+            event.filename_len = 0;
+        }
+    }
+
+    if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
+        let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
+        if !allowed {
+            let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+        }
+    }
+
+    EVENTS.output(ctx, event, 0);
+
+    Ok(0)
+}
+
+// =============================================================================
+// Tracepoint: sys_enter_connect (network connection monitoring)
+// =============================================================================
+
+#[tracepoint]
+pub fn guardian_net_connect(ctx: TracePointContext) -> u32 {
+    match try_guardian_net_connect(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0,
+    }
+}
+
+fn try_guardian_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
+    let comm = bpf_get_current_comm().map_err(|e| e)?;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    if !is_process_watched(&comm, tgid, cgroup_id) {
+        return Ok(0);
+    }
+
+    // sys_enter_connect (x86_64): fd at 16, sockaddr* at 24, addrlen at 32
+    let addr_ptr: u64 = unsafe { ctx.read_at(24)? };
+    if addr_ptr == 0 {
+        return Ok(0);
+    }
+
+    // Read sa_family (first 2 bytes of sockaddr)
+    let family: u16 = unsafe {
+        aya_ebpf::helpers::bpf_probe_read_user(addr_ptr as *const u16)?
+    };
+
+    // Only monitor AF_INET (2) and AF_INET6 (10)
+    if family != 2 && family != 10 {
+        return Ok(0);
+    }
+
+    let event = unsafe {
+        let ptr = NET_EVENT_BUF.get_ptr_mut(0).ok_or(1i64)?;
+        &mut *ptr
+    };
+
+    event.tgid = tgid;
+    event.pid = pid_tgid as u32;
+    event.uid = (bpf_get_current_uid_gid() & 0xFFFF_FFFF) as u32;
+    event.comm = comm;
+    event.family = family as u8;
+    event._pad_proto = 0;
+    event.dest_addr4 = 0;
+    event.dest_addr6 = [0u8; 16];
+
+    if family == 2 {
+        // AF_INET: struct sockaddr_in { u16 family, u16 port, u32 addr, u8 zero[8] }
+        let sockaddr: [u8; 8] = unsafe {
+            aya_ebpf::helpers::bpf_probe_read_user(addr_ptr as *const [u8; 8])?
+        };
+        // port at offset 2 (network byte order)
+        event.dest_port = u16::from_be_bytes([sockaddr[2], sockaddr[3]]);
+        // addr at offset 4
+        event.dest_addr4 = u32::from_ne_bytes([sockaddr[4], sockaddr[5], sockaddr[6], sockaddr[7]]);
+    } else {
+        // AF_INET6: struct sockaddr_in6 { u16 family, u16 port, u32 flowinfo, u8 addr[16], u32 scope }
+        let sockaddr: [u8; 28] = unsafe {
+            aya_ebpf::helpers::bpf_probe_read_user(addr_ptr as *const [u8; 28])?
+        };
+        event.dest_port = u16::from_be_bytes([sockaddr[2], sockaddr[3]]);
+        let mut addr6 = [0u8; 16];
+        let mut i = 0;
+        while i < 16 {
+            addr6[i] = sockaddr[8 + i];
+            i += 1;
+        }
+        event.dest_addr6 = addr6;
+    }
+
+    NET_EVENTS.output(ctx, event, 0);
+
     Ok(0)
 }
 

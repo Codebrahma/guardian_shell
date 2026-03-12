@@ -75,31 +75,23 @@ function recentEvents() {
     events: [],
     nextId: 0,
     connected: false,
-    sse: null,
-    retryDelay: 1000,
 
-    init() { this.connect(); },
+    init() {
+      const self = this;
+      // Check if shared SSE is already open
+      self.connected = !!(window.__guardianSSE && window.__guardianSSE.readyState === EventSource.OPEN);
 
-    connect() {
-      if (this.sse) { this.sse.close(); this.sse = null; }
-      this.sse = new EventSource('/events/stream');
-      this.sse.onopen = () => { this.connected = true; this.retryDelay = 1000; };
-      this.sse.addEventListener('event', (e) => {
+      // Listen to events relayed from the shared SSE in base.html
+      document.addEventListener('guardian:event', function(e) {
         try {
-          const data = JSON.parse(e.data);
-          data.id = this.nextId++;
-          this.events.unshift(data);
-          if (this.events.length > 50) this.events.pop();
+          const data = JSON.parse(e.detail);
+          data.id = self.nextId++;
+          self.events.unshift(data);
+          if (self.events.length > 50) self.events.pop();
         } catch(err) {}
       });
-      this.sse.addEventListener('lag', () => {});
-      this.sse.onerror = () => {
-        this.connected = false;
-        this.sse.close(); this.sse = null;
-        const delay = Math.min(this.retryDelay, 30000);
-        this.retryDelay = Math.min(this.retryDelay * 2, 30000);
-        setTimeout(() => this.connect(), delay);
-      };
+      document.addEventListener('guardian:sse-open', function() { self.connected = true; });
+      document.addEventListener('guardian:sse-error', function() { self.connected = false; });
     },
 
     formatTime(ts) {

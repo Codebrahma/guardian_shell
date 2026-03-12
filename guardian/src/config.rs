@@ -211,6 +211,9 @@ pub struct AgentConfig {
     /// Exec policy: controls which commands the agent can execute.
     /// Optional - if not set, all exec is allowed (monitor-only).
     pub exec_policy: Option<ExecPolicy>,
+    /// Network policy: controls outbound connections.
+    /// Optional - if not set, all connections are allowed (monitor-only).
+    pub network_policy: Option<NetworkPolicy>,
     /// Whether to track child processes of this agent. Default: true
     #[serde(default = "default_true")]
     pub watch_children: bool,
@@ -257,6 +260,19 @@ pub struct ExecPolicy {
     pub allow: Vec<String>,
     /// List of denied command path patterns
     pub deny: Vec<String>,
+}
+
+/// Policy for outbound network connections.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NetworkPolicy {
+    /// Default action for connections: "allow" or "deny"
+    pub default: String,
+    /// Allowed destination ports
+    #[serde(default)]
+    pub allow_ports: Vec<u16>,
+    /// Denied destination ports
+    #[serde(default)]
+    pub deny_ports: Vec<u16>,
 }
 
 /// Resource limits applied via cgroup v2 controllers.
@@ -554,6 +570,18 @@ pub fn check_exec_policy(policy: &ExecPolicy, path: &str) -> bool {
     policy.default == "allow"
 }
 
+/// Check whether a network connection (by port) is allowed by a network policy.
+/// Deny takes precedence over allow.
+pub fn check_network_policy(policy: &NetworkPolicy, port: u16) -> bool {
+    if policy.deny_ports.contains(&port) {
+        return false;
+    }
+    if policy.allow_ports.contains(&port) {
+        return true;
+    }
+    policy.default == "allow"
+}
+
 pub fn path_matches(path: &str, pattern: &str) -> bool {
     if pattern.ends_with("/**") {
         let prefix = &pattern[..pattern.len() - 3];
@@ -744,6 +772,7 @@ mod tests {
                 deny: vec![],
             },
             exec_policy: None,
+            network_policy: None,
             watch_children: true,
             resources: None,
         };
@@ -763,6 +792,7 @@ mod tests {
                 deny: vec![],
             },
             exec_policy: None,
+            network_policy: None,
             watch_children: true,
             resources: None,
         };

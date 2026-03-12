@@ -22,6 +22,10 @@ Phase 7 adds (on top of Phase 6) security hardening from `docs/security-improvem
 - **UI friction**: Mandatory wait timers (0/3/5/10s by risk level), type-to-confirm for CRITICAL risk, risk-colored banners
 - **Persistent audit trail**: SQLite `permission_audit` table with full metadata for all permission decisions
 - **Risk display**: Risk level badges, justification warnings, and risk flags shown in banners and requests page
+- **Exec enforcement**: LSM `bprm_check_security` hook with `PENDING_EXEC_DENY` map for kernel-side binary blocking
+- **Network monitoring**: `sys_enter_connect` tracepoint with sockaddr parsing (AF_INET/AF_INET6) and port-based policy
+- **Legacy open hook**: `sys_enter_open` tracepoint as belt-and-suspenders for rare code paths using legacy `open()` syscall
+- **SSE connection fix**: Single shared EventSource with custom DOM events prevents browser connection pool exhaustion
 
 Architecture: Permission requests use oneshot channels for long-poll IPC. Agent sends request
 via Unix socket, daemon creates oneshot channel and broadcasts to dashboard via `tokio::sync::broadcast`.
@@ -29,6 +33,9 @@ Human approves/denies in browser, decision sent back via oneshot, agent unblocks
 SSE endpoint uses `tokio_stream::StreamExt::merge` to combine two broadcast streams.
 Security hardening adds `permissions.rs` module with rate limiter, risk classifier, auto-deny/approve,
 and justification analyzer. All evaluated before the oneshot channel is created.
+Exec enforcement uses a separate `PENDING_EXEC_DENY` map (not shared with file `PENDING_DENY`) because
+during execve, the kernel internally opens the binary, triggering `file_open` LSM which would consume a
+shared pending entry. Network monitoring parses sockaddr from `sys_enter_connect` tracepoint args.
 
 ## Project Structure
 
@@ -43,11 +50,11 @@ guardian_shell/
 │
 ├── guardian-common/            # Shared types (no_std for eBPF, std for userspace)
 │   ├── Cargo.toml
-│   └── src/lib.rs              # FileAccessEvent, IPC protocol types, constants
+│   └── src/lib.rs              # FileAccessEvent, NetworkEvent, IPC protocol types, constants
 │
 ├── guardian-ebpf/              # eBPF kernel program (BPF bytecode)
 │   ├── Cargo.toml              # Target: bpfel-unknown-none
-│   └── src/main.rs             # Tracepoints + LSM hook + cgroup identification
+│   └── src/main.rs             # Tracepoints (openat/open/openat2/execve/connect) + LSM hooks (file_open/bprm_check_security) + cgroup identification
 │
 ├── guardian/                   # Userspace daemon
 │   ├── Cargo.toml
@@ -268,6 +275,10 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | Per-agent rate limiting | Prevents approval fatigue via flood attacks. Exponential backoff on consecutive denials. |
 | SQLite permission audit | Persistent trail survives daemon restarts. Enables future anomaly detection on approval patterns. |
 | openat2 graceful fallback | `load_tracepoint` failure is non-fatal — daemon continues without openat2 coverage on kernels < 5.6. |
+| Separate PENDING_EXEC_DENY map | During execve, kernel internally opens the binary triggering `file_open` LSM. A shared PENDING map would be consumed by the file_open check, so exec enforcement needs its own map. |
+| sys_enter_connect for network monitoring | Tracepoint gives easy access to sockaddr struct. Parses AF_INET (port+IPv4) and AF_INET6 (port+IPv6). Enforcement deferred to LSM `socket_connect`. |
+| Single shared SSE connection | Browser HTTP/1.1 limits (~6 connections per origin). Multiple EventSource instances per page exhausted the pool. Single shared SSE with custom DOM events fixes this. |
+| Legacy `sys_enter_open` hook | Belt-and-suspenders: most code uses `openat`, but rare binaries or direct syscalls may use legacy `open`. Reuses PENDING_DENY and EVENT_BUF maps. |
 
 ## Known Limitations (Phase 7)
 
@@ -277,7 +288,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 4. **Max 256 deny/allow rules**: Per BPF map entry limits
 5. **Enforcement requires CONFIG_BPF_LSM**: Kernel must have `CONFIG_BPF_LSM=y`
    and `bpf` in the LSM list. Falls back to monitor-only if unavailable.
-6. **Exec monitoring is log-only**: Exec events are logged but not blocked (needs LSM `bprm_check_security`)
+6. **Exec enforcement requires CONFIG_BPF_LSM**: Like file enforcement, exec blocking via `bprm_check_security` needs LSM support
 7. **Tracepoint-LSM timing dependency**: Enforcement relies on the `sys_enter_openat`
    tracepoint firing before the LSM `file_open` hook in the same syscall
 8. **Cgroup requires root**: Creating cgroups and running guardian-launch needs root
@@ -291,7 +302,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 16. **Dashboard has no authentication**: Bind to localhost only; use a reverse proxy for remote access with auth
 17. **TailwindCSS/htmx/Alpine.js loaded from CDN**: Dashboard requires internet access for first load (or bundle locally)
 18. **Permission request timeout is fixed at 120s**: Not configurable per-request or per-agent
-19. **No network monitoring**: Agents can make arbitrary network connections (Phase 7b planned)
+19. **Network monitoring is log-only**: Outbound connections logged with port-based policy in userspace, but not blocked in kernel (LSM `socket_connect` enforcement deferred)
 20. **No rename/unlink/hardlink enforcement**: Agents can move/delete files to bypass policy (Phase 7a planned)
 21. **Permission requests require dashboard enabled**: Auto-denied when dashboard is disabled
 22. **No anomaly detection on approval patterns**: Rubber-stamping / persistence attack detection not yet implemented

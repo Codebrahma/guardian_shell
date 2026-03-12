@@ -51,6 +51,7 @@ impl std::fmt::Display for Severity {
 pub enum EventType {
     FileAccess,
     ExecAttempt,
+    NetworkConnect,
     AgentRegistered,
     AgentStopped,
     EventsLost,
@@ -61,6 +62,7 @@ impl std::fmt::Display for EventType {
         match self {
             EventType::FileAccess => write!(f, "file_access"),
             EventType::ExecAttempt => write!(f, "exec_attempt"),
+            EventType::NetworkConnect => write!(f, "network_connect"),
             EventType::AgentRegistered => write!(f, "agent_registered"),
             EventType::AgentStopped => write!(f, "agent_stopped"),
             EventType::EventsLost => write!(f, "events_lost"),

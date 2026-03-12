@@ -18,6 +18,9 @@ pub struct Config {
     /// Phase 5: Web dashboard configuration.
     #[serde(default)]
     pub dashboard: Option<DashboardConfig>,
+    /// Phase 7c: Permission request hardening.
+    #[serde(default)]
+    pub permissions: Option<PermissionsConfig>,
 }
 
 // =============================================================================
@@ -124,6 +127,45 @@ pub struct DashboardConfig {
     /// Path to SQLite database for event storage. Default: "/var/lib/guardian/events.db"
     pub db_path: Option<String>,
 }
+
+// =============================================================================
+// Permissions Hardening Configuration (Phase 7c)
+// =============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PermissionsConfig {
+    /// Paths that are NEVER approvable via interactive request.
+    #[serde(default)]
+    pub auto_deny: Vec<String>,
+    /// Low-risk paths that are auto-approved without human intervention.
+    #[serde(default)]
+    pub auto_approve: Vec<AutoApproveRule>,
+    /// Max permission requests per agent per minute. Default: 3.
+    #[serde(default = "default_rate_per_minute")]
+    pub rate_limit_per_minute: u32,
+    /// Max permission requests per agent per hour. Default: 15.
+    #[serde(default = "default_rate_per_hour")]
+    pub rate_limit_per_hour: u32,
+    /// Cooldown after denial in seconds (doubles each time, up to max). Default: 30.
+    #[serde(default = "default_deny_cooldown")]
+    pub deny_cooldown_secs: u64,
+    /// Max pending requests per agent. Default: 2.
+    #[serde(default = "default_max_pending")]
+    pub max_pending_per_agent: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AutoApproveRule {
+    pub pattern: String,
+    #[serde(default = "default_auto_approve_duration")]
+    pub max_duration_secs: u64,
+}
+
+fn default_rate_per_minute() -> u32 { 3 }
+fn default_rate_per_hour() -> u32 { 15 }
+fn default_deny_cooldown() -> u64 { 30 }
+fn default_max_pending() -> u32 { 2 }
+fn default_auto_approve_duration() -> u64 { 300 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalConfig {
@@ -419,10 +461,65 @@ fn validate_alerting_config(config: &AlertingConfig) -> Result<()> {
 }
 
 // =============================================================================
+// Path Normalization (Phase 7a — closes symlink, traversal, /proc/self/root bypasses)
+// =============================================================================
+
+/// Normalize a raw path to remove common bypass tricks.
+/// Catches /proc/self/root/, /proc/<pid>/root/, and ".." traversal.
+/// Does NOT resolve symlinks (that requires kernel-side bpf_d_path).
+pub fn normalize_path(raw: &str) -> String {
+    let mut path = raw.to_string();
+
+    // Strip /proc/self/root/ prefix (filesystem escape trick)
+    if let Some(rest) = path.strip_prefix("/proc/self/root/") {
+        path = format!("/{}", rest);
+    } else if let Some(rest) = path.strip_prefix("/proc/self/root") {
+        if rest.is_empty() {
+            path = "/".to_string();
+        }
+    }
+
+    // Strip /proc/<pid>/root/ prefix
+    if path.starts_with("/proc/") {
+        let after_proc = &path[6..]; // skip "/proc/"
+        if let Some(slash_pos) = after_proc.find('/') {
+            let pid_part = &after_proc[..slash_pos];
+            if pid_part.bytes().all(|b| b.is_ascii_digit()) {
+                let after_pid = &after_proc[slash_pos..];
+                if let Some(rest) = after_pid.strip_prefix("/root/") {
+                    path = format!("/{}", rest);
+                } else if after_pid == "/root" {
+                    path = "/".to_string();
+                }
+            }
+        }
+    }
+
+    // Resolve ".." and "." components
+    let mut components: Vec<&str> = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => { components.pop(); }
+            c => components.push(c),
+        }
+    }
+
+    if components.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", components.join("/"))
+    }
+}
+
+// =============================================================================
 // Path Pattern Matching
 // =============================================================================
 
 pub fn check_file_policy(policy: &FileAccessPolicy, path: &str) -> bool {
+    let normalized = normalize_path(path);
+    let path = normalized.as_str();
+
     for pattern in &policy.deny {
         if path_matches(path, pattern) {
             return false;
@@ -439,6 +536,9 @@ pub fn check_file_policy(policy: &FileAccessPolicy, path: &str) -> bool {
 }
 
 pub fn check_exec_policy(policy: &ExecPolicy, path: &str) -> bool {
+    let normalized = normalize_path(path);
+    let path = normalized.as_str();
+
     for pattern in &policy.deny {
         if path_matches(path, pattern) {
             return false;
@@ -454,7 +554,7 @@ pub fn check_exec_policy(policy: &ExecPolicy, path: &str) -> bool {
     policy.default == "allow"
 }
 
-fn path_matches(path: &str, pattern: &str) -> bool {
+pub fn path_matches(path: &str, pattern: &str) -> bool {
     if pattern.ends_with("/**") {
         let prefix = &pattern[..pattern.len() - 3];
         path == prefix || path.starts_with(&format!("{}/", prefix))
@@ -592,6 +692,44 @@ mod tests {
         let rule = pattern_to_policy_rule("/etc/shadow");
         assert_eq!(rule.match_type, 0);
         assert_eq!(rule.prefix_len, 11);
+    }
+
+    #[test]
+    fn test_normalize_path_dotdot() {
+        assert_eq!(normalize_path("/tmp/../etc/shadow"), "/etc/shadow");
+        assert_eq!(normalize_path("/home/user/../../etc/passwd"), "/etc/passwd");
+        assert_eq!(normalize_path("/tmp/./file"), "/tmp/file");
+    }
+
+    #[test]
+    fn test_normalize_path_proc_self_root() {
+        assert_eq!(normalize_path("/proc/self/root/etc/shadow"), "/etc/shadow");
+        assert_eq!(normalize_path("/proc/self/root/home/user/.ssh/id_rsa"), "/home/user/.ssh/id_rsa");
+    }
+
+    #[test]
+    fn test_normalize_path_proc_pid_root() {
+        assert_eq!(normalize_path("/proc/1234/root/etc/shadow"), "/etc/shadow");
+        assert_eq!(normalize_path("/proc/1/root/etc/passwd"), "/etc/passwd");
+    }
+
+    #[test]
+    fn test_normalize_path_already_clean() {
+        assert_eq!(normalize_path("/etc/shadow"), "/etc/shadow");
+        assert_eq!(normalize_path("/tmp/file.txt"), "/tmp/file.txt");
+    }
+
+    #[test]
+    fn test_policy_blocks_normalized_bypass() {
+        let policy = FileAccessPolicy {
+            default: "allow".to_string(),
+            allow: vec!["/tmp/**".to_string()],
+            deny: vec!["/etc/shadow".to_string()],
+        };
+        // These should all be denied after normalization
+        assert!(!check_file_policy(&policy, "/proc/self/root/etc/shadow"));
+        assert!(!check_file_policy(&policy, "/tmp/../etc/shadow"));
+        assert!(!check_file_policy(&policy, "/proc/1234/root/etc/shadow"));
     }
 
     #[test]

@@ -17,6 +17,7 @@
             <th>Agent</th>
             <th>Type</th>
             <th>Resource</th>
+            <th>Risk</th>
             <th>Justification</th>
             <th>Waiting</th>
             <th>Actions</th>
@@ -24,7 +25,9 @@
         </thead>
         <tbody id="pending-requests">
           {% for req in pending %}
-          <tr id="perm-row-{{ req.id }}">
+          <tr id="perm-row-{{ req.id }}"
+              x-data="{ dur: 600, confirmText: '', waitElapsed: 0, waitTarget: {{ req.wait_seconds }} }"
+              x-init="if (waitTarget > 0) { let iv = setInterval(() => { waitElapsed++; if (waitElapsed >= waitTarget) clearInterval(iv); }, 1000); }">
             <td class="text-muted">#{{ req.id }}</td>
             <td class="text-primary fw-500">{{ req.agent_name }}</td>
             <td>
@@ -33,33 +36,64 @@
               </span>
             </td>
             <td class="cell-path">{{ req.resource_path }}</td>
+            <td>
+              <span class="badge badge-risk-{{ req.risk_level }}">{{ req.risk_level }}</span>
+              {% if !req.justification_warnings.is_empty() %}
+              <div style="margin-top: 4px;">
+                {% for w in req.justification_warnings %}
+                <span class="perm-warning-tag">{{ w }}</span>
+                {% endfor %}
+              </div>
+              {% endif %}
+              {% if !req.risk_flags.is_empty() %}
+              <div style="margin-top: 4px; display: flex; gap: 2px; flex-wrap: wrap;">
+                {% for f in req.risk_flags %}
+                <span class="badge badge-gray" style="font-size: 10px;">{{ f }}</span>
+                {% endfor %}
+              </div>
+              {% endif %}
+            </td>
             <td class="text-secondary text-sm">{{ req.justification }}</td>
             <td class="text-muted text-xs">{{ req.elapsed_secs }}s / {{ req.timeout_secs }}s</td>
             <td>
-              <div class="flex gap-sm" x-data="{ dur: 600 }">
-                <select x-model="dur" style="width: 80px; padding: 3px 6px; font-size: 12px; background: var(--bg-primary); border: 1px solid var(--border); color: var(--text-primary); border-radius: 4px;">
-                  <option value="60">1m</option>
-                  <option value="300">5m</option>
-                  <option value="600" selected>10m</option>
-                  <option value="1800">30m</option>
-                  <option value="3600">1h</option>
-                </select>
-                <button class="btn btn-primary btn-sm"
-                        @click="fetch(`/api/permissions/{{ req.id }}/approve`, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`duration=${dur}`}).then(()=>document.getElementById('perm-row-{{ req.id }}').remove())">
-                  Approve
-                </button>
-                <button class="btn btn-danger btn-sm"
-                        hx-post="/api/permissions/{{ req.id }}/deny"
-                        hx-target="#perm-row-{{ req.id }}"
-                        hx-swap="outerHTML">
-                  Deny
-                </button>
+              <div class="flex gap-sm" style="flex-direction: column; align-items: flex-start;">
+                <div class="flex gap-sm">
+                  <select x-model="dur" style="width: 80px; padding: 3px 6px; font-size: 12px; background: var(--bg-primary); border: 1px solid var(--border); color: var(--text-primary); border-radius: 4px;">
+                    <option value="60">1m</option>
+                    <option value="300">5m</option>
+                    <option value="600" selected>10m</option>
+                    <option value="1800">30m</option>
+                    <option value="3600">1h</option>
+                  </select>
+                  <button class="btn btn-primary btn-sm"
+                          :disabled="(waitTarget > 0 && waitElapsed < waitTarget){% if req.requires_type_confirm %} || confirmText !== 'CONFIRM'{% endif %}"
+                          @click="fetch(`/api/permissions/{{ req.id }}/approve`, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`duration=${dur}`}).then(()=>document.getElementById('perm-row-{{ req.id }}').remove())">
+                    <template x-if="waitTarget > 0 && waitElapsed < waitTarget">
+                      <span x-text="'Wait ' + (waitTarget - waitElapsed) + 's'"></span>
+                    </template>
+                    <template x-if="!(waitTarget > 0 && waitElapsed < waitTarget)">
+                      <span>Approve</span>
+                    </template>
+                  </button>
+                  <button class="btn btn-danger btn-sm"
+                          hx-post="/api/permissions/{{ req.id }}/deny"
+                          hx-target="#perm-row-{{ req.id }}"
+                          hx-swap="outerHTML">
+                    Deny
+                  </button>
+                </div>
+                {% if req.requires_type_confirm %}
+                <div class="perm-type-confirm">
+                  <input type="text" x-model="confirmText" placeholder="Type CONFIRM">
+                  <span class="hint">Required for critical risk</span>
+                </div>
+                {% endif %}
               </div>
             </td>
           </tr>
           {% endfor %}
           {% if pending.is_empty() %}
-          <tr id="pending-empty"><td colspan="7" class="empty-state">No pending permission requests</td></tr>
+          <tr id="pending-empty"><td colspan="8" class="empty-state">No pending permission requests</td></tr>
           {% endif %}
         </tbody>
       </table>
@@ -79,6 +113,7 @@
             <th>Agent</th>
             <th>Type</th>
             <th>Resource</th>
+            <th>Risk</th>
             <th>Decision</th>
             <th>Reason</th>
             <th>Duration</th>
@@ -96,6 +131,11 @@
             </td>
             <td class="cell-path">{{ req.resource_path }}</td>
             <td>
+              {% if !req.risk_level.is_empty() %}
+              <span class="badge badge-risk-{{ req.risk_level }}">{{ req.risk_level }}</span>
+              {% endif %}
+            </td>
+            <td>
               <span class="badge {% if req.approved %}badge-success{% else %}badge-critical{% endif %}">
                 {% if req.approved %}approved{% else %}denied{% endif %}
               </span>
@@ -105,7 +145,7 @@
           </tr>
           {% endfor %}
           {% if resolved.is_empty() %}
-          <tr><td colspan="7" class="empty-state">No resolved requests yet</td></tr>
+          <tr><td colspan="8" class="empty-state">No resolved requests yet</td></tr>
           {% endif %}
         </tbody>
       </table>

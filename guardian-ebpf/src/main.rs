@@ -237,6 +237,85 @@ fn try_guardian_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
 }
 
 // =============================================================================
+// Tracepoint: sys_enter_openat2 (same as openat, covers newer syscall)
+// =============================================================================
+
+/// Handles openat2 syscall (Linux 5.6+). Reuses the same logic as openat.
+/// openat2 tracepoint args (x86_64): dfd at 16, filename at 24, how at 32.
+/// The 'how' arg is a struct open_how * (flags, mode, resolve fields).
+#[tracepoint]
+pub fn guardian_file_openat2(ctx: TracePointContext) -> u32 {
+    match try_guardian_file_openat2(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0,
+    }
+}
+
+fn try_guardian_file_openat2(ctx: &TracePointContext) -> Result<u32, i64> {
+    let comm = bpf_get_current_comm().map_err(|e| e)?;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    if !is_process_watched(&comm, tgid, cgroup_id) {
+        return Ok(0);
+    }
+
+    let event = unsafe {
+        let ptr = EVENT_BUF.get_ptr_mut(0).ok_or(1i64)?;
+        &mut *ptr
+    };
+
+    event.tgid = tgid;
+    event.pid = pid_tgid as u32;
+    event.uid = (bpf_get_current_uid_gid() & 0xFFFF_FFFF) as u32;
+    event.comm = comm;
+
+    // Read tracepoint args (x86_64 offsets for sys_enter_openat2)
+    // filename pointer at offset 24 (same position as openat)
+    let filename_ptr: u64 = unsafe { ctx.read_at(24)? };
+
+    // openat2's third arg is struct open_how * at offset 32.
+    // Read flags from the struct (first u64 field of open_how).
+    let how_ptr: u64 = unsafe { ctx.read_at(32)? };
+    if how_ptr != 0 {
+        // open_how.flags is the first field (u64)
+        match unsafe {
+            aya_ebpf::helpers::bpf_probe_read_user(how_ptr as *const u64)
+        } {
+            Ok(flags) => { event.flags = flags as u32; }
+            Err(_) => { event.flags = 0; }
+        }
+    } else {
+        event.flags = 0;
+    }
+
+    match unsafe {
+        bpf_probe_read_user_str_bytes(filename_ptr as *const u8, &mut event.filename)
+    } {
+        Ok(name_bytes) => {
+            event.filename_len = name_bytes.len() as u32;
+        }
+        Err(_) => {
+            event.filename_len = 0;
+        }
+    }
+
+    // Kernel-side policy evaluation for enforcement
+    if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
+        let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
+        if !allowed {
+            let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+        }
+    }
+
+    // Always send event to userspace for logging
+    EVENTS.output(ctx, event, 0);
+
+    Ok(0)
+}
+
+// =============================================================================
 // LSM: file_open (enforcement - actually blocks access)
 // =============================================================================
 

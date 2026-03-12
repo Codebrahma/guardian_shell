@@ -8,22 +8,27 @@ on this project on a Linux machine.
 Guardian Shell is a Linux security tool that uses eBPF to monitor and restrict
 LLM agent activities. It's built with Rust and the Aya eBPF framework.
 
-**Current state: Phase 6 - Interactive Permission Requests (compiled on Linux)**
+**Current state: Phase 7 - Security Hardening (compiled on Linux)**
 
-Phase 6 adds (on top of Phase 5):
-- **Interactive permission requests**: Agents can ask for temporary access via `guardian-ctl request-permission`
-- **Real-time approval workflow**: Permission request banners appear on all dashboard pages via SSE
-- **Dedicated requests page**: `/requests` page with pending requests table and resolved history
-- **Long-poll IPC**: `tokio::sync::oneshot` channels for agent-blocks-until-human-decides pattern
-- **SSE stream merging**: Alert events and permission events merged into single SSE endpoint
-- **Exec grant support**: Temporary grants now support both file access and exec command types
-- **Permission audit trail**: Last 100 resolved requests kept in memory with full metadata
-- **Auto-deny timeout**: 120-second timeout with automatic denial (fail-secure)
+Phase 7 adds (on top of Phase 6) security hardening from `docs/security-improvements-research.md`:
+
+- **Path canonicalization**: `normalize_path()` strips `/proc/self/root/`, `/proc/<pid>/root/`, resolves `..` components
+- **openat2 tracepoint**: `sys_enter_openat2` eBPF hook closes the openat2 syscall bypass (Linux 5.6+)
+- **Permission rate limiting**: Per-agent rate limits (3/min, 15/hr), exponential backoff after denials, same-resource cooldown
+- **Risk classification**: 4-tier risk scoring (Low/Medium/High/Critical) with path patterns, exec multiplier, post-denial multiplier
+- **Auto-deny**: Configurable never-approve list for critical resources (`/etc/shadow`, SSH keys, etc.)
+- **Auto-approve**: Configurable auto-approve for low-risk resources (`/tmp/**`, `/proc/self/**`)
+- **Justification analysis**: Pattern matching for suspicious text (urgency, security bypass, reassurance, authority claims)
+- **UI friction**: Mandatory wait timers (0/3/5/10s by risk level), type-to-confirm for CRITICAL risk, risk-colored banners
+- **Persistent audit trail**: SQLite `permission_audit` table with full metadata for all permission decisions
+- **Risk display**: Risk level badges, justification warnings, and risk flags shown in banners and requests page
 
 Architecture: Permission requests use oneshot channels for long-poll IPC. Agent sends request
 via Unix socket, daemon creates oneshot channel and broadcasts to dashboard via `tokio::sync::broadcast`.
 Human approves/denies in browser, decision sent back via oneshot, agent unblocks immediately.
 SSE endpoint uses `tokio_stream::StreamExt::merge` to combine two broadcast streams.
+Security hardening adds `permissions.rs` module with rate limiter, risk classifier, auto-deny/approve,
+and justification analyzer. All evaluated before the oneshot channel is created.
 
 ## Project Structure
 
@@ -60,7 +65,8 @@ guardian_shell/
 │   │   └── app.css             # Custom CSS
 │   └── src/
 │       ├── main.rs             # Entry point, eBPF loading, event loop, IPC server
-│       ├── config.rs           # TOML parsing, policy engine, alerting + dashboard config
+│       ├── config.rs           # TOML parsing, policy engine, path normalization, alerting + dashboard config
+│       ├── permissions.rs      # Permission hardening: rate limiting, risk classification, auto-deny/approve, justification analysis
 │       ├── ipc.rs              # IPC server, agent registration, cgroup lifecycle, permission requests
 │       ├── alerting/           # Phase 4: Alerting & Integration
 │       │   ├── mod.rs          # AlertManager, AlertSender, dedup, dispatch, broadcast
@@ -256,17 +262,22 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | Alpine.js global permission store | Defined in `base.html`, available on every page. Banners appear everywhere without code duplication. |
 | 120s auto-deny timeout | Fail-secure: unanswered requests are denied. Prevents agents from hanging indefinitely. |
 | Dual data sources (fetch + SSE) | HTTP fetch catches pre-existing pending requests; SSE delivers new ones in real time. |
+| Userspace path normalization | Quick win for `/proc/self/root/` and `..` bypasses without kernel changes. Not full canonicalization (no symlinks). |
+| Risk-based approval friction | 4-tier risk scoring with mandatory wait timers prevents reflexive rubber-stamping of high-risk requests. |
+| Justification pattern matching | Simple string matching flags social engineering patterns (urgency, authority claims). Low false positive rate. |
+| Per-agent rate limiting | Prevents approval fatigue via flood attacks. Exponential backoff on consecutive denials. |
+| SQLite permission audit | Persistent trail survives daemon restarts. Enables future anomaly detection on approval patterns. |
+| openat2 graceful fallback | `load_tracepoint` failure is non-fatal — daemon continues without openat2 coverage on kernels < 5.6. |
 
-## Known Limitations (Phase 6)
+## Known Limitations (Phase 7)
 
-1. **Relative paths not resolved**: eBPF captures whatever path the syscall receives
-2. **Only hooks `openat`**: Doesn't cover `open` (rare on modern Linux), `openat2`,
-   or `readlink`/`stat` (for detecting path enumeration)
+1. **Symlinks not resolved in eBPF**: Userspace `normalize_path()` catches `/proc/self/root/` and `..` but not symlinks. Full fix requires LSM `file_open` with `bpf_d_path()` (Linux 5.11+, not yet implemented)
+2. **openat2 tracepoint requires kernel 5.6+**: Gracefully skipped on older kernels
 3. **x86_64 offsets hardcoded**: Tracepoint field offsets may differ on aarch64/arm
 4. **Max 256 deny/allow rules**: Per BPF map entry limits
 5. **Enforcement requires CONFIG_BPF_LSM**: Kernel must have `CONFIG_BPF_LSM=y`
    and `bpf` in the LSM list. Falls back to monitor-only if unavailable.
-6. **Exec monitoring is log-only**: Exec events are logged but not blocked
+6. **Exec monitoring is log-only**: Exec events are logged but not blocked (needs LSM `bprm_check_security`)
 7. **Tracepoint-LSM timing dependency**: Enforcement relies on the `sys_enter_openat`
    tracepoint firing before the LSM `file_open` hook in the same syscall
 8. **Cgroup requires root**: Creating cgroups and running guardian-launch needs root
@@ -280,9 +291,10 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 16. **Dashboard has no authentication**: Bind to localhost only; use a reverse proxy for remote access with auth
 17. **TailwindCSS/htmx/Alpine.js loaded from CDN**: Dashboard requires internet access for first load (or bundle locally)
 18. **Permission request timeout is fixed at 120s**: Not configurable per-request or per-agent
-19. **Permission audit trail is in-memory only**: Last 100 resolved requests; lost on daemon restart
-20. **No auto-approve rules for permission requests**: Every request requires manual human approval
+19. **No network monitoring**: Agents can make arbitrary network connections (Phase 7b planned)
+20. **No rename/unlink/hardlink enforcement**: Agents can move/delete files to bypass policy (Phase 7a planned)
 21. **Permission requests require dashboard enabled**: Auto-denied when dashboard is disabled
+22. **No anomaly detection on approval patterns**: Rubber-stamping / persistence attack detection not yet implemented
 
 ## Build Notes
 
@@ -342,6 +354,28 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 - **Alpine.js permission store**: global store with countdown timer, badge counter
 - **Resolved history**: last 100 resolved requests with full metadata
 
+### Phase 7: Security Hardening (Partial) ✅ DONE
+Based on `docs/security-improvements-research.md`:
+
+**7a: Critical Security Fixes (partial):**
+- Userspace path normalization (`normalize_path()`) in config.rs + main.rs event loop
+- `openat2` tracepoint hook in eBPF (closes openat2 syscall bypass)
+- *Not yet implemented:* LSM `file_open` with `bpf_d_path()`, LSM `bprm_check_security`, dynamic linker detection, `inode_rename`/`inode_unlink` hooks
+
+**7c: Approval Hardening (complete):**
+- Per-agent rate limiting (3/min, 15/hr, exponential backoff, same-resource cooldown)
+- Risk classification with 4-tier scoring (Low/Medium/High/Critical)
+- Auto-deny for never-approve resources
+- Auto-approve for low-risk resources with configurable duration
+- Justification text analysis (urgency, security bypass, reassurance, authority claims)
+- Mandatory wait timers in UI (0/3/5/10s by risk level)
+- Type-to-confirm for CRITICAL risk resources
+- Risk-colored permission banners with justification warnings
+- Persistent SQLite audit trail for all permission decisions
+- `/api/permissions/audit` endpoint for querying audit history
+
+**Not yet implemented:** Phase 7b (network monitoring), Phase 7d (advanced hardening: inode deny map, content hashing, io_uring blocking, mmap_file LSM, anomaly detection)
+
 ## Dependency Versions
 
 | Crate | Version | Purpose |
@@ -375,7 +409,8 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 
 - All source files have extensive inline comments explaining eBPF concepts,
   Rust patterns, and security rationale - the user is learning all three simultaneously
-- `guardian/src/config.rs` has 10 unit tests covering path matching, policy evaluation, and identity
+- `guardian/src/config.rs` has 15 unit tests covering path matching, policy evaluation, identity, and path normalization
+- `guardian/src/permissions.rs` has 6 unit tests for rate limiting, risk classification, auto-deny/approve, and justification analysis
 - `guardian/src/main.rs` has 4 unit tests for flag decoding and comm conversion
 - The tests in `guardian/` can only run on Linux (aya dependency)
 - `guardian-common` tests pass on any platform

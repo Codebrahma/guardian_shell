@@ -29,6 +29,7 @@ pub fn router(state: Arc<DashboardState>) -> Router {
         .route("/api/events", get(routes::api::query_events))
         .route("/api/permissions/pending", get(routes::api::list_pending_permissions))
         .route("/api/permissions/resolved", get(routes::api::list_resolved_permissions))
+        .route("/api/permissions/audit", get(routes::api::query_permission_audit))
         // htmx API endpoints
         .route("/api/agents/{name}/stop", post(routes::api::stop_agent))
         .route("/api/agents/{name}/grant", post(routes::api::grant_access))

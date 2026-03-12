@@ -108,6 +108,11 @@ struct PendingRequestInfo {
     timeout_secs: u64,
     elapsed_secs: u64,
     requested_at: String,
+    risk_level: String,
+    risk_flags: Vec<String>,
+    wait_seconds: u32,
+    requires_type_confirm: bool,
+    justification_warnings: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -122,6 +127,7 @@ struct ResolvedRequestInfo {
     approved: bool,
     reason: String,
     grant_duration_secs: u64,
+    risk_level: String,
 }
 
 // =============================================================================
@@ -272,15 +278,25 @@ pub async fn requests(
     let pending: Vec<PendingRequestInfo> = s
         .pending_permissions
         .iter()
-        .map(|p| PendingRequestInfo {
-            id: p.id,
-            agent_name: p.agent_name.clone(),
-            resource_type: p.resource_type.clone(),
-            resource_path: p.resource_path.clone(),
-            justification: p.justification.clone().unwrap_or_default(),
-            timeout_secs: p.timeout_secs,
-            elapsed_secs: p.requested_at.elapsed().as_secs(),
-            requested_at: p.requested_at_utc.format("%H:%M:%S").to_string(),
+        .map(|p| {
+            let justification_warnings: Vec<String> = p.justification_flags.iter()
+                .map(|(cat, matched)| format!("{}: \"{}\"", cat, matched))
+                .collect();
+            PendingRequestInfo {
+                id: p.id,
+                agent_name: p.agent_name.clone(),
+                resource_type: p.resource_type.clone(),
+                resource_path: p.resource_path.clone(),
+                justification: p.justification.clone().unwrap_or_default(),
+                timeout_secs: p.timeout_secs,
+                elapsed_secs: p.requested_at.elapsed().as_secs(),
+                requested_at: p.requested_at_utc.format("%H:%M:%S").to_string(),
+                risk_level: p.risk_level.as_str().to_string(),
+                risk_flags: p.risk_flags.clone(),
+                wait_seconds: p.risk_level.wait_seconds(),
+                requires_type_confirm: p.risk_level.requires_type_confirm(),
+                justification_warnings,
+            }
         })
         .collect();
 
@@ -299,6 +315,7 @@ pub async fn requests(
             approved: r.approved,
             reason: r.reason.clone(),
             grant_duration_secs: r.grant_duration_secs.unwrap_or(0),
+            risk_level: r.risk_level.clone(),
         })
         .collect();
 

@@ -2,6 +2,7 @@ mod alerting;
 mod config;
 mod dashboard;
 mod ipc;
+mod permissions;
 
 use anyhow::{Context, Result};
 use aya::{
@@ -21,7 +22,7 @@ use std::time::Duration;
 use tokio::{signal, sync::Mutex, sync::broadcast, time};
 
 use crate::alerting::{Action, AlertEvent, AlertSender, EventType, Severity};
-use crate::config::{check_exec_policy, check_file_policy, Config};
+use crate::config::{check_exec_policy, check_file_policy, normalize_path, Config};
 use crate::ipc::{CgroupBpfMaps, IpcState, PolicyBpfMaps, SharedIpcState};
 
 // =============================================================================
@@ -166,6 +167,8 @@ async fn main() -> Result<()> {
 
     // Step 3: Load all eBPF programs into the kernel BEFORE taking maps.
     load_tracepoint(&mut bpf, "guardian_file_open")?;
+    // openat2 tracepoint (Linux 5.6+) — may not exist on older kernels
+    let has_openat2 = load_tracepoint(&mut bpf, "guardian_file_openat2").is_ok();
     load_tracepoint(&mut bpf, "guardian_exec_monitor")?;
     load_tracepoint(&mut bpf, "guardian_fork_track")?;
     load_tracepoint(&mut bpf, "guardian_exit_track")?;
@@ -203,6 +206,13 @@ async fn main() -> Result<()> {
     // Step 5: Attach eBPF Programs to hooks
     attach_tracepoint(&mut bpf, "guardian_file_open", "syscalls", "sys_enter_openat")?;
     info!("Attached: syscalls/sys_enter_openat (file monitoring)");
+
+    if has_openat2 {
+        match attach_tracepoint(&mut bpf, "guardian_file_openat2", "syscalls", "sys_enter_openat2") {
+            Ok(()) => info!("Attached: syscalls/sys_enter_openat2 (openat2 monitoring)"),
+            Err(e) => warn!("openat2 tracepoint not available (kernel < 5.6?): {}", e),
+        }
+    }
 
     attach_tracepoint(
         &mut bpf,
@@ -272,6 +282,8 @@ async fn main() -> Result<()> {
         resolved_permissions: collections::VecDeque::new(),
         next_permission_id: 1,
         permission_bus: None, // Set below if dashboard is enabled
+        rate_limits: collections::HashMap::new(),
+        event_db: None, // Set below if dashboard is enabled
     }));
 
     // Step 8b: Start Dashboard (Phase 5) with SQLite event storage
@@ -333,10 +345,11 @@ async fn main() -> Result<()> {
             }
         });
 
-        // Enable permission bus on IPC state now that dashboard is active
+        // Enable permission bus and DB on IPC state now that dashboard is active
         {
             let mut s = ipc_state.lock().await;
             s.permission_bus = Some(permission_bus_tx.clone());
+            s.event_db = Some(db.clone());
         }
 
         let dash_state = Arc::new(dashboard::DashboardState {
@@ -867,13 +880,17 @@ fn process_file_event(
     enforce_mode: bool,
     alert_tx: &AlertSender,
 ) {
-    let filename = std::str::from_utf8(event.filename_bytes()).unwrap_or("<invalid-utf8>");
+    let raw_filename = std::str::from_utf8(event.filename_bytes()).unwrap_or("<invalid-utf8>");
     let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
     let access_mode = decode_open_flags(event.flags);
 
-    if filename.is_empty() {
+    if raw_filename.is_empty() {
         return;
     }
+
+    // Normalize path to catch bypass attempts (/proc/self/root, .., etc.)
+    let filename = normalize_path(raw_filename);
+    let filename = filename.as_str();
 
     let agent_config = find_agent_for_event(config, comm);
 

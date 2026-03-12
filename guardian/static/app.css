@@ -193,6 +193,12 @@ table tbody tr:last-child td { border-bottom: none; }
 .badge-mode-enforce { background: var(--danger-bg); color: var(--danger); }
 .badge-mode-monitor { background: var(--accent-bg); color: var(--accent); }
 
+/* Risk level badges */
+.badge-risk-low { background: var(--success-bg); color: var(--success); }
+.badge-risk-medium { background: var(--warning-bg); color: var(--warning); }
+.badge-risk-high { background: rgba(251, 146, 60, 0.15); color: #fb923c; }
+.badge-risk-critical { background: var(--danger-bg); color: var(--danger); font-weight: 700; }
+
 /* ─── Buttons ─── */
 .btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -447,6 +453,38 @@ label {
   background: var(--bg-primary); border: 1px solid var(--border);
   color: var(--text-primary); border-radius: var(--radius);
 }
+.perm-banner-risk {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px; flex-wrap: wrap;
+}
+.perm-banner-warnings {
+  margin-top: 6px; display: flex; flex-direction: column; gap: 3px;
+}
+.perm-warning-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; padding: 2px 6px;
+  background: var(--danger-bg); color: var(--danger);
+  border-radius: var(--radius-sm);
+}
+.perm-type-confirm {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+}
+.perm-type-confirm input {
+  width: 120px; padding: 4px 8px; font-size: 12px;
+  font-family: var(--font-mono);
+}
+.perm-type-confirm .hint {
+  font-size: 11px; color: var(--text-muted);
+}
+
+/* Risk-colored banner borders */
+.perm-banner.risk-low { border-color: var(--success); border-left-color: var(--success); }
+.perm-banner.risk-low .perm-banner-icon { background: var(--success-bg); color: var(--success); }
+.perm-banner.risk-medium { border-color: var(--warning); border-left-color: var(--warning); }
+.perm-banner.risk-high { border-color: #fb923c; border-left-color: #fb923c; }
+.perm-banner.risk-high .perm-banner-icon { background: rgba(251, 146, 60, 0.15); color: #fb923c; }
+.perm-banner.risk-critical { border-color: var(--danger); border-left-color: var(--danger); }
+.perm-banner.risk-critical .perm-banner-icon { background: var(--danger-bg); color: var(--danger); }
 
 /* ─── Nav badge (pending count) ─── */
 .nav-badge {

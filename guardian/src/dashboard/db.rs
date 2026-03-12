@@ -39,6 +39,24 @@ pub struct StoredEvent {
     pub policy_mode: String,
 }
 
+/// A resolved permission from the audit trail.
+#[derive(Debug, serde::Serialize)]
+pub struct StoredPermissionAudit {
+    pub id: i64,
+    pub request_id: i64,
+    pub agent_name: String,
+    pub resource_type: String,
+    pub resource_path: String,
+    pub justification: Option<String>,
+    pub risk_level: Option<String>,
+    pub risk_flags: Option<String>,
+    pub requested_at: String,
+    pub resolved_at: String,
+    pub approved: bool,
+    pub reason: String,
+    pub grant_duration_secs: Option<i64>,
+}
+
 impl EventDb {
     /// Open (or create) the SQLite database at the given path.
     pub fn open(path: &str) -> Result<Self, String> {
@@ -75,9 +93,28 @@ impl EventDb {
             CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity);
             CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_name);
-            CREATE INDEX IF NOT EXISTS idx_events_action ON events(action);",
+            CREATE INDEX IF NOT EXISTS idx_events_action ON events(action);
+
+            CREATE TABLE IF NOT EXISTS permission_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id INTEGER NOT NULL,
+                agent_name TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                resource_path TEXT NOT NULL,
+                justification TEXT,
+                risk_level TEXT,
+                risk_flags TEXT,
+                requested_at TEXT NOT NULL,
+                resolved_at TEXT NOT NULL,
+                approved INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                grant_duration_secs INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_perm_audit_agent ON permission_audit(agent_name);
+            CREATE INDEX IF NOT EXISTS idx_perm_audit_resolved ON permission_audit(resolved_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_perm_audit_approved ON permission_audit(approved);",
         )
-        .map_err(|e| format!("Failed to create events table: {}", e))?;
+        .map_err(|e| format!("Failed to create tables: {}", e))?;
 
         info!("Event database opened: {}", path);
 
@@ -171,6 +208,86 @@ impl EventDb {
             .query_row(&sql, params_refs.as_slice(), |row| row.get(0))
             .map_err(|e| format!("Count query failed: {}", e))?;
         Ok(count)
+    }
+
+    /// Insert a resolved permission into the audit trail.
+    pub fn insert_permission_audit(
+        &self,
+        request_id: u64,
+        agent_name: &str,
+        resource_type: &str,
+        resource_path: &str,
+        justification: Option<&str>,
+        risk_level: &str,
+        risk_flags: &[String],
+        requested_at: &str,
+        resolved_at: &str,
+        approved: bool,
+        reason: &str,
+        grant_duration_secs: Option<u64>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock poisoned: {}", e))?;
+        let risk_flags_json = serde_json::to_string(risk_flags).unwrap_or_default();
+        conn.execute(
+            "INSERT INTO permission_audit (request_id, agent_name, resource_type, resource_path, justification, risk_level, risk_flags, requested_at, resolved_at, approved, reason, grant_duration_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                request_id as i64,
+                agent_name,
+                resource_type,
+                resource_path,
+                justification,
+                risk_level,
+                risk_flags_json,
+                requested_at,
+                resolved_at,
+                approved as i32,
+                reason,
+                grant_duration_secs.map(|d| d as i64),
+            ],
+        )
+        .map_err(|e| format!("Permission audit insert failed: {}", e))?;
+        Ok(())
+    }
+
+    /// Query recent permission audit entries.
+    pub fn query_permission_audit(&self, limit: u32) -> Result<Vec<StoredPermissionAudit>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock poisoned: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, request_id, agent_name, resource_type, resource_path, justification, risk_level, risk_flags, requested_at, resolved_at, approved, reason, grant_duration_secs
+                 FROM permission_audit ORDER BY id DESC LIMIT ?1",
+            )
+            .map_err(|e| format!("Query prepare failed: {}", e))?;
+
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(StoredPermissionAudit {
+                    id: row.get(0)?,
+                    request_id: row.get(1)?,
+                    agent_name: row.get(2)?,
+                    resource_type: row.get(3)?,
+                    resource_path: row.get(4)?,
+                    justification: row.get(5)?,
+                    risk_level: row.get(6)?,
+                    risk_flags: row.get(7)?,
+                    requested_at: row.get(8)?,
+                    resolved_at: row.get(9)?,
+                    approved: row.get::<_, i32>(10)? != 0,
+                    reason: row.get(11)?,
+                    grant_duration_secs: row.get(12)?,
+                })
+            })
+            .map_err(|e| format!("Query failed: {}", e))?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            match row {
+                Ok(entry) => entries.push(entry),
+                Err(e) => warn!("Skipping malformed permission audit row: {}", e),
+            }
+        }
+        Ok(entries)
     }
 
     /// Delete events older than the given number of days.

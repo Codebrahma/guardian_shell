@@ -12,6 +12,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, Mutex, oneshot};
 
 use crate::config::Config;
+use crate::permissions::{self, AgentRateLimit, RiskLevel};
 
 // =============================================================================
 // Registered Agent State
@@ -67,6 +68,9 @@ pub struct PendingPermission {
     pub requested_at_utc: chrono::DateTime<chrono::Utc>,
     pub timeout_secs: u64,
     pub responder: Option<oneshot::Sender<PermissionDecision>>,
+    pub risk_level: RiskLevel,
+    pub risk_flags: Vec<String>,
+    pub justification_flags: Vec<(String, String)>,
 }
 
 /// A resolved (completed) permission request, kept for audit trail.
@@ -77,6 +81,8 @@ pub struct ResolvedPermission {
     pub resource_type: String,
     pub resource_path: String,
     pub justification: Option<String>,
+    pub risk_level: String,
+    pub risk_flags: Vec<String>,
     pub requested_at: String,
     pub resolved_at: String,
     pub approved: bool,
@@ -98,6 +104,11 @@ pub struct PermissionEvent {
     pub requested_at: String,
     pub approved: Option<bool>,
     pub reason: Option<String>,
+    pub risk_level: Option<String>,
+    pub risk_flags: Vec<String>,
+    pub wait_seconds: Option<u32>,
+    pub requires_type_confirm: Option<bool>,
+    pub justification_warnings: Vec<String>,
 }
 
 /// Default timeout for permission requests (seconds).
@@ -131,6 +142,10 @@ pub struct IpcState {
     pub resolved_permissions: VecDeque<ResolvedPermission>,
     pub next_permission_id: u64,
     pub permission_bus: Option<broadcast::Sender<PermissionEvent>>,
+    // Phase 7c: Per-agent rate limiting
+    pub rate_limits: HashMap<String, AgentRateLimit>,
+    // Phase 7c: Optional SQLite audit trail for permissions
+    pub event_db: Option<std::sync::Arc<crate::dashboard::db::EventDb>>,
 }
 
 pub type SharedIpcState = Arc<Mutex<IpcState>>;
@@ -496,6 +511,146 @@ async fn handle_request_permission(
             };
         }
 
+        // --- Phase 7c: Permission Hardening ---
+
+        // Get permissions config (clone before mutable borrows)
+        let perm_config = s.config.permissions.clone().unwrap_or_else(|| {
+            crate::config::PermissionsConfig {
+                auto_deny: vec![],
+                auto_approve: vec![],
+                rate_limit_per_minute: 3,
+                rate_limit_per_hour: 15,
+                deny_cooldown_secs: 30,
+                max_pending_per_agent: 2,
+            }
+        });
+
+        // Count pending before mutable borrow on rate_limits
+        let pending_count = s.pending_permissions.iter()
+            .filter(|p| p.agent_name == agent_name)
+            .count() as u32;
+
+        // Check max pending per agent
+        if pending_count >= perm_config.max_pending_per_agent {
+            return IpcResponse::PermissionDecision {
+                approved: false,
+                reason: format!(
+                    "Too many pending requests ({}/{}). Wait for existing requests to resolve.",
+                    pending_count, perm_config.max_pending_per_agent
+                ),
+                grant_duration_secs: None,
+            };
+        }
+
+        // Check auto-deny (doesn't need rate limiter)
+        if permissions::check_auto_deny(&perm_config, &resource_path) {
+            let rate_limit = s.rate_limits
+                .entry(agent_name.clone())
+                .or_insert_with(AgentRateLimit::new);
+            rate_limit.record_request();
+            rate_limit.record_denial(&resource_path);
+            let reason = "Auto-denied: resource is on the never-approve list".to_string();
+            info!(
+                "Permission auto-denied: agent='{}' path='{}' (auto-deny rule)",
+                agent_name, resource_path
+            );
+            // Persist to audit trail
+            if let Some(ref db) = s.event_db {
+                let now = chrono::Utc::now().to_rfc3339();
+                let _ = db.insert_permission_audit(
+                    s.next_permission_id, &agent_name, &resource_type, &resource_path,
+                    justification.as_deref(), "critical", &[], &now, &now, false, &reason, None,
+                );
+                s.next_permission_id += 1;
+            }
+            return IpcResponse::PermissionDecision {
+                approved: false,
+                reason,
+                grant_duration_secs: None,
+            };
+        }
+
+        // Check auto-approve (doesn't need rate limiter)
+        if let Some(max_duration) = permissions::check_auto_approve(&perm_config, &resource_path) {
+            let rate_limit = s.rate_limits
+                .entry(agent_name.clone())
+                .or_insert_with(AgentRateLimit::new);
+            rate_limit.record_request();
+            rate_limit.record_approval();
+            let reason = "Auto-approved: low-risk resource".to_string();
+            info!(
+                "Permission auto-approved: agent='{}' path='{}' duration={}s",
+                agent_name, resource_path, max_duration
+            );
+            // Persist to audit trail
+            if let Some(ref db) = s.event_db {
+                let now = chrono::Utc::now().to_rfc3339();
+                let _ = db.insert_permission_audit(
+                    s.next_permission_id, &agent_name, &resource_type, &resource_path,
+                    justification.as_deref(), "low", &[], &now, &now, true, &reason, Some(max_duration),
+                );
+                s.next_permission_id += 1;
+            }
+            return IpcResponse::PermissionDecision {
+                approved: true,
+                reason,
+                grant_duration_secs: Some(max_duration),
+            };
+        }
+
+        // Get or create rate limiter for this agent
+        let rate_limit = s.rate_limits
+            .entry(agent_name.clone())
+            .or_insert_with(AgentRateLimit::new);
+
+        // Check rate limit
+        if let Some(reason) = rate_limit.check(&perm_config, &resource_path) {
+            let full_reason = format!("Rate limited: {}", reason);
+            info!(
+                "Permission request rate-limited: agent='{}' path='{}' reason='{}'",
+                agent_name, resource_path, reason
+            );
+            // Persist to audit trail
+            if let Some(ref db) = s.event_db {
+                let now = chrono::Utc::now().to_rfc3339();
+                let _ = db.insert_permission_audit(
+                    s.next_permission_id, &agent_name, &resource_type, &resource_path,
+                    justification.as_deref(), "medium", &[], &now, &now, false, &full_reason, None,
+                );
+                s.next_permission_id += 1;
+            }
+            return IpcResponse::PermissionDecision {
+                approved: false,
+                reason: full_reason,
+                grant_duration_secs: None,
+            };
+        }
+
+        // Classify risk
+        let (mut risk_level, risk_flags) =
+            permissions::classify_risk(&resource_type, &resource_path, rate_limit);
+
+        // Analyze justification
+        let justification_flags = justification.as_deref()
+            .map(permissions::analyze_justification)
+            .unwrap_or_default();
+
+        let justification_warnings: Vec<String> = justification_flags.iter()
+            .map(|(cat, matched)| format!("{}: \"{}\"", cat, matched))
+            .collect();
+
+        // Bump risk level if suspicious justification
+        if permissions::justification_risk_bump(&justification_flags) {
+            risk_level = match risk_level {
+                RiskLevel::Low => RiskLevel::Medium,
+                RiskLevel::Medium => RiskLevel::High,
+                RiskLevel::High => RiskLevel::Critical,
+                RiskLevel::Critical => RiskLevel::Critical,
+            };
+        }
+
+        rate_limit.record_request();
+
         // Assign ID and store pending request
         request_id = s.next_permission_id;
         s.next_permission_id += 1;
@@ -513,6 +668,9 @@ async fn handle_request_permission(
             requested_at_utc: now_utc,
             timeout_secs,
             responder: Some(tx),
+            risk_level,
+            risk_flags: risk_flags.clone(),
+            justification_flags: justification_flags.clone(),
         });
 
         // Broadcast to dashboard
@@ -528,18 +686,36 @@ async fn handle_request_permission(
                 requested_at: now_utc.to_rfc3339(),
                 approved: None,
                 reason: None,
+                risk_level: Some(risk_level.as_str().to_string()),
+                risk_flags: risk_flags.clone(),
+                wait_seconds: Some(risk_level.wait_seconds()),
+                requires_type_confirm: Some(risk_level.requires_type_confirm()),
+                justification_warnings: justification_warnings.clone(),
             });
         }
 
         info!(
-            "Permission request #{}: agent='{}' type='{}' path='{}' justification={:?}",
-            request_id, agent_name, resource_type, resource_path, justification
+            "Permission request #{}: agent='{}' type='{}' path='{}' risk={} flags={:?}",
+            request_id, agent_name, resource_type, resource_path, risk_level, risk_flags
         );
     } // Lock released — agent now blocks waiting for human decision
 
     // Wait for approval/denial with timeout
     match tokio::time::timeout(Duration::from_secs(timeout_secs), rx).await {
         Ok(Ok(decision)) => {
+            // Record approval/denial in rate limiter
+            {
+                let mut s = state.lock().await;
+                let rate_limit = s.rate_limits
+                    .entry(agent_name.clone())
+                    .or_insert_with(AgentRateLimit::new);
+                if decision.approved {
+                    rate_limit.record_approval();
+                } else {
+                    rate_limit.record_denial(&resource_path);
+                }
+            }
+
             info!(
                 "Permission #{} resolved: approved={} reason='{}'",
                 request_id, decision.approved, decision.reason
@@ -559,19 +735,39 @@ async fn handle_request_permission(
 
             let mut s = state.lock().await;
 
+            // Record timeout as denial
+            let rate_limit = s.rate_limits
+                .entry(agent_name.clone())
+                .or_insert_with(AgentRateLimit::new);
+            rate_limit.record_denial(&resource_path);
+
             // Clean up pending and record as resolved
             if let Some(pos) = s.pending_permissions.iter().position(|p| p.id == request_id) {
                 let pending = s.pending_permissions.remove(pos);
+                let requested_at_str = pending.requested_at_utc.to_rfc3339();
+                let resolved_at_str = chrono::Utc::now().to_rfc3339();
+                let timeout_reason = "Timed out".to_string();
+                // Persist to SQLite audit trail
+                if let Some(ref db) = s.event_db {
+                    let _ = db.insert_permission_audit(
+                        pending.id, &pending.agent_name, &pending.resource_type,
+                        &pending.resource_path, pending.justification.as_deref(),
+                        pending.risk_level.as_str(), &pending.risk_flags,
+                        &requested_at_str, &resolved_at_str, false, &timeout_reason, None,
+                    );
+                }
                 s.resolved_permissions.push_back(ResolvedPermission {
                     id: pending.id,
                     agent_name: pending.agent_name.clone(),
                     resource_type: pending.resource_type.clone(),
                     resource_path: pending.resource_path.clone(),
                     justification: pending.justification.clone(),
-                    requested_at: pending.requested_at_utc.to_rfc3339(),
-                    resolved_at: chrono::Utc::now().to_rfc3339(),
+                    risk_level: pending.risk_level.as_str().to_string(),
+                    risk_flags: pending.risk_flags.clone(),
+                    requested_at: requested_at_str,
+                    resolved_at: resolved_at_str,
                     approved: false,
-                    reason: "Timed out".to_string(),
+                    reason: timeout_reason,
                     grant_duration_secs: None,
                 });
                 while s.resolved_permissions.len() > MAX_RESOLVED_HISTORY {
@@ -592,6 +788,11 @@ async fn handle_request_permission(
                     requested_at: String::new(),
                     approved: Some(false),
                     reason: Some("Timed out".to_string()),
+                    risk_level: None,
+                    risk_flags: vec![],
+                    wait_seconds: None,
+                    requires_type_confirm: None,
+                    justification_warnings: vec![],
                 });
             }
 
@@ -695,15 +896,31 @@ pub async fn resolve_permission(
         );
     }
 
+    // Update rate limiter
+    {
+        let rate_limit = s.rate_limits
+            .entry(pending.agent_name.clone())
+            .or_insert_with(AgentRateLimit::new);
+        if approved {
+            rate_limit.record_approval();
+        } else {
+            rate_limit.record_denial(&pending.resource_path);
+        }
+    }
+
     // Record in resolved history
+    let resolved_at_str = chrono::Utc::now().to_rfc3339();
+    let requested_at_str = pending.requested_at_utc.to_rfc3339();
     let resolved = ResolvedPermission {
         id: pending.id,
         agent_name: pending.agent_name.clone(),
         resource_type: pending.resource_type.clone(),
         resource_path: pending.resource_path.clone(),
         justification: pending.justification.clone(),
-        requested_at: pending.requested_at_utc.to_rfc3339(),
-        resolved_at: chrono::Utc::now().to_rfc3339(),
+        risk_level: pending.risk_level.as_str().to_string(),
+        risk_flags: pending.risk_flags.clone(),
+        requested_at: requested_at_str.clone(),
+        resolved_at: resolved_at_str.clone(),
         approved,
         reason: reason.clone(),
         grant_duration_secs,
@@ -711,6 +928,26 @@ pub async fn resolve_permission(
     s.resolved_permissions.push_back(resolved);
     while s.resolved_permissions.len() > MAX_RESOLVED_HISTORY {
         s.resolved_permissions.pop_front();
+    }
+
+    // Persist to SQLite audit trail
+    if let Some(ref db) = s.event_db {
+        if let Err(e) = db.insert_permission_audit(
+            pending.id,
+            &pending.agent_name,
+            &pending.resource_type,
+            &pending.resource_path,
+            pending.justification.as_deref(),
+            pending.risk_level.as_str(),
+            &pending.risk_flags,
+            &requested_at_str,
+            &resolved_at_str,
+            approved,
+            &reason,
+            grant_duration_secs,
+        ) {
+            log::warn!("Failed to persist permission audit: {}", e);
+        }
     }
 
     // Broadcast resolution
@@ -726,6 +963,11 @@ pub async fn resolve_permission(
             requested_at: pending.requested_at_utc.to_rfc3339(),
             approved: Some(approved),
             reason: Some(reason),
+            risk_level: None,
+            risk_flags: vec![],
+            wait_seconds: None,
+            requires_type_confirm: None,
+            justification_warnings: vec![],
         });
     }
 

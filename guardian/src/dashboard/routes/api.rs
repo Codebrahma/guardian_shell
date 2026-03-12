@@ -507,6 +507,9 @@ pub async fn list_pending_permissions(
         .pending_permissions
         .iter()
         .map(|p| {
+            let justification_warnings: Vec<String> = p.justification_flags.iter()
+                .map(|(cat, matched)| format!("{}: \"{}\"", cat, matched))
+                .collect();
             serde_json::json!({
                 "id": p.id,
                 "agent_name": p.agent_name,
@@ -516,19 +519,47 @@ pub async fn list_pending_permissions(
                 "timeout_secs": p.timeout_secs,
                 "requested_at": p.requested_at_utc.to_rfc3339(),
                 "elapsed_secs": p.requested_at.elapsed().as_secs(),
+                "risk_level": p.risk_level.as_str(),
+                "risk_flags": p.risk_flags,
+                "wait_seconds": p.risk_level.wait_seconds(),
+                "requires_type_confirm": p.risk_level.requires_type_confirm(),
+                "justification_warnings": justification_warnings,
             })
         })
         .collect();
     axum::Json(pending)
 }
 
-/// JSON endpoint: list resolved permission requests (audit trail).
+/// JSON endpoint: list resolved permission requests (in-memory audit trail).
 pub async fn list_resolved_permissions(
     State(state): State<Arc<DashboardState>>,
 ) -> impl IntoResponse {
     let s = state.ipc_state.lock().await;
     let resolved: Vec<_> = s.resolved_permissions.iter().rev().cloned().collect();
     axum::Json(resolved)
+}
+
+/// JSON endpoint: query persistent permission audit trail from SQLite.
+pub async fn query_permission_audit(
+    State(state): State<Arc<DashboardState>>,
+    Query(params): Query<AuditQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(100).min(1000);
+    match state.db.query_permission_audit(limit) {
+        Ok(entries) => axum::Json(serde_json::json!({
+            "entries": entries,
+            "total": entries.len(),
+        })).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database error: {}", e),
+        ).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AuditQuery {
+    pub limit: Option<u32>,
 }
 
 // =============================================================================

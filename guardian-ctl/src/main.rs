@@ -35,19 +35,23 @@ enum Commands {
         name: String,
     },
 
-    /// Grant temporary file access to an agent
+    /// Grant temporary access to an agent (file or exec)
     Grant {
         /// Agent name
         #[arg(short, long)]
         name: String,
 
-        /// Path pattern to grant access to (e.g., "/home/user/.aws/**")
+        /// Path pattern to grant access to (e.g., "/home/user/.aws/**" or "/usr/bin/curl")
         #[arg(short, long)]
         path: String,
 
         /// Duration in seconds
         #[arg(short, long)]
         duration: u64,
+
+        /// Grant type: "file" for file access, "exec" for command execution
+        #[arg(short = 't', long, default_value = "file")]
+        grant_type: String,
     },
 
     /// Request permission for a resource (waits for human approval via dashboard)
@@ -88,10 +92,12 @@ fn main() -> Result<()> {
             name,
             path,
             duration,
+            grant_type,
         } => IpcRequest::GrantAccess {
             agent_name: name.clone(),
             path: path.clone(),
             duration_secs: *duration,
+            grant_type: grant_type.clone(),
         },
         Commands::RequestPermission {
             name,
@@ -112,10 +118,10 @@ fn main() -> Result<()> {
         IpcResponse::Ack => {
             match &cli.command {
                 Commands::Stop { name } => println!("Agent '{}' stopped.", name),
-                Commands::Grant { name, path, duration } => {
+                Commands::Grant { name, path, duration, grant_type } => {
                     println!(
-                        "Granted '{}' access to '{}' for {} seconds.",
-                        name, path, duration
+                        "Granted '{}' {} access to '{}' for {} seconds.",
+                        name, grant_type, path, duration
                     );
                 }
                 _ => println!("OK"),

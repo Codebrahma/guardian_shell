@@ -226,7 +226,8 @@ async fn process_request(request: IpcRequest, state: &SharedIpcState) -> IpcResp
             agent_name,
             path,
             duration_secs,
-        } => handle_grant_access(state, &agent_name, &path, duration_secs).await,
+            grant_type,
+        } => handle_grant_access(state, &agent_name, &path, duration_secs, &grant_type).await,
 
         IpcRequest::RequestPermission {
             agent_name,
@@ -384,6 +385,7 @@ async fn handle_grant_access(
     agent_name: &str,
     path: &str,
     duration_secs: u64,
+    grant_type: &str,
 ) -> IpcResponse {
     let mut state = state.lock().await;
 
@@ -399,35 +401,61 @@ async fn handle_grant_access(
     let is_prefix = path.ends_with("/**");
     let expires_at = Instant::now() + Duration::from_secs(duration_secs);
 
-    // Add to BPF allow maps for kernel-side enforcement
-    if let Some(ref mut policy_maps) = state.policy_maps {
-        if is_prefix {
-            let prefix = format!("{}/", &path[..path.len() - 3]);
-            let key = path_to_lpm_key(prefix.as_bytes());
-            if let Err(e) = policy_maps.allow_prefixes.insert(&key, 1, 0) {
-                warn!("Failed to add temporary allow prefix: {}", e);
-            }
-        } else {
-            let key = path_to_map_key(path.as_bytes());
-            if let Err(e) = policy_maps.allow_exact.insert(key, 1, 0) {
-                warn!("Failed to add temporary allow exact: {}", e);
+    if grant_type == "exec" {
+        // Exec grant: add command to agent's exec policy allow list temporarily
+        if let Some(agent_cfg) = state.config.agents.iter_mut().find(|a| a.name == agent_name) {
+            let exec = agent_cfg.exec_policy.get_or_insert(crate::config::ExecPolicy {
+                default: "deny".to_string(),
+                allow: vec![],
+                deny: vec![],
+            });
+            if !exec.allow.contains(&path.to_string()) {
+                exec.allow.push(path.to_string());
             }
         }
+
+        state.grants.push(TemporaryGrant {
+            agent_name: agent_name.to_string(),
+            path: path.to_string(),
+            is_prefix,
+            grant_type: GrantType::Exec,
+            expires_at,
+        });
+
+        info!(
+            "Temporary exec grant: agent='{}' command='{}' duration={}s",
+            agent_name, path, duration_secs
+        );
+    } else {
+        // File access grant: add to BPF allow maps for kernel-side enforcement
+        if let Some(ref mut policy_maps) = state.policy_maps {
+            if is_prefix {
+                let prefix = format!("{}/", &path[..path.len() - 3]);
+                let key = path_to_lpm_key(prefix.as_bytes());
+                if let Err(e) = policy_maps.allow_prefixes.insert(&key, 1, 0) {
+                    warn!("Failed to add temporary allow prefix: {}", e);
+                }
+            } else {
+                let key = path_to_map_key(path.as_bytes());
+                if let Err(e) = policy_maps.allow_exact.insert(key, 1, 0) {
+                    warn!("Failed to add temporary allow exact: {}", e);
+                }
+            }
+        }
+
+        state.grants.push(TemporaryGrant {
+            agent_name: agent_name.to_string(),
+            path: path.to_string(),
+            is_prefix,
+            grant_type: GrantType::FileAccess,
+            expires_at,
+        });
+
+        info!(
+            "Temporary file grant: agent='{}' path='{}' duration={}s",
+            agent_name, path, duration_secs
+        );
     }
-
-    // Store the grant for expiry tracking
-    state.grants.push(TemporaryGrant {
-        agent_name: agent_name.to_string(),
-        path: path.to_string(),
-        is_prefix,
-        grant_type: GrantType::FileAccess,
-        expires_at,
-    });
-
-    info!(
-        "Temporary grant: agent='{}' path='{}' duration={}s",
-        agent_name, path, duration_secs
-    );
 
     IpcResponse::Ack
 }

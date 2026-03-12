@@ -111,7 +111,7 @@ guardian_shell/
 3. **eBPF program** uses `bpf_get_current_cgroup_id()` — strongest, unspoofable identification
 4. **All child processes** automatically inherit the cgroup — no PID tracking needed
 5. **Resource limits** (memory, PIDs, CPU) enforced via cgroup controllers
-6. **`guardian-ctl`** provides list/stop/grant commands for agent management
+6. **`guardian-ctl`** provides list/stop/grant (file & exec)/request-permission commands
 
 ## First Steps on Linux
 
@@ -203,7 +203,9 @@ cat /etc/shadow         # BLOCKED — in the deny list
 # Terminal 3: Manage agents
 sudo target/release/guardian-ctl list                    # List agents
 sudo target/release/guardian-ctl grant -n test-agent \
-    -p "/etc/shadow" -d 60                              # Temporary 60s grant
+    -p "/etc/shadow" -d 60                              # Temporary 60s file grant
+sudo target/release/guardian-ctl grant -n test-agent \
+    -p "/usr/bin/curl" -d 60 -t exec                   # Temporary 60s exec grant
 sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 ```
 
@@ -235,7 +237,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | Cgroup v2 for agent isolation | Unspoofable identity, automatic child tracking via inheritance, resource limits via controllers. Process cannot escape its cgroup. |
 | Launcher + IPC registration | `guardian-launch` creates cgroup, registers with daemon via Unix socket, then exec's agent. Clean separation of concerns. |
 | Length-prefixed JSON IPC | Simple, debuggable protocol over Unix domain socket. Supports agent registration, listing, stopping, and temporary grants. |
-| Temporary grants with expiry | Allow rules added to BPF maps with automatic removal after duration. Enables time-bounded access to sensitive resources. |
+| Temporary grants with expiry | Allow rules added to BPF maps (file) or exec policy (exec) with automatic removal after duration. Both `guardian-ctl grant -t exec` and dashboard support exec grants. |
 | Async alert dispatch | AlertManager runs as tokio task with mpsc channel. Event processors never block on I/O. |
 | Synchronous Prometheus metrics | Counters updated atomically in event processors. Accurate even when alert channel is full. |
 | Per-output severity filters | Webhook gets warnings, Slack/email get critical only. Reduces noise per channel. |
@@ -301,7 +303,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 - **Guardian Launcher** (`guardian-launch`): cgroup creation, resource limits, IPC registration
 - **Guardian Ctl** (`guardian-ctl`): list/stop/grant CLI for agent management
 - **Unix socket IPC** for launcher-daemon communication (`/run/guardian.sock`)
-- **Time-based access windows** with automatic BPF map cleanup on expiry
+- **Time-based access windows** (file and exec) with automatic cleanup on expiry
 - **Resource limits** via cgroup v2 controllers (memory, PIDs, CPU)
 - **3-tier eBPF identification**: cgroup ID → TGID → comm name (backward compatible)
 - **Cgroup lifecycle**: automatic cleanup when agent exits (cgroup becomes empty)

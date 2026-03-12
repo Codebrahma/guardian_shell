@@ -148,6 +148,9 @@ pub mod ipc {
             agent_name: String,
             path: String,
             duration_secs: u64,
+            /// "file" (default) or "exec"
+            #[serde(default = "default_grant_type")]
+            grant_type: String,
         },
 
         /// Request permission for a resource (agent asks, human approves via dashboard).
@@ -197,6 +200,10 @@ pub mod ipc {
         pub cgroup_id: u64,
         pub num_processes: u32,
         pub uptime_secs: u64,
+    }
+
+    fn default_grant_type() -> String {
+        "file".to_string()
     }
 
     /// Send a length-prefixed JSON message over a writer.

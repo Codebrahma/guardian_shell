@@ -1,0 +1,1175 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+4 0 obj
+<< /Length 2652 >>
+stream
+BT
+/F2 20 Tf
+1 0 0 1 54 732 Tm
+(Guardian Shell For Product Managers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 698 Tm
+(Prepared for product review Date: March 13, 2026 Audience: Product managers, business) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 683 Tm
+(stakeholders, delivery leads) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 652 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 634 Tm
+(Executive Summary) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 606 Tm
+(Guardian Shell is a Linux security product designed for AI agents such as coding) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 591 Tm
+(assistants and autonomous CLI tools.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 566 Tm
+(Its purpose is to answer a business question that normal Linux controls do not answer) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 551 Tm
+(well:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 526 Tm
+("What can this specific AI agent session access, and how do we govern it safely?") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 501 Tm
+(The product matters because AI agents are not ordinary software processes. They:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 476 Tm
+(- use many tools and subprocesses) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 455 Tm
+(- adapt when blocked) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 434 Tm
+(- may search for workarounds) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 413 Tm
+(- need temporary, auditable approvals in real workflows) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 392 Tm
+(Guardian Shell is strong because it combines:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 367 Tm
+(1. agent-level identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 346 Tm
+(2. kernel-level monitoring and blocking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 325 Tm
+(3. human approval workflow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 304 Tm
+(4. dashboard, alerts, and auditability) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 283 Tm
+(The biggest current weakness is that too much of the policy still depends on path-based) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 268 Tm
+(decisions and tracepoint-first logic.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 243 Tm
+(The recommended direction is to keep the product surface, while strengthening the kernel) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 228 Tm
+(trust anchor underneath it.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 197 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 179 Tm
+(The Core Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 151 Tm
+(A developer may allow an AI agent to work on one project folder, but the agent often) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 136 Tm
+(runs with the same operating-system access as the developer.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 111 Tm
+(That means the agent may also be able to read:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 1 of 8) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Length 2290 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- SSH keys) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(- cloud credentials) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 690 Tm
+(- .env files) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 669 Tm
+(- browser tokens) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 648 Tm
+(- internal company documents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 627 Tm
+(Traditional Linux permissions usually control what a user can access. Guardian Shell is) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 612 Tm
+(designed to control what one AI agent session can access.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 581 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 563 Tm
+(Why eBPF Is Useful For LLM Agents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 535 Tm
+(This is the key decision question for non-engineering stakeholders.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 510 Tm
+(Why not just use chmod, chown, ACLs, or sticky bit?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 487 Tm
+(Those controls are useful baseline hygiene, but they do not naturally solve:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 462 Tm
+(- one agent session versus another) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 441 Tm
+(- dynamic approvals) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 420 Tm
+(- subprocess governance) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 399 Tm
+(- audit trails tied to a live agent task) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 378 Tm
+(Why not just use AppArmor or SELinux?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 355 Tm
+(Both are valuable baseline Linux security systems.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 330 Tm
+(- AppArmor is easier and path-based) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 309 Tm
+(- SELinux is stronger and label-based) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 288 Tm
+(But neither is naturally a PM-friendly agent-governance workflow product.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 263 Tm
+(Guardian Shell adds:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 238 Tm
+(- per-agent session thinking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 217 Tm
+(- runtime-updated policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 196 Tm
+(- approval workflow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 175 Tm
+(- user-friendly visibility) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 154 Tm
+(The practical answer) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 131 Tm
+(The best answer is not:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 106 Tm
+("Use eBPF instead of Linux security.") Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 2 of 8) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 2331 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(The better answer is:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 707 Tm
+("Use Guardian Shell's eBPF-based control plane for AI-agent governance, and layer it) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 692 Tm
+(with baseline Linux controls where appropriate.") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 661 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 643 Tm
+(What Guardian Shell Does Today) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 615 Tm
+(The current repository shows that Guardian Shell already supports:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 590 Tm
+(- file monitoring and some file blocking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 569 Tm
+(- command monitoring and some exec blocking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 548 Tm
+(- outbound network monitoring) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 527 Tm
+(- per-agent identity using cgroups, TGIDs, and process names) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 506 Tm
+(- a launcher for cgroup-based isolation) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 485 Tm
+(- dashboards, alerts, and permission requests) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 464 Tm
+(Why this is valuable) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 441 Tm
+(This means Guardian Shell is already more than a kernel probe. It is becoming a usable) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 426 Tm
+(governance product.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 401 Tm
+(It addresses business needs such as:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 376 Tm
+(- least privilege for agents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 355 Tm
+(- auditability) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 334 Tm
+(- temporary approvals) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 313 Tm
+(- operational visibility) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 286 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 268 Tm
+(How Guardian Shell Identifies An Agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 240 Tm
+(This is one of the most important strengths of the design.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 215 Tm
+(AI agents do not stay as one process. They often spawn:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 190 Tm
+(- shells) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 169 Tm
+(- interpreters) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 148 Tm
+(- package managers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 127 Tm
+(- test runners) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 106 Tm
+(- git) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 3 of 8) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Length 2272 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(Guardian Shell therefore uses a layered identity model:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 707 Tm
+(1. best: cgroup identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 686 Tm
+(2. fallback: TGID / process-tree tracking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 665 Tm
+(3. fallback: process name \(comm\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 644 Tm
+(Why cgroup identity matters) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 621 Tm
+(When an agent is launched through guardian-launch, it is placed in a dedicated cgroup.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 596 Tm
+(That means:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 571 Tm
+(- the main process is identified) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 550 Tm
+(- child processes stay in the same group) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 529 Tm
+(- the whole session can be governed as one unit) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 508 Tm
+(This is much better than relying only on process names like python3 or node.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 477 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 459 Tm
+(Strengths Of The Current Product) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 431 Tm
+(1. Built around the real unit of control) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 408 Tm
+(The product thinks in terms of agent sessions rather than just binaries.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 383 Tm
+(2. Human approval workflow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 360 Tm
+(A manager or operator can understand:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 335 Tm
+("The agent requested access to this folder for 15 minutes.") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 310 Tm
+(This is much easier to operate than manually editing Linux policy.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 285 Tm
+(3. Good operational surface) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 262 Tm
+(The current product already includes:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 237 Tm
+(- dashboard) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 216 Tm
+(- alerts) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 195 Tm
+(- CLI controls) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 174 Tm
+(- metrics) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 153 Tm
+(- structured event handling) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 132 Tm
+(4. Better fit for coding-agent workflows) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 109 Tm
+(Coding agents are interactive and tool-heavy.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 4 of 8) Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Length 2389 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(Guardian Shell is better suited to this environment than static, program-only policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(models.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 686 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 668 Tm
+(Where The Current Product Is Weak) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 640 Tm
+(1. Path-based policy is still the main weakness) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 617 Tm
+(If policy depends too much on a path string, an adaptive agent may try alternate paths) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 602 Tm
+(such as:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 577 Tm
+(- /proc/self/root/...) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 556 Tm
+(- symlink paths) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 535 Tm
+(- bind-mount aliases) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 514 Tm
+(- hard-link aliases) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 493 Tm
+(2. Two-step enforcement is harder to trust) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 470 Tm
+(Today, Guardian often uses:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 445 Tm
+(1. tracepoint decides) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 424 Tm
+(2. LSM hook blocks later) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 403 Tm
+(That works, but it is harder to reason about than making the decision directly at the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 388 Tm
+(final security hook.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 363 Tm
+(3. Exec control is weaker than binary-identity systems) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 340 Tm
+(Path-based exec control is weaker than binary-hash identity.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 315 Tm
+(This matters when an agent copies or renames a tool to bypass policy.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 290 Tm
+(4. Network control is not yet fully mature) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 267 Tm
+(The current product is better at network visibility than precise policy-grade egress) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 252 Tm
+(control.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 221 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 203 Tm
+(Guardian Shell vs Veto) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 175 Tm
+(Guardian Shell and Veto are not the same kind of product.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 150 Tm
+(Veto is better at:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 127 Tm
+(- strong binary identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 106 Tm
+(- pre-execution blocking) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 5 of 8) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Length 2516 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- resisting rename/copy tricks for executables) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 711 Tm
+(Guardian Shell is better at:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 688 Tm
+(- file governance) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 667 Tm
+(- per-agent policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 646 Tm
+(- subprocess-aware session governance) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 625 Tm
+(- temporary approvals) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 604 Tm
+(- dashboard and workflow features) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 583 Tm
+(The clearest product message) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 560 Tm
+(- Veto answers: "Should this binary run?") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 539 Tm
+(- Guardian Shell answers: "What can this agent session access?") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 518 Tm
+(They are complementary more than directly competing.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 487 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 469 Tm
+(Recommended Product Direction) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 441 Tm
+(The product should not throw away its current strengths.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 416 Tm
+(The right path is:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 391 Tm
+(1. keep the current dashboard, CLI, approval, and policy workflow model) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 370 Tm
+(2. make cgroup-backed identity the default secure mode) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 349 Tm
+(3. move core file and exec decisions deeper into LSM-based enforcement) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 328 Tm
+(4. add seccomp as a standard hardening layer) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 307 Tm
+(5. offer stronger isolation tiers for high-risk agent deployments) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 286 Tm
+(Suggested positioning) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 263 Tm
+(Guardian Shell should be positioned as:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 238 Tm
+("A Linux agent-governance platform with kernel visibility, policy enforcement, and human) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 223 Tm
+(approval workflows.") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 198 Tm
+(That is a stronger and more accurate message than positioning it only as a blocking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 183 Tm
+(engine.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 152 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 134 Tm
+(Final Takeaway) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 106 Tm
+(Guardian Shell is promising because it solves a broader and more operationally useful) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 6 of 8) Tj
+ET
+endstream
+endobj
+10 0 obj
+<< /Length 2360 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(problem than many low-level security tools.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 707 Tm
+(Its product advantage is not only kernel enforcement. Its advantage is the combination) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 692 Tm
+(of:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 667 Tm
+(- agent identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 646 Tm
+(- governance) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 625 Tm
+(- approvals) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 604 Tm
+(- visibility) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 583 Tm
+(- workflow integration) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 562 Tm
+(If the kernel trust anchor is strengthened over time, the product can occupy a very) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 547 Tm
+(useful position between:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 522 Tm
+(- basic Linux permissions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 501 Tm
+(- static host MAC systems) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 480 Tm
+(- heavyweight isolated runtimes) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 453 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 435 Tm
+(References) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 407 Tm
+(Internal material used:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 382 Tm
+(- docs/architecture-analysis.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 361 Tm
+(- docs/guardian-shell-vs-veto-comparison.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 340 Tm
+(- docs/security-improvements-research.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 319 Tm
+(- docs/sandboxing-deep-dive.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 298 Tm
+(- AGENT_IDENTITY.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 277 Tm
+(- implementation in guardian-ebpf/src/main.rs, guardian/src/main.rs, and) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 262 Tm
+(   guardian-launch/src/main.rs) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 241 Tm
+(External references checked:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 216 Tm
+(- Ona, "Introducing Veto: security for the next era of software") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 195 Tm
+(https://ona.com/stories/introducing-veto-security-for-the-next-era-of-software) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 170 Tm
+(- Linux kernel docs, "LSM BPF Programs") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 149 Tm
+(https://docs.kernel.org/bpf/prog_lsm.html) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 124 Tm
+(- Ubuntu documentation, "AppArmor") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 103 Tm
+(https://ubuntu.com/server/docs/how-to/security/apparmor/) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 7 of 8) Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Length 278 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- Red Hat documentation, "Using SELinux") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10/html-single/using_selinux/using_selinux) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 8 of 8) Tj
+ET
+endstream
+endobj
+12 0 obj
+<< /Type /Page /Parent 20 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 4 0 R >>
+endobj
+13 0 obj
+<< /Type /Page /Parent 20 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 5 0 R >>
+endobj
+14 0 obj
+<< /Type /Page /Parent 20 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 6 0 R >>
+endobj
+15 0 obj
+<< /Type /Page /Parent 20 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 7 0 R >>
+endobj
+16 0 obj
+<< /Type /Page /Parent 20 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 8 0 R >>
+endobj
+17 0 obj
+<< /Type /Page /Parent 20 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 9 0 R >>
+endobj
+18 0 obj
+<< /Type /Page /Parent 20 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 10 0 R >>
+endobj
+19 0 obj
+<< /Type /Page /Parent 20 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 11 0 R >>
+endobj
+20 0 obj
+<< /Type /Pages /Count 8 /Kids [12 0 R 13 0 R 14 0 R 15 0 R 16 0 R 17 0 R 18 0 R 19 0 R] >>
+endobj
+21 0 obj
+<< /Type /Catalog /Pages 20 0 R >>
+endobj
+xref
+0 22
+0000000000 65535 f 
+0000000015 00000 n 
+0000000085 00000 n 
+0000000160 00000 n 
+0000000228 00000 n 
+0000002932 00000 n 
+0000005274 00000 n 
+0000007657 00000 n 
+0000009981 00000 n 
+0000012422 00000 n 
+0000014990 00000 n 
+0000017403 00000 n 
+0000017733 00000 n 
+0000017881 00000 n 
+0000018029 00000 n 
+0000018177 00000 n 
+0000018325 00000 n 
+0000018473 00000 n 
+0000018621 00000 n 
+0000018770 00000 n 
+0000018919 00000 n 
+0000019027 00000 n 
+trailer
+<< /Size 22 /Root 21 0 R >>
+startxref
+19078
+%%EOF

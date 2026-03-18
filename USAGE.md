@@ -1226,11 +1226,16 @@ listen = "127.0.0.1:8080"
 auth_token = "your-secret-token-here"
 ```
 
-With `auth_token` set, all requests (except `/metrics` and `/static/`) require authentication via:
+With `auth_token` set, all requests (except `/static/`) require authentication via:
 - `Authorization: Bearer <token>` header, or
-- `?token=<token>` query parameter
+- `?token=<token>` query parameter (note: token may leak in referer headers and browser history)
 
 Without `auth_token`, the dashboard runs without authentication (backward compatible).
+
+**Security features (when `auth_token` is set):**
+- **Constant-time token comparison** — prevents timing attacks that deduce token characters
+- **Auth rate limiting** — after 10 consecutive failures, dashboard locks out for 60 seconds (HTTP 429)
+- **`/metrics` requires auth** — Prometheus scrapers must include the Bearer token to prevent information disclosure
 
 **For remote access**, use a reverse proxy with TLS:
 
@@ -1262,7 +1267,7 @@ server {
 - Use TLS for remote access (nginx/caddy handles this)
 - The config file should be owned by root with `chmod 600` (contains the auth token)
 - The dashboard provides the same level of control as `guardian-ctl` + editing `config.toml`
-- The Prometheus `/metrics` endpoint is exempt from auth to allow scraper access
+- Configure Prometheus scrapers to include `Authorization: Bearer <token>` header when `auth_token` is set
 
 ---
 
@@ -2290,7 +2295,12 @@ cargo install bpf-linker
 - **Dynamic linker detection**: Direct invocation of ld-linux to bypass exec policy is detected and blocked
 - **Anomaly detection**: Automatic detection of rubber-stamping, persistence attacks, and approval flooding
 - **Fail-closed option**: Per-agent configuration to deny access on any eBPF error (instead of default fail-open)
-- **Dashboard authentication**: Optional Bearer token auth prevents unauthorized dashboard access
+- **Dashboard authentication**: Optional Bearer token auth with constant-time comparison and rate limiting
+- **IPC socket authentication**: Only root (UID 0) can connect to the Unix domain socket (`SO_PEERCRED` verification)
+- **IPC connection limiting**: Maximum 64 concurrent connections to prevent resource exhaustion
+- **SSRF prevention**: Webhook and Slack URLs validated against private/loopback IP ranges
+- **Email injection prevention**: Subject line inputs sanitized to strip newline characters
+- **CDN integrity**: SRI (Subresource Integrity) hashes on all CDN-loaded scripts prevent supply chain attacks
 
 ### Best Practices
 
@@ -2330,6 +2340,10 @@ cargo install bpf-linker
 
 16. **Monitor anomaly detection alerts** — configure alerting outputs to receive notifications about rubber-stamping and persistence attack patterns
 
+17. **Use external webhook URLs only** — webhook and Slack URLs targeting private IPs (127.0.0.1, 10.x.x.x, 192.168.x.x) are rejected to prevent SSRF
+
+18. **Don't use `?token=` in production** — prefer `Authorization: Bearer <token>` header; query parameter tokens leak in referer headers and browser history
+
 ---
 
 ## Known Limitations
@@ -2345,7 +2359,7 @@ cargo install bpf-linker
 | **Comm-based agents still spoofable** | Process name can be changed via `prctl(PR_SET_NAME)` | Use cgroup-based identity for untrusted agents |
 | **No webhook retry** | Failed webhook/Slack/email sends are logged and dropped | Monitor `alerts_sent{status="error"}` metric |
 | **Email password in plaintext** | SMTP password stored in config file | Protect config with `chmod 600` |
-| **Dashboard CDN dependency** | First load requires internet for TailwindCSS/htmx/Alpine.js | Bundle libraries locally via rust-embed |
+| **Dashboard CDN dependency** | First load requires internet for TailwindCSS/htmx/Alpine.js; SRI hashes prevent tampering | Bundle libraries locally via rust-embed |
 | **Policy edits don't update BPF maps** | Kernel enforcement rules unchanged until reload | Use "Reload Config" button or SIGHUP |
 | **Config comments lost on dashboard save** | TOML write-back removes original comments | Use version control for config files |
 | **openat2 requires kernel 5.6+** | `sys_enter_openat2` tracepoint not available on older kernels | Gracefully skipped; `openat` and `open` hooks still active |
@@ -2462,3 +2476,19 @@ cargo install bpf-linker
 - [x] Per-cgroup fail-closed mode (`FAIL_CLOSED_CGROUPS` BPF map, deny on eBPF errors)
 - [x] Full SIGHUP reload including alerting outputs (`Arc<RwLock<AlertSender>>`)
 - [x] Anomaly detection (rubber-stamping >90% approval, persistence attacks, flood detection)
+
+**8e: Userspace Security Hardening**
+- [x] IPC `SO_PEERCRED` authentication (only root UID 0 can connect)
+- [x] IPC socket permissions restricted to 0o600 (owner-only)
+- [x] IPC connection rate limiting (semaphore, max 64 concurrent)
+- [x] Cgroup path traversal prevention (rejects `..` and absolute paths)
+- [x] PID validation before `kill()` (rejects negative/zero PIDs)
+- [x] Grant type validation (rejects invalid values)
+- [x] Resource path null byte and control character validation
+- [x] IPC error message sanitization (no BPF internals leaked to clients)
+- [x] Constant-time auth token comparison (prevents timing attacks)
+- [x] Dashboard auth rate limiting (10 failures → 60s lockout)
+- [x] `/metrics` endpoint requires auth when `auth_token` is configured
+- [x] SSRF prevention for webhook/Slack URLs (blocks private/loopback IPs)
+- [x] Email subject header injection prevention (newline sanitization)
+- [x] CDN SRI (Subresource Integrity) hashes on all dashboard scripts

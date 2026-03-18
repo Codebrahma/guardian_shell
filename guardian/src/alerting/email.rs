@@ -34,12 +34,16 @@ pub async fn send_email_alert(
         Severity::Info => "INFO",
     };
 
+    // Sanitize inputs used in email subject to prevent header injection.
+    // Newlines (\r, \n) in subject could inject BCC/CC headers.
+    let safe_path = event.path.replace(['\r', '\n'], "");
+    let safe_agent = event.agent_name.replace(['\r', '\n'], "");
     let subject = format!(
         "[Guardian Shell] {} — {} on {} (agent: {})",
         severity_label,
         event.action.to_string().to_uppercase(),
-        event.path,
-        event.agent_name,
+        safe_path,
+        safe_agent,
     );
 
     let body = format!(

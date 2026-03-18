@@ -34,6 +34,11 @@ pub async fn send_webhook(
         .as_deref()
         .context("Webhook URL not configured")?;
 
+    // Prevent SSRF: reject URLs targeting private/internal network addresses
+    if let Err(reason) = super::validate_url_not_private(url) {
+        anyhow::bail!("Webhook URL rejected (SSRF prevention): {}", reason);
+    }
+
     let payload = WebhookPayload {
         version: "1.0",
         source: "guardian-shell",

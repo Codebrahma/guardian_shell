@@ -11,6 +11,54 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
 
+/// Validate that a URL does not point to a private/internal network address (SSRF prevention).
+/// Checks URL hostname against known private IP ranges and localhost aliases.
+/// Returns Ok(()) if the URL is safe, Err(reason) if it targets a private address.
+pub fn validate_url_not_private(url: &str) -> Result<(), String> {
+    // Parse the host portion from the URL
+    let host = url
+        .strip_prefix("https://").or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url)
+        .split('/').next()
+        .unwrap_or("")
+        .split(':').next()  // Strip port
+        .unwrap_or("");
+
+    let host_lower = host.to_lowercase();
+
+    // Block localhost aliases
+    if host_lower == "localhost" || host_lower == "ip6-localhost" || host_lower == "ip6-loopback" {
+        return Err(format!("URL targets localhost ({})", host));
+    }
+
+    // Block private/loopback IPv4 ranges
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        if ip.is_loopback()          // 127.0.0.0/8
+            || ip.is_private()       // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+            || ip.is_link_local()    // 169.254.0.0/16
+            || ip.is_unspecified()   // 0.0.0.0
+        {
+            return Err(format!("URL targets private/loopback IPv4 address ({})", ip));
+        }
+    }
+
+    // Block private/loopback IPv6 (handle bracket notation [::1])
+    let ipv6_host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    if let Ok(ip) = ipv6_host.parse::<std::net::Ipv6Addr>() {
+        if ip.is_loopback() || ip.is_unspecified() {
+            return Err(format!("URL targets private/loopback IPv6 address ({})", ip));
+        }
+        // Check IPv4-mapped IPv6 (::ffff:127.0.0.1)
+        if let Some(mapped) = ip.to_ipv4_mapped() {
+            if mapped.is_loopback() || mapped.is_private() || mapped.is_link_local() {
+                return Err(format!("URL targets private IPv4-mapped IPv6 address ({})", ip));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // =============================================================================
 // Alert Event Types
 // =============================================================================

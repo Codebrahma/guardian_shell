@@ -9,7 +9,7 @@ use guardian_common::MAX_FILENAME_LEN;
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, Mutex, oneshot};
+use tokio::sync::{broadcast, Mutex, Semaphore, oneshot};
 
 use crate::config::Config;
 use crate::permissions::{self, AgentRateLimit, RiskLevel};
@@ -156,6 +156,9 @@ pub type SharedIpcState = Arc<Mutex<IpcState>>;
 // IPC Server
 // =============================================================================
 
+/// Maximum concurrent IPC connections to prevent resource exhaustion.
+const MAX_IPC_CONNECTIONS: usize = 64;
+
 /// Start the Unix socket IPC server.
 pub async fn start_ipc_server(socket_path: &str, state: SharedIpcState) -> Result<()> {
     // Remove stale socket file if it exists
@@ -169,23 +172,53 @@ pub async fn start_ipc_server(socket_path: &str, state: SharedIpcState) -> Resul
     let listener = UnixListener::bind(socket_path)
         .with_context(|| format!("Failed to bind IPC socket at {}", socket_path))?;
 
-    // Make socket accessible (guardian-launch may run as a different user initially,
-    // but it must have been started with sufficient permissions)
+    // Restrict socket to owner only (root). Prevents unprivileged local users
+    // from sending IPC commands (register agents, grant access, approve permissions).
     let _ = std::fs::set_permissions(
         socket_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o660),
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
     );
 
     info!("IPC server listening on {}", socket_path);
 
+    // Limit concurrent connections to prevent resource exhaustion
+    let semaphore = Arc::new(Semaphore::new(MAX_IPC_CONNECTIONS));
+
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
+                // Verify peer credentials: only root (UID 0) may issue IPC commands.
+                // This prevents unprivileged local processes from manipulating agents.
+                match stream.peer_cred() {
+                    Ok(cred) => {
+                        if cred.uid() != 0 {
+                            warn!(
+                                "IPC connection rejected: peer UID {} is not root",
+                                cred.uid()
+                            );
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("IPC connection rejected: failed to get peer credentials: {}", e);
+                        continue;
+                    }
+                }
+
+                let permit = match semaphore.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warn!("IPC connection rejected: too many concurrent connections");
+                        continue;
+                    }
+                };
+
                 let state = state.clone();
                 tokio::spawn(async move {
                     if let Err(e) = handle_connection(stream, state).await {
                         warn!("IPC connection error: {}", e);
                     }
+                    drop(permit); // Release connection slot
                 });
             }
             Err(e) => {
@@ -252,21 +285,36 @@ fn validate_request(request: &IpcRequest) -> Option<String> {
             if cgroup_path.contains('\0') {
                 return Some("cgroup_path must not contain null bytes".to_string());
             }
+            // Prevent path traversal attacks (e.g., "../../tmp/evil" → SIGTERM to arbitrary PIDs)
+            if cgroup_path.contains("..") {
+                return Some("cgroup_path must not contain '..' (path traversal)".to_string());
+            }
+            // Cgroup paths are relative to /sys/fs/cgroup/, must not be absolute
+            if cgroup_path.starts_with('/') {
+                return Some("cgroup_path must be relative (not start with '/')".to_string());
+            }
         }
         IpcRequest::StopAgent { agent_name } => {
             if agent_name.is_empty() {
                 return Some("agent_name must not be empty".to_string());
             }
         }
-        IpcRequest::GrantAccess { agent_name, path, duration_secs, .. } => {
+        IpcRequest::GrantAccess { agent_name, path, duration_secs, grant_type } => {
             if agent_name.is_empty() {
                 return Some("agent_name must not be empty".to_string());
             }
             if path.is_empty() || path.len() > guardian_common::MAX_RESOURCE_PATH_LEN {
                 return Some(format!("Invalid path length (must be 1-{})", guardian_common::MAX_RESOURCE_PATH_LEN));
             }
+            if path.contains('\0') {
+                return Some("path must not contain null bytes".to_string());
+            }
             if *duration_secs == 0 || *duration_secs > 86400 {
                 return Some("duration_secs must be between 1 and 86400".to_string());
+            }
+            // Validate grant_type to prevent silent fallthrough to file access
+            if grant_type != "file" && grant_type != "exec" {
+                return Some(format!("Invalid grant_type '{}' (must be 'file' or 'exec')", grant_type));
             }
         }
         IpcRequest::RequestPermission { agent_name, resource_path, justification, .. } => {
@@ -276,9 +324,16 @@ fn validate_request(request: &IpcRequest) -> Option<String> {
             if resource_path.is_empty() || resource_path.len() > guardian_common::MAX_RESOURCE_PATH_LEN {
                 return Some(format!("Invalid resource_path length (must be 1-{})", guardian_common::MAX_RESOURCE_PATH_LEN));
             }
+            if resource_path.contains('\0') {
+                return Some("resource_path must not contain null bytes".to_string());
+            }
             if let Some(j) = justification {
                 if j.len() > guardian_common::MAX_JUSTIFICATION_LEN {
                     return Some(format!("Justification too long (max {} chars)", guardian_common::MAX_JUSTIFICATION_LEN));
+                }
+                // Reject control characters in justification (except common whitespace)
+                if j.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+                    return Some("Justification must not contain control characters".to_string());
                 }
             }
         }
@@ -371,8 +426,9 @@ async fn handle_register(
 
     // Insert into WATCHED_CGROUPS BPF map
     if let Err(e) = state.cgroup_maps.watched_cgroups.insert(cgroup_id, 1, 0) {
+        error!("Failed to update WATCHED_CGROUPS map for '{}': {}", agent_name, e);
         return IpcResponse::Error {
-            message: format!("Failed to update WATCHED_CGROUPS map: {}", e),
+            message: "Internal error: failed to register agent for monitoring".to_string(),
         };
     }
 
@@ -467,6 +523,12 @@ async fn handle_stop_agent(state: &SharedIpcState, agent_name: &str) -> IpcRespo
             let mut killed = 0;
             for line in procs.lines() {
                 if let Ok(pid) = line.trim().parse::<i32>() {
+                    // Validate PID: must be positive. Negative PIDs have special
+                    // POSIX semantics (e.g., -1 sends signal to ALL processes).
+                    if pid <= 0 {
+                        warn!("Skipping invalid PID {} in cgroup for agent '{}'", pid, agent_name);
+                        continue;
+                    }
                     unsafe {
                         libc::kill(pid, libc::SIGTERM);
                     }

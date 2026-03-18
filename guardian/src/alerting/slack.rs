@@ -15,6 +15,11 @@ pub async fn send_slack_alert(
         .as_deref()
         .context("Slack webhook URL not configured")?;
 
+    // Prevent SSRF: reject URLs targeting private/internal network addresses
+    if let Err(reason) = super::validate_url_not_private(url) {
+        anyhow::bail!("Slack webhook URL rejected (SSRF prevention): {}", reason);
+    }
+
     let severity_emoji = match event.severity {
         Severity::Critical => ":rotating_light:",
         Severity::Warning => ":warning:",

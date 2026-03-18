@@ -27,9 +27,8 @@ description = "Userspace daemon for Guardian Shell - monitors LLM agent file acc
 # Provides APIs to load eBPF programs, manage maps, and read perf buffers
 aya = { version = "0.13", features = ["async_tokio"] }
 
-# Aya log integration - receives log messages from the eBPF program
-# and forwards them to the standard Rust `log` facade
-aya-log = "0.2"
+# Note: aya-log was removed because aya-log-ebpf was removed from the eBPF
+# program to reduce BPF verifier complexity. No AYA_LOGS map exists.
 
 # Our shared types (FileAccessEvent, constants)
 guardian-common = { path = "../guardian-common", features = ["user"] }

@@ -162,9 +162,9 @@ async fn main() -> Result<()> {
     })?;
     info!("eBPF program loaded successfully");
 
-    if let Err(e) = aya_log::EbpfLogger::init(&mut bpf) {
-        warn!("Failed to initialize eBPF logger (non-critical): {}", e);
-    }
+    // Note: aya-log-ebpf was removed from the eBPF program early on to reduce
+    // BPF verifier complexity (see ARCHITECTURE.md). No AYA_LOGS map exists,
+    // so EbpfLogger::init() is not called.
 
     // Step 3: Load all eBPF programs into the kernel BEFORE taking maps.
     load_tracepoint(&mut bpf, "guardian_file_open")?;

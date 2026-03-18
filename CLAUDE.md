@@ -8,9 +8,17 @@ on this project on a Linux machine.
 Guardian Shell is a Linux security tool that uses eBPF to monitor and restrict
 LLM agent activities. It's built with Rust and the Aya eBPF framework.
 
-**Current state: Phase 8 - Security Fixes (compiled on Linux)**
+**Current state: Phase 9 - Network Enforcement & Linux 6.x+ Security (compiled on Linux)**
 
-Phase 7 adds (on top of Phase 6) security hardening from `docs/security-improvements-research.md`:
+Phase 9 adds kernel-level network enforcement, upgrading from Phase 7's log-only network monitoring to actual connection blocking:
+
+- **Network enforcement**: LSM `socket_connect` hook blocks denied connections at kernel level (returns -ECONNREFUSED)
+- **Network policy maps**: Port-based deny/allow BPF maps (`NET_DENY_PORTS`, `NET_ALLOW_PORTS`) evaluated in-kernel by `sys_enter_connect` tracepoint
+- **PENDING_NET_DENY map**: Same tracepoint→PENDING_MAP→LSM pattern as file_open, inode_rename, etc.
+- **Per-cgroup network defaults**: `NET_CGROUP_DEFAULT_ACTION` map for cgroup-based agents
+- **BPF stack fix**: Dynamic linker detection reads argv[1] directly into event buffer (eliminates 256-byte stack allocation that exceeded BPF 512-byte limit)
+
+Phase 8 adds security hardening (IPC auth, rate limiting, SSRF prevention, SRI hashes, etc.). Phase 7 adds:
 
 - **Path canonicalization**: `normalize_path()` strips `/proc/self/root/`, `/proc/<pid>/root/`, resolves `..` components
 - **openat2 tracepoint**: `sys_enter_openat2` eBPF hook closes the openat2 syscall bypass (Linux 5.6+)
@@ -35,7 +43,9 @@ Security hardening adds `permissions.rs` module with rate limiter, risk classifi
 and justification analyzer. All evaluated before the oneshot channel is created.
 Exec enforcement uses a separate `PENDING_EXEC_DENY` map (not shared with file `PENDING_DENY`) because
 during execve, the kernel internally opens the binary, triggering `file_open` LSM which would consume a
-shared pending entry. Network monitoring parses sockaddr from `sys_enter_connect` tracepoint args.
+shared pending entry. Network enforcement uses the same tracepoint→PENDING_MAP→LSM pattern:
+`sys_enter_connect` evaluates port-based policy and sets `PENDING_NET_DENY`, then LSM `socket_connect`
+consumes the entry and returns -ECONNREFUSED to block the connection.
 
 ## Project Structure
 
@@ -276,7 +286,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | SQLite permission audit | Persistent trail survives daemon restarts. Enables future anomaly detection on approval patterns. |
 | openat2 graceful fallback | `load_tracepoint` failure is non-fatal — daemon continues without openat2 coverage on kernels < 5.6. |
 | Separate PENDING_EXEC_DENY map | During execve, kernel internally opens the binary triggering `file_open` LSM. A shared PENDING map would be consumed by the file_open check, so exec enforcement needs its own map. |
-| sys_enter_connect for network monitoring | Tracepoint gives easy access to sockaddr struct. Parses AF_INET (port+IPv4) and AF_INET6 (port+IPv6). Enforcement deferred to LSM `socket_connect`. |
+| sys_enter_connect + LSM socket_connect for network enforcement | Tracepoint parses sockaddr, evaluates port-based policy, sets PENDING_NET_DENY. LSM socket_connect blocks with -ECONNREFUSED. Same pattern as file_open enforcement. |
 | Single shared SSE connection | Browser HTTP/1.1 limits (~6 connections per origin). Multiple EventSource instances per page exhausted the pool. Single shared SSE with custom DOM events fixes this. |
 | Legacy `sys_enter_open` hook | Belt-and-suspenders: most code uses `openat`, but rare binaries or direct syscalls may use legacy `open`. Reuses PENDING_DENY and EVENT_BUF maps. |
 
@@ -296,7 +306,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 12. **Dashboard policy changes don't update BPF maps**: Policy edits update userspace config and disk; BPF enforcement maps require daemon restart or SIGHUP
 13. **Config write-back loses comments**: Dashboard saves config as clean TOML, original comments are removed
 14. **TailwindCSS/htmx/Alpine.js loaded from CDN**: Dashboard requires internet access for first load (or bundle locally)
-15. **Network monitoring is log-only**: Outbound connections logged with port-based policy in userspace, but not blocked in kernel (LSM `socket_connect`/`cgroup/connect4` deferred)
+15. **Network enforcement requires CONFIG_BPF_LSM**: Like file enforcement, network blocking via LSM `socket_connect` needs LSM support. Falls back to log-only if unavailable
 16. **Permission requests require dashboard or CLI**: Auto-denied when neither dashboard nor CLI approval is available
 17. **Seccomp filter is x86_64 only**: Syscall numbers are hardcoded for x86_64 in guardian-launch
 18. **Grant accumulation not yet enforced in IPC flow**: Infrastructure in place but accumulation check not wired into `resolve_permission()`

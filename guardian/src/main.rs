@@ -222,6 +222,13 @@ async fn main() -> Result<()> {
             }
             warn!("Failed to load LSM inode_link: {}. Hardlink enforcement unavailable.", e);
         }
+        // Phase 9: LSM socket_connect for network enforcement
+        if let Err(e) = load_lsm(&mut bpf, "guardian_enforce_net_connect", "socket_connect") {
+            if strict_mode {
+                anyhow::bail!("Strict mode: failed to load LSM socket_connect: {}", e);
+            }
+            warn!("Failed to load LSM socket_connect: {}. Network enforcement unavailable.", e);
+        }
     }
     info!("All eBPF programs loaded into kernel");
 
@@ -252,16 +259,25 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 4c2: Phase 8 — Dynamic linker detection map
+    // 4c2: Phase 9 — Network enforcement maps (port-based deny/allow in kernel)
+    if enforce_mode {
+        if let Err(e) = populate_net_enforcement_maps(&mut bpf, &config) {
+            warn!("Failed to populate network enforcement maps: {}. Network enforcement unavailable.", e);
+        } else {
+            info!("Network enforcement maps populated");
+        }
+    }
+
+    // 4c3: Phase 8 — Dynamic linker detection map
     if let Err(e) = populate_dynamic_linkers(&mut bpf) {
         warn!("Failed to populate dynamic linkers map: {}", e);
     } else {
         info!("Dynamic linker detection map populated");
     }
 
-    // 4c3: Phase 8 — Take inode enforcement pending maps (rename/unlink/link)
+    // 4c4: Phase 8 — Take inode enforcement pending maps (rename/unlink/link)
     // These just need to be taken so aya owns them.
-    for map_name in ["PENDING_RENAME_DENY", "PENDING_UNLINK_DENY", "PENDING_LINK_DENY"] {
+    for map_name in ["PENDING_RENAME_DENY", "PENDING_UNLINK_DENY", "PENDING_LINK_DENY", "PENDING_NET_DENY"] {
         if let Some(map) = bpf.take_map(map_name) {
             let _: HashMap<MapData, u64, u8> = HashMap::try_from(map)
                 .unwrap_or_else(|e| panic!("Failed to take {}: {}", map_name, e));
@@ -393,6 +409,19 @@ async fn main() -> Result<()> {
                     }
                     warn!("Failed to attach LSM {}: {}. {} enforcement unavailable.", desc, e, desc);
                 }
+            }
+        }
+        // Phase 9: Network enforcement LSM hook
+        match attach_lsm(&mut bpf, "guardian_enforce_net_connect") {
+            Ok(()) => info!("Attached: LSM socket_connect (network enforcement ACTIVE)"),
+            Err(e) => {
+                if strict_mode {
+                    anyhow::bail!("Strict mode: failed to attach LSM socket_connect: {}", e);
+                }
+                warn!(
+                    "Failed to attach LSM socket_connect: {}. Network enforcement unavailable.",
+                    e
+                );
             }
         }
     }
@@ -931,6 +960,69 @@ fn populate_exec_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()>
     Ok(())
 }
 
+/// Phase 9: Populate network enforcement BPF maps from config.
+/// Creates port-based deny/allow maps evaluated in-kernel by the sys_enter_connect tracepoint.
+fn populate_net_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()> {
+    let mut net_deny_ports: HashMap<MapData, u32, u8> = HashMap::try_from(
+        bpf.take_map("NET_DENY_PORTS")
+            .context("NET_DENY_PORTS map not found")?,
+    )?;
+
+    let mut net_allow_ports: HashMap<MapData, u32, u8> = HashMap::try_from(
+        bpf.take_map("NET_ALLOW_PORTS")
+            .context("NET_ALLOW_PORTS map not found")?,
+    )?;
+
+    let mut net_default_action: HashMap<MapData, [u8; 16], u8> = HashMap::try_from(
+        bpf.take_map("NET_DEFAULT_ACTION")
+            .context("NET_DEFAULT_ACTION map not found")?,
+    )?;
+
+    // Take cgroup net default map (set dynamically during registration)
+    let _net_cgroup_default: HashMap<MapData, u64, u8> = HashMap::try_from(
+        bpf.take_map("NET_CGROUP_DEFAULT_ACTION")
+            .context("NET_CGROUP_DEFAULT_ACTION map not found")?,
+    )?;
+
+    let mut deny_count = 0u32;
+    let mut allow_count = 0u32;
+
+    for agent in &config.agents {
+        let net_policy = match &agent.network_policy {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Set default action for comm-based agents
+        if agent.effective_identity() == "comm" {
+            let comm_key = comm_to_key(agent.effective_process_name());
+            let default_val = if net_policy.default == "deny" { 0u8 } else { 1u8 };
+            net_default_action.insert(comm_key, default_val, 0)?;
+        }
+
+        // Insert deny ports
+        for &port in &net_policy.deny_ports {
+            let port_key = port as u32;
+            net_deny_ports.insert(port_key, 1, 0)?;
+            deny_count += 1;
+        }
+
+        // Insert allow ports
+        for &port in &net_policy.allow_ports {
+            let port_key = port as u32;
+            net_allow_ports.insert(port_key, 1, 0)?;
+            allow_count += 1;
+        }
+    }
+
+    info!(
+        "Loaded {} net deny ports, {} net allow ports into BPF",
+        deny_count, allow_count
+    );
+
+    Ok(())
+}
+
 /// Phase 8: Populate the dynamic linker detection map.
 /// Known dynamic linkers: when eBPF sees execve of one of these, it reads argv[1]
 /// to find the real binary being executed.
@@ -1392,6 +1484,7 @@ fn process_exec_event(event: &ExecEvent, config: &Config, alert_tx: &AlertSender
 
 fn process_net_event(event: &NetworkEvent, config: &Config, alert_tx: &AlertSender) {
     let comm = std::str::from_utf8(event.comm_bytes()).unwrap_or("<unknown>");
+    let enforce_mode = config.global.mode == "enforce" || config.global.mode == "strict";
 
     let dest_addr = if event.family == 2 {
         // AF_INET
@@ -1420,8 +1513,14 @@ fn process_net_event(event: &NetworkEvent, config: &Config, alert_tx: &AlertSend
                 None => true,
             };
 
+            let mode_tag = if enforce_mode { "ENFORCE" } else { "MONITOR" };
+
+            // Phase 9: In enforce mode, denied connections are actually blocked
+            // by the LSM socket_connect hook (returns -ECONNREFUSED)
             let (severity, action) = if allowed {
                 (Severity::Info, Action::Allow)
+            } else if enforce_mode {
+                (Severity::Critical, Action::Blocked)
             } else {
                 (Severity::Warning, Action::Deny)
             };
@@ -1431,10 +1530,15 @@ fn process_net_event(event: &NetworkEvent, config: &Config, alert_tx: &AlertSend
                     "[NET|ALLOW] agent='{}' pid={} comm='{}' dest='{}'",
                     agent.name, event.tgid, comm, dest_addr
                 );
+            } else if enforce_mode {
+                warn!(
+                    "[NET|BLOCKED|{}] agent='{}' pid={} comm='{}' dest='{}'",
+                    mode_tag, agent.name, event.tgid, comm, dest_addr
+                );
             } else {
                 warn!(
-                    "[NET|DENY] agent='{}' pid={} comm='{}' dest='{}'",
-                    agent.name, event.tgid, comm, dest_addr
+                    "[NET|DENY|{}] agent='{}' pid={} comm='{}' dest='{}' (not blocked)",
+                    mode_tag, agent.name, event.tgid, comm, dest_addr
                 );
             }
 

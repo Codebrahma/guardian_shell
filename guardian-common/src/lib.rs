@@ -167,9 +167,14 @@ pub const MAP_EXEC_DEFAULT_ACTION: &str = "EXEC_DEFAULT_ACTION";
 pub const MAP_EXEC_CGROUP_DEFAULT_ACTION: &str = "EXEC_CGROUP_DEFAULT_ACTION";
 pub const MAP_PENDING_EXEC_DENY: &str = "PENDING_EXEC_DENY";
 
-// Network monitoring maps (Phase 7)
+// Network monitoring + enforcement maps (Phase 7 monitoring, Phase 9 enforcement)
 pub const MAP_NET_EVENTS: &str = "NET_EVENTS";
 pub const MAP_NET_EVENT_BUF: &str = "NET_EVENT_BUF";
+pub const MAP_PENDING_NET_DENY: &str = "PENDING_NET_DENY";
+pub const MAP_NET_DENY_PORTS: &str = "NET_DENY_PORTS";
+pub const MAP_NET_ALLOW_PORTS: &str = "NET_ALLOW_PORTS";
+pub const MAP_NET_DEFAULT_ACTION: &str = "NET_DEFAULT_ACTION";
+pub const MAP_NET_CGROUP_DEFAULT_ACTION: &str = "NET_CGROUP_DEFAULT_ACTION";
 
 // Phase 8: Inode enforcement maps (rename/unlink/hardlink)
 pub const MAP_PENDING_RENAME_DENY: &str = "PENDING_RENAME_DENY";

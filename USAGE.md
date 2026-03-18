@@ -13,6 +13,7 @@ Guardian Shell now provides eight layers of protection:
 - **Phase 6**: Interactive permission requests — agents can ask for temporary access, humans approve/deny via dashboard in real time
 - **Phase 7**: Path normalization, openat2 coverage, risk-based approval workflows, exec enforcement, network monitoring, persistent audit trail
 - **Phase 8**: Security hardening — inode protection (rename/unlink/hardlink enforcement), io_uring/memfd_create blocking via seccomp, BPF map capacity 1024, path truncation detection, dynamic linker detection, execveat hook, strict enforcement mode, dashboard authentication, risk-based configurable timeouts, CLI permission approval, grant accumulation limits, weighted justification analysis, anomaly detection, fail-closed mode
+- **Phase 9**: Network enforcement — LSM `socket_connect` hook for kernel-level connection blocking, port-based deny/allow BPF maps, per-cgroup network defaults
 
 ---
 
@@ -2353,7 +2354,7 @@ cargo install bpf-linker
 | **Relative paths** | If agent uses relative paths, pattern matching may fail | Future: Full path resolution in eBPF |
 | **Symlinks not resolved in eBPF** | Userspace `normalize_path()` handles `/proc/self/root/` and `..` but not arbitrary symlinks | Future: `bpf_d_path()` in LSM hooks (Linux 5.11+) |
 | **x86_64 only** | Tracepoint offsets are hardcoded for x86_64 | Future: Architecture-agnostic offset reading |
-| **Network monitoring is log-only** | Outbound connections logged with port-based policy, but not blocked in kernel | Future: LSM `socket_connect` enforcement or `cgroup/connect4/6` BPF |
+| **Network enforcement requires CONFIG_BPF_LSM** | LSM `socket_connect` hook needs kernel LSM support. Falls back to log-only if unavailable | Ensure kernel has `CONFIG_BPF_LSM=y` and `bpf` in LSM list |
 | **Enforcement requires CONFIG_BPF_LSM** | Kernel must have `CONFIG_BPF_LSM=y` and `bpf` in the LSM list | In strict mode, daemon exits if LSM unavailable; otherwise falls back to monitor-only |
 | **5-second grant/cleanup granularity** | Temporary grants and cgroup cleanup are checked every 5 seconds | Acceptable for most use cases |
 | **Comm-based agents still spoofable** | Process name can be changed via `prctl(PR_SET_NAME)` | Use cgroup-based identity for untrusted agents |
@@ -2449,9 +2450,10 @@ cargo install bpf-linker
 - [x] Persistent SQLite audit trail for all permission decisions
 - [x] Exec enforcement via LSM `bprm_check_security` hook with `PENDING_EXEC_DENY` map
 - [x] Network monitoring via `sys_enter_connect` tracepoint (AF_INET/AF_INET6, port-based policy)
+- [x] Network enforcement via LSM `socket_connect` hook (blocks denied connections at kernel level)
 - [x] SSE single shared EventSource with custom DOM events
 
-### Phase 8 - Security Hardening (Complete) ✅ (Current)
+### Phase 8 - Security Hardening (Complete) ✅
 
 **8a: Critical Security Fixes**
 - [x] BPF map capacity increase (256 → 1024 entries per policy map)
@@ -2492,3 +2494,12 @@ cargo install bpf-linker
 - [x] SSRF prevention for webhook/Slack URLs (blocks private/loopback IPs)
 - [x] Email subject header injection prevention (newline sanitization)
 - [x] CDN SRI (Subresource Integrity) hashes on all dashboard scripts
+
+### Phase 9 - Network Enforcement ✅
+
+- [x] LSM `socket_connect` hook for kernel-level connection blocking (returns -ECONNREFUSED)
+- [x] Port-based deny/allow BPF maps (`NET_DENY_PORTS`, `NET_ALLOW_PORTS`) evaluated in-kernel
+- [x] `PENDING_NET_DENY` map follows same tracepoint→LSM pattern as file/exec/inode enforcement
+- [x] Per-cgroup and per-comm network default action maps
+- [x] Graceful fallback to monitor-only when LSM `socket_connect` unavailable
+- [x] BPF stack overflow fix: dynamic linker detection reads directly into per-CPU buffer

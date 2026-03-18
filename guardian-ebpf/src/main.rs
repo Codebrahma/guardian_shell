@@ -138,7 +138,7 @@ static EXEC_CGROUP_DEFAULT_ACTION: HashMap<u64, u8> = HashMap::with_max_entries(
 static PENDING_EXEC_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
 
 // =============================================================================
-// Network Monitoring Maps (Phase 7)
+// Network Monitoring + Enforcement Maps (Phase 7 monitoring, Phase 9 enforcement)
 // =============================================================================
 
 /// Per-CPU scratch buffer for network events.
@@ -148,6 +148,27 @@ static NET_EVENT_BUF: PerCpuArray<NetworkEvent> = PerCpuArray::with_max_entries(
 /// Perf buffer for network events to userspace.
 #[map]
 static NET_EVENTS: PerfEventArray<NetworkEvent> = PerfEventArray::new(0);
+
+/// Pending network deny decisions: key = pid_tgid, value = 1.
+/// Set by sys_enter_connect tracepoint, consumed by LSM socket_connect.
+#[map]
+static PENDING_NET_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+
+/// Network deny rules: denied destination ports. key = port (u16 as u32), value = 1.
+#[map]
+static NET_DENY_PORTS: HashMap<u32, u8> = HashMap::with_max_entries(1024, 0);
+
+/// Network allow rules: allowed destination ports. key = port (u16 as u32), value = 1.
+#[map]
+static NET_ALLOW_PORTS: HashMap<u32, u8> = HashMap::with_max_entries(1024, 0);
+
+/// Default network action per comm: key = comm, value: 0 = deny, 1 = allow.
+#[map]
+static NET_DEFAULT_ACTION: HashMap<[u8; 16], u8> = HashMap::with_max_entries(1024, 0);
+
+/// Default network action per cgroup: key = cgroup_id, value: 0 = deny, 1 = allow.
+#[map]
+static NET_CGROUP_DEFAULT_ACTION: HashMap<u64, u8> = HashMap::with_max_entries(1024, 0);
 
 // =============================================================================
 // Phase 8 Maps: Inode Protection (rename/unlink/hardlink enforcement)
@@ -290,6 +311,36 @@ fn evaluate_policy(
     match unsafe { DEFAULT_ACTION.get(comm) } {
         Some(&action) => action == 1,
         None => true, // fail-open if no default configured
+    }
+}
+
+/// Evaluate network deny/allow rules using port-based map lookups.
+/// Returns true if the connection is allowed.
+#[inline(always)]
+fn evaluate_net_policy(
+    port: u16,
+    comm: &[u8; 16],
+    cgroup_id: u64,
+) -> bool {
+    let port_key = port as u32;
+
+    // Step 1: Check deny port
+    if unsafe { NET_DENY_PORTS.get(&port_key) }.is_some() {
+        return false;
+    }
+
+    // Step 2: Check allow port
+    if unsafe { NET_ALLOW_PORTS.get(&port_key) }.is_some() {
+        return true;
+    }
+
+    // Step 3: Default action — check by cgroup first, then by comm
+    if let Some(&action) = unsafe { NET_CGROUP_DEFAULT_ACTION.get(&cgroup_id) } {
+        return action == 1;
+    }
+    match unsafe { NET_DEFAULT_ACTION.get(comm) } {
+        Some(&action) => action == 1,
+        None => true, // fail-open if no net default configured
     }
 }
 
@@ -537,6 +588,8 @@ fn try_guardian_exec_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
     if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
         // Phase 8: Dynamic linker detection — if the binary is a known linker,
         // read argv[1] to find the real binary and evaluate policy on that.
+        // We read argv[1] directly into event.filename to avoid a 256-byte
+        // stack allocation that would exceed the BPF 512-byte stack limit.
         if unsafe { DYNAMIC_LINKERS.get(&event.filename) }.is_some() {
             // argv pointer is at offset 24 for sys_enter_execve (x86_64)
             let argv_ptr: u64 = unsafe { ctx.read_at(24)? };
@@ -547,20 +600,18 @@ fn try_guardian_exec_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
                 };
                 if let Ok(argv1_ptr) = argv1_ptr_result {
                     if argv1_ptr != 0 {
-                        // Read the real binary path from argv[1]
-                        let mut real_filename = [0u8; MAX_FILENAME_LEN];
+                        // Read the real binary path directly into event.filename
+                        // (overwriting the linker path — we already checked it)
                         if let Ok(name_bytes) = unsafe {
-                            bpf_probe_read_user_str_bytes(argv1_ptr as *const u8, &mut real_filename)
+                            bpf_probe_read_user_str_bytes(argv1_ptr as *const u8, &mut event.filename)
                         } {
                             let real_len = name_bytes.len();
                             if real_len > 0 {
-                                let allowed = evaluate_exec_policy(&real_filename, real_len, &comm, cgroup_id);
+                                event.filename_len = real_len as u32;
+                                let allowed = evaluate_exec_policy(&event.filename, real_len, &comm, cgroup_id);
                                 if !allowed {
                                     let _ = PENDING_EXEC_DENY.insert(&pid_tgid, &1u8, 0);
                                 }
-                                // Update event filename to show the real binary
-                                event.filename = real_filename;
-                                event.filename_len = real_len as u32;
                             }
                         }
                     }
@@ -880,6 +931,15 @@ fn try_guardian_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
         event.dest_addr6 = addr6;
     }
 
+    // Phase 9: Kernel-side network policy evaluation for enforcement.
+    // If the port is denied, set PENDING_NET_DENY so LSM socket_connect blocks it.
+    if is_process_enforcing(&comm, tgid, cgroup_id) && event.dest_port > 0 {
+        let allowed = evaluate_net_policy(event.dest_port, &comm, cgroup_id);
+        if !allowed {
+            let _ = PENDING_NET_DENY.insert(&pid_tgid, &1u8, 0);
+        }
+    }
+
     NET_EVENTS.output(ctx, event, 0);
 
     Ok(0)
@@ -1130,6 +1190,32 @@ fn try_enforce_link(_ctx: &LsmContext) -> Result<i32, i64> {
     if unsafe { PENDING_LINK_DENY.get(&pid_tgid) }.is_some() {
         let _ = PENDING_LINK_DENY.remove(&pid_tgid);
         return Ok(-13); // -EACCES
+    }
+
+    Ok(0)
+}
+
+// =============================================================================
+// Phase 9: LSM: socket_connect (blocks denied outbound connections)
+// =============================================================================
+
+/// Enforces network connection policy. The sys_enter_connect tracepoint evaluates
+/// port-based policy and sets PENDING_NET_DENY. This LSM hook consumes the entry
+/// and returns -EACCES to block the connection.
+#[lsm(hook = "socket_connect")]
+pub fn guardian_enforce_net_connect(ctx: LsmContext) -> i32 {
+    match try_enforce_net_connect(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => fail_mode_for_cgroup(),
+    }
+}
+
+fn try_enforce_net_connect(_ctx: &LsmContext) -> Result<i32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+
+    if unsafe { PENDING_NET_DENY.get(&pid_tgid) }.is_some() {
+        let _ = PENDING_NET_DENY.remove(&pid_tgid);
+        return Ok(-111); // -ECONNREFUSED: more informative than -EACCES for network
     }
 
     Ok(0)

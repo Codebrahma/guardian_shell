@@ -1,5 +1,5 @@
 use axum::extract::{Path, Query, State};
-use axum::response::{Html, IntoResponse};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use log::{error, info};
 use prometheus::core::Collector;
@@ -600,19 +600,30 @@ pub async fn reload_config(
 
 pub async fn prometheus_metrics(
     State(state): State<Arc<DashboardState>>,
-) -> impl IntoResponse {
+) -> Response {
     let encoder = TextEncoder::new();
     let metric_families = state.alert_sender.metrics.registry.gather();
     let mut body = Vec::new();
-    encoder.encode(&metric_families, &mut body).unwrap();
+    if let Err(e) = encoder.encode(&metric_families, &mut body) {
+        log::error!("Failed to encode Prometheus metrics: {}", e);
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
+            b"Internal error encoding metrics".to_vec(),
+        ).into_response();
+    }
 
     (
+        axum::http::StatusCode::OK,
         [(
             axum::http::header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
         body,
-    )
+    ).into_response()
 }
 
 // =============================================================================

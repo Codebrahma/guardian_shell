@@ -17,6 +17,22 @@ pub const DEFAULT_SOCKET_PATH: &str = "/run/guardian.sock";
 /// Cgroup base path under /sys/fs/cgroup.
 pub const CGROUP_BASE: &str = "guardian";
 
+/// Maximum IPC message size in bytes (1 MiB). Both sender and receiver enforce this.
+#[cfg(feature = "user")]
+pub const MAX_IPC_MESSAGE_LEN: usize = 1024 * 1024;
+
+/// Maximum allowed length for agent names in IPC requests.
+#[cfg(feature = "user")]
+pub const MAX_AGENT_NAME_LEN: usize = 128;
+
+/// Maximum allowed length for resource paths in IPC requests.
+#[cfg(feature = "user")]
+pub const MAX_RESOURCE_PATH_LEN: usize = 4096;
+
+/// Maximum allowed length for justification text.
+#[cfg(feature = "user")]
+pub const MAX_JUSTIFICATION_LEN: usize = 2048;
+
 // =============================================================================
 // Event Types
 // =============================================================================
@@ -326,10 +342,10 @@ pub mod ipc {
         let mut len_buf = [0u8; 4];
         reader.read_exact(&mut len_buf)?;
         let len = u32::from_be_bytes(len_buf) as usize;
-        if len > 1024 * 1024 {
+        if len > crate::MAX_IPC_MESSAGE_LEN {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "message too large",
+                format!("IPC message too large: {} bytes (max {})", len, crate::MAX_IPC_MESSAGE_LEN),
             ));
         }
         let mut buf = vec![0u8; len];

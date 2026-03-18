@@ -294,10 +294,9 @@ fn apply_seccomp_filter() -> Result<()> {
 
     // Block each syscall unconditionally
     for syscall_nr in [SYS_MEMFD_CREATE, SYS_IO_URING_SETUP, SYS_IO_URING_ENTER, SYS_IO_URING_REGISTER] {
-        rules.insert(
-            syscall_nr,
-            vec![SeccompRule::new(vec![always_match.clone()]).unwrap()],
-        );
+        let rule = SeccompRule::new(vec![always_match.clone()])
+            .map_err(|e| anyhow::anyhow!("Failed to create seccomp rule for syscall {}: {:?}", syscall_nr, e))?;
+        rules.insert(syscall_nr, vec![rule]);
     }
 
     let filter = SeccompFilter::new(

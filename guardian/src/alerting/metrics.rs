@@ -57,11 +57,17 @@ impl AlertMetrics {
         )
         .expect("metric creation should not fail");
 
-        registry.register(Box::new(file_events.clone())).unwrap();
-        registry.register(Box::new(exec_events.clone())).unwrap();
-        registry.register(Box::new(events_lost.clone())).unwrap();
-        registry.register(Box::new(alerts_sent.clone())).unwrap();
-        registry.register(Box::new(alerts_dropped.clone())).unwrap();
+        for (name, collector) in [
+            ("file_events", Box::new(file_events.clone()) as Box<dyn prometheus::core::Collector>),
+            ("exec_events", Box::new(exec_events.clone())),
+            ("events_lost", Box::new(events_lost.clone())),
+            ("alerts_sent", Box::new(alerts_sent.clone())),
+            ("alerts_dropped", Box::new(alerts_dropped.clone())),
+        ] {
+            if let Err(e) = registry.register(collector) {
+                log::warn!("Failed to register Prometheus metric '{}': {}", name, e);
+            }
+        }
 
         AlertMetrics {
             registry,
@@ -141,8 +147,10 @@ pub async fn serve_metrics(
                 let encoder = TextEncoder::new();
                 let metric_families = metrics.registry.gather();
                 let mut body = Vec::new();
-                encoder.encode(&metric_families, &mut body).unwrap();
-
+                if let Err(e) = encoder.encode(&metric_families, &mut body) {
+                    log::error!("Failed to encode Prometheus metrics: {}", e);
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_vec()
+                } else {
                 format!(
                     "HTTP/1.1 200 OK\r\n\
                      Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n\
@@ -154,6 +162,7 @@ pub async fn serve_metrics(
                 .into_iter()
                 .chain(body)
                 .collect::<Vec<u8>>()
+                }
             } else {
                 b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec()
             };

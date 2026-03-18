@@ -455,10 +455,17 @@ async fn main() -> Result<()> {
             .and_then(|d| d.db_path.clone())
             .unwrap_or_else(|| "/var/lib/guardian/events.db".to_string());
 
-        let db = Arc::new(
-            dashboard::db::EventDb::open(&db_path)
-                .expect("Failed to open event database"),
-        );
+        let db = match dashboard::db::EventDb::open(&db_path) {
+            Ok(db) => Arc::new(db),
+            Err(e) => {
+                error!("Failed to open event database at '{}': {} — dashboard events will not be persisted", db_path, e);
+                // Create a fallback in-memory database so dashboard still functions
+                Arc::new(
+                    dashboard::db::EventDb::open(":memory:")
+                        .expect("in-memory SQLite should always succeed"),
+                )
+            }
+        };
 
         // Spawn background DB writer: subscribes to broadcast and persists events
         let db_writer = db.clone();

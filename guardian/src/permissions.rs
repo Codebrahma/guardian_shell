@@ -214,17 +214,6 @@ impl GrantAccumulator {
         entries.iter().map(|(_, d)| *d).sum()
     }
 
-    /// Get total accumulated grant seconds for an agent+resource in the past 24h.
-    pub fn total_secs(&mut self, agent_name: &str, resource_path: &str) -> u64 {
-        let key = (agent_name.to_string(), resource_path.to_string());
-        let now = Instant::now();
-        if let Some(entries) = self.grants.get_mut(&key) {
-            entries.retain(|(t, _)| now.duration_since(*t).as_secs() < 86400);
-            entries.iter().map(|(_, d)| *d).sum()
-        } else {
-            0
-        }
-    }
 }
 
 /// Critical resource patterns — HIGH/CRITICAL risk.

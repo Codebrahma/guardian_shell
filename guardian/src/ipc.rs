@@ -111,11 +111,6 @@ pub struct PermissionEvent {
     pub justification_warnings: Vec<String>,
 }
 
-/// Default timeout for permission requests (seconds).
-/// Phase 8: Now superseded by risk-based timeouts via RiskLevel::timeout_secs(),
-/// but kept as a fallback constant.
-#[allow(dead_code)]
-pub const PERMISSION_TIMEOUT_SECS: u64 = 120;
 /// Maximum number of resolved permissions to keep in memory.
 const MAX_RESOLVED_HISTORY: usize = 100;
 
@@ -207,8 +202,10 @@ async fn handle_connection(mut stream: UnixStream, state: SharedIpcState) -> Res
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
 
-    if len > 1024 * 1024 {
-        return Err(anyhow::anyhow!("IPC message too large: {} bytes", len));
+    if len > guardian_common::MAX_IPC_MESSAGE_LEN {
+        return Err(anyhow::anyhow!(
+            "IPC message too large: {} bytes (max {})", len, guardian_common::MAX_IPC_MESSAGE_LEN
+        ));
     }
 
     let mut buf = vec![0u8; len];
@@ -218,6 +215,17 @@ async fn handle_connection(mut stream: UnixStream, state: SharedIpcState) -> Res
         .context("Failed to parse IPC request")?;
 
     debug!("IPC request: {:?}", request);
+
+    // Validate IPC request fields before processing
+    if let Some(err) = validate_request(&request) {
+        let response = IpcResponse::Error { message: err };
+        let resp_json = serde_json::to_vec(&response)?;
+        let resp_len = (resp_json.len() as u32).to_be_bytes();
+        stream.write_all(&resp_len).await?;
+        stream.write_all(&resp_json).await?;
+        stream.flush().await?;
+        return Ok(());
+    }
 
     let response = process_request(request, &state).await;
 
@@ -229,6 +237,60 @@ async fn handle_connection(mut stream: UnixStream, state: SharedIpcState) -> Res
     stream.flush().await?;
 
     Ok(())
+}
+
+/// Validate IPC request fields. Returns Some(error_message) if invalid.
+fn validate_request(request: &IpcRequest) -> Option<String> {
+    match request {
+        IpcRequest::Register { agent_name, cgroup_path, .. } => {
+            if agent_name.is_empty() || agent_name.len() > guardian_common::MAX_AGENT_NAME_LEN {
+                return Some(format!("Invalid agent_name length (must be 1-{})", guardian_common::MAX_AGENT_NAME_LEN));
+            }
+            if agent_name.contains('/') || agent_name.contains('\0') {
+                return Some("agent_name must not contain '/' or null bytes".to_string());
+            }
+            if cgroup_path.contains('\0') {
+                return Some("cgroup_path must not contain null bytes".to_string());
+            }
+        }
+        IpcRequest::StopAgent { agent_name } => {
+            if agent_name.is_empty() {
+                return Some("agent_name must not be empty".to_string());
+            }
+        }
+        IpcRequest::GrantAccess { agent_name, path, duration_secs, .. } => {
+            if agent_name.is_empty() {
+                return Some("agent_name must not be empty".to_string());
+            }
+            if path.is_empty() || path.len() > guardian_common::MAX_RESOURCE_PATH_LEN {
+                return Some(format!("Invalid path length (must be 1-{})", guardian_common::MAX_RESOURCE_PATH_LEN));
+            }
+            if *duration_secs == 0 || *duration_secs > 86400 {
+                return Some("duration_secs must be between 1 and 86400".to_string());
+            }
+        }
+        IpcRequest::RequestPermission { agent_name, resource_path, justification, .. } => {
+            if agent_name.is_empty() {
+                return Some("agent_name must not be empty".to_string());
+            }
+            if resource_path.is_empty() || resource_path.len() > guardian_common::MAX_RESOURCE_PATH_LEN {
+                return Some(format!("Invalid resource_path length (must be 1-{})", guardian_common::MAX_RESOURCE_PATH_LEN));
+            }
+            if let Some(j) = justification {
+                if j.len() > guardian_common::MAX_JUSTIFICATION_LEN {
+                    return Some(format!("Justification too long (max {} chars)", guardian_common::MAX_JUSTIFICATION_LEN));
+                }
+            }
+        }
+        IpcRequest::ApprovePermission { duration_secs, .. } => {
+            if *duration_secs == 0 || *duration_secs > 86400 {
+                return Some("duration_secs must be between 1 and 86400".to_string());
+            }
+        }
+        // ListAgents, ListPending, DenyPermission — no validation needed
+        _ => {}
+    }
+    None
 }
 
 /// Process an IPC request and return a response.
@@ -295,16 +357,17 @@ async fn handle_register(
     let mut state = state.lock().await;
 
     // Find matching agent config
-    let agent_config = state.config.agents.iter().find(|a| a.name == agent_name);
-    if agent_config.is_none() {
-        return IpcResponse::Error {
-            message: format!(
-                "No agent config found for '{}'. Add it to config.toml.",
-                agent_name
-            ),
-        };
-    }
-    let agent_config = agent_config.unwrap().clone();
+    let agent_config = match state.config.agents.iter().find(|a| a.name == agent_name) {
+        Some(cfg) => cfg.clone(),
+        None => {
+            return IpcResponse::Error {
+                message: format!(
+                    "No agent config found for '{}'. Add it to config.toml.",
+                    agent_name
+                ),
+            };
+        }
+    };
 
     // Insert into WATCHED_CGROUPS BPF map
     if let Err(e) = state.cgroup_maps.watched_cgroups.insert(cgroup_id, 1, 0) {
@@ -476,15 +539,15 @@ async fn handle_grant_access(
         // File access grant: add to BPF allow maps for kernel-side enforcement
         if let Some(ref mut policy_maps) = state.policy_maps {
             if is_prefix {
-                let prefix = format!("{}/", &path[..path.len() - 3]);
+                let prefix = strip_glob_to_prefix(path);
                 let key = path_to_lpm_key(prefix.as_bytes());
                 if let Err(e) = policy_maps.allow_prefixes.insert(&key, 1, 0) {
-                    warn!("Failed to add temporary allow prefix: {}", e);
+                    warn!("Failed to add temporary allow prefix for '{}': {}", path, e);
                 }
             } else {
                 let key = path_to_map_key(path.as_bytes());
                 if let Err(e) = policy_maps.allow_exact.insert(key, 1, 0) {
-                    warn!("Failed to add temporary allow exact: {}", e);
+                    warn!("Failed to add temporary allow exact for '{}': {}", path, e);
                 }
             }
         }
@@ -590,10 +653,12 @@ async fn handle_request_permission(
             // Persist to audit trail
             if let Some(ref db) = s.event_db {
                 let now = chrono::Utc::now().to_rfc3339();
-                let _ = db.insert_permission_audit(
+                if let Err(e) = db.insert_permission_audit(
                     s.next_permission_id, &agent_name, &resource_type, &resource_path,
                     justification.as_deref(), "critical", &[], &now, &now, false, &reason, None,
-                );
+                ) {
+                    warn!("Failed to persist permission audit: {}", e);
+                }
                 s.next_permission_id += 1;
             }
             return IpcResponse::PermissionDecision {
@@ -618,10 +683,12 @@ async fn handle_request_permission(
             // Persist to audit trail
             if let Some(ref db) = s.event_db {
                 let now = chrono::Utc::now().to_rfc3339();
-                let _ = db.insert_permission_audit(
+                if let Err(e) = db.insert_permission_audit(
                     s.next_permission_id, &agent_name, &resource_type, &resource_path,
                     justification.as_deref(), "low", &[], &now, &now, true, &reason, Some(max_duration),
-                );
+                ) {
+                    warn!("Failed to persist permission audit: {}", e);
+                }
                 s.next_permission_id += 1;
             }
             return IpcResponse::PermissionDecision {
@@ -646,10 +713,12 @@ async fn handle_request_permission(
             // Persist to audit trail
             if let Some(ref db) = s.event_db {
                 let now = chrono::Utc::now().to_rfc3339();
-                let _ = db.insert_permission_audit(
+                if let Err(e) = db.insert_permission_audit(
                     s.next_permission_id, &agent_name, &resource_type, &resource_path,
                     justification.as_deref(), "medium", &[], &now, &now, false, &full_reason, None,
-                );
+                ) {
+                    warn!("Failed to persist permission audit: {}", e);
+                }
                 s.next_permission_id += 1;
             }
             return IpcResponse::PermissionDecision {
@@ -711,7 +780,7 @@ async fn handle_request_permission(
 
         // Broadcast to dashboard
         if let Some(ref bus) = s.permission_bus {
-            let _ = bus.send(PermissionEvent {
+            if let Err(e) = bus.send(PermissionEvent {
                 id: request_id,
                 kind: "request".to_string(),
                 agent_name: agent_name.clone(),
@@ -727,7 +796,9 @@ async fn handle_request_permission(
                 wait_seconds: Some(risk_level.wait_seconds()),
                 requires_type_confirm: Some(risk_level.requires_type_confirm()),
                 justification_warnings: justification_warnings.clone(),
-            });
+            }) {
+                debug!("No SSE subscribers for permission event: {}", e);
+            }
         }
 
         info!(
@@ -785,12 +856,14 @@ async fn handle_request_permission(
                 let timeout_reason = "Timed out".to_string();
                 // Persist to SQLite audit trail
                 if let Some(ref db) = s.event_db {
-                    let _ = db.insert_permission_audit(
+                    if let Err(e) = db.insert_permission_audit(
                         pending.id, &pending.agent_name, &pending.resource_type,
                         &pending.resource_path, pending.justification.as_deref(),
                         pending.risk_level.as_str(), &pending.risk_flags,
                         &requested_at_str, &resolved_at_str, false, &timeout_reason, None,
-                    );
+                    ) {
+                        warn!("Failed to persist permission audit: {}", e);
+                    }
                 }
                 s.resolved_permissions.push_back(ResolvedPermission {
                     id: pending.id,
@@ -813,7 +886,7 @@ async fn handle_request_permission(
 
             // Broadcast resolution
             if let Some(ref bus) = s.permission_bus {
-                let _ = bus.send(PermissionEvent {
+                if let Err(e) = bus.send(PermissionEvent {
                     id: request_id,
                     kind: "resolved".to_string(),
                     agent_name,
@@ -829,7 +902,9 @@ async fn handle_request_permission(
                     wait_seconds: None,
                     requires_type_confirm: None,
                     justification_warnings: vec![],
-                });
+                }) {
+                    debug!("No SSE subscribers for permission resolution: {}", e);
+                }
             }
 
             IpcResponse::PermissionDecision {
@@ -920,12 +995,16 @@ pub async fn resolve_permission(
                 // File access — add to BPF allow maps
                 if let Some(ref mut policy_maps) = s.policy_maps {
                     if is_prefix {
-                        let prefix = format!("{}/", &pending.resource_path[..pending.resource_path.len() - 3]);
+                        let prefix = strip_glob_to_prefix(&pending.resource_path);
                         let key = path_to_lpm_key(prefix.as_bytes());
-                        let _ = policy_maps.allow_prefixes.insert(&key, 1, 0);
+                        if let Err(e) = policy_maps.allow_prefixes.insert(&key, 1, 0) {
+                            warn!("Failed to add allow prefix for '{}': {}", pending.resource_path, e);
+                        }
                     } else {
                         let key = path_to_map_key(pending.resource_path.as_bytes());
-                        let _ = policy_maps.allow_exact.insert(key, 1, 0);
+                        if let Err(e) = policy_maps.allow_exact.insert(key, 1, 0) {
+                            warn!("Failed to add allow exact for '{}': {}", pending.resource_path, e);
+                        }
                     }
                 }
                 s.grants.push(TemporaryGrant {
@@ -1001,13 +1080,13 @@ pub async fn resolve_permission(
             &reason,
             grant_duration_secs,
         ) {
-            log::warn!("Failed to persist permission audit: {}", e);
+            warn!("Failed to persist permission audit: {}", e);
         }
     }
 
     // Broadcast resolution
     if let Some(ref bus) = s.permission_bus {
-        let _ = bus.send(PermissionEvent {
+        if let Err(e) = bus.send(PermissionEvent {
             id: permission_id,
             kind: "resolved".to_string(),
             agent_name: pending.agent_name,
@@ -1023,7 +1102,9 @@ pub async fn resolve_permission(
             wait_seconds: None,
             requires_type_confirm: None,
             justification_warnings: vec![],
-        });
+        }) {
+            debug!("No SSE subscribers for permission resolution: {}", e);
+        }
     }
 
     Ok(())
@@ -1122,12 +1203,16 @@ pub async fn cgroup_cleanup_task(state: SharedIpcState) {
                     // Remove from BPF maps
                     if let Some(ref mut policy_maps) = state.policy_maps {
                         if grant.is_prefix {
-                            let prefix = format!("{}/", &grant.path[..grant.path.len() - 3]);
+                            let prefix = strip_glob_to_prefix(&grant.path);
                             let key = path_to_lpm_key(prefix.as_bytes());
-                            let _ = policy_maps.allow_prefixes.remove(&key);
+                            if let Err(e) = policy_maps.allow_prefixes.remove(&key) {
+                                debug!("Failed to remove expired allow prefix for '{}': {}", grant.path, e);
+                            }
                         } else {
                             let key = path_to_map_key(grant.path.as_bytes());
-                            let _ = policy_maps.allow_exact.remove(&key);
+                            if let Err(e) = policy_maps.allow_exact.remove(&key) {
+                                debug!("Failed to remove expired allow exact for '{}': {}", grant.path, e);
+                            }
                         }
                     }
                     info!(
@@ -1191,14 +1276,13 @@ fn count_cgroup_processes(cgroup_path: &str) -> u32 {
     }
 }
 
-/// Get the cgroup ID (inode number) for a cgroup path.
-#[allow(dead_code)]
-pub fn get_cgroup_id(cgroup_path: &str) -> Result<u64> {
-    use std::os::unix::fs::MetadataExt;
-    let full_path = format!("/sys/fs/cgroup/{}", cgroup_path);
-    let metadata = std::fs::metadata(&full_path)
-        .with_context(|| format!("Failed to stat cgroup '{}'", full_path))?;
-    Ok(metadata.ino())
+/// Strip glob suffix ("/**") from a path and append "/" for prefix matching.
+/// Returns the path unchanged if it doesn't end with "/**".
+fn strip_glob_to_prefix(path: &str) -> String {
+    path.strip_suffix("/**")
+        .unwrap_or(path)
+        .to_string()
+        + "/"
 }
 
 fn path_to_lpm_key(path: &[u8]) -> Key<[u8; MAX_FILENAME_LEN]> {

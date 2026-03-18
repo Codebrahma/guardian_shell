@@ -105,6 +105,10 @@ async fn auth_middleware(
         }
     }
 
+    log::warn!(
+        "Unauthorized dashboard access attempt: {} {} (no valid token)",
+        req.method(), path
+    );
     (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized: provide Bearer token or ?token= query parameter").into_response()
 }
 

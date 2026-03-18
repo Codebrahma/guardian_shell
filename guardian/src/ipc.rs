@@ -70,7 +70,7 @@ pub struct PendingPermission {
     pub responder: Option<oneshot::Sender<PermissionDecision>>,
     pub risk_level: RiskLevel,
     pub risk_flags: Vec<String>,
-    pub justification_flags: Vec<(String, String)>,
+    pub justification_flags: Vec<(&'static str, &'static str)>,
 }
 
 /// A resolved (completed) permission request, kept for audit trail.
@@ -607,7 +607,8 @@ async fn handle_request_permission(
 
         // --- Phase 7c: Permission Hardening ---
 
-        // Get permissions config (clone before mutable borrows)
+        // Clone permissions config to avoid holding immutable borrow while mutating rate_limits.
+        // This is a small struct; the alternative (restructuring IpcState) would be too invasive.
         let perm_config = s.config.permissions.clone().unwrap_or_else(|| {
             crate::config::PermissionsConfig {
                 auto_deny: vec![],

@@ -136,7 +136,8 @@ impl JsonLogger {
         match &mut self.file {
             Some(file) => {
                 file.write_all(&json).await?;
-                file.flush().await?;
+                // Skip per-event flush — OS write-back and log rotation handle durability.
+                // This avoids an extra syscall per event under high throughput.
                 self.bytes_written += json.len() as u64;
 
                 // Check if rotation needed

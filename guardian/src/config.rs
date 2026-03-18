@@ -514,36 +514,41 @@ fn validate_alerting_config(config: &AlertingConfig) -> Result<()> {
 /// Catches /proc/self/root/, /proc/<pid>/root/, and ".." traversal.
 /// Does NOT resolve symlinks (that requires kernel-side bpf_d_path).
 pub fn normalize_path(raw: &str) -> String {
-    let mut path = raw.to_string();
-
-    // Strip /proc/self/root/ prefix (filesystem escape trick)
-    if let Some(rest) = path.strip_prefix("/proc/self/root/") {
-        path = format!("/{}", rest);
-    } else if let Some(rest) = path.strip_prefix("/proc/self/root") {
-        if rest.is_empty() {
-            path = "/".to_string();
-        }
-    }
-
-    // Strip /proc/<pid>/root/ prefix
-    if path.starts_with("/proc/") {
-        let after_proc = &path[6..]; // skip "/proc/"
+    // Phase 1: Strip /proc/self/root/ or /proc/<pid>/root/ prefixes.
+    // Work on &str slices to avoid intermediate String allocations.
+    let stripped = if let Some(rest) = raw.strip_prefix("/proc/self/root/") {
+        rest
+    } else if raw == "/proc/self/root" {
+        return "/".to_string();
+    } else if raw.starts_with("/proc/") {
+        let after_proc = &raw[6..];
         if let Some(slash_pos) = after_proc.find('/') {
             let pid_part = &after_proc[..slash_pos];
             if pid_part.bytes().all(|b| b.is_ascii_digit()) {
                 let after_pid = &after_proc[slash_pos..];
                 if let Some(rest) = after_pid.strip_prefix("/root/") {
-                    path = format!("/{}", rest);
+                    rest
                 } else if after_pid == "/root" {
-                    path = "/".to_string();
+                    return "/".to_string();
+                } else {
+                    raw
                 }
+            } else {
+                raw
             }
+        } else {
+            raw
         }
-    }
+    } else {
+        raw
+    };
 
-    // Resolve ".." and "." components
-    let mut components: Vec<&str> = Vec::new();
-    for component in path.split('/') {
+    // Phase 2: Resolve ".." and "." components into a single String.
+    // Pre-allocate with capacity to avoid repeated reallocations.
+    let mut result = String::with_capacity(stripped.len() + 1);
+    // First pass: collect valid components into a small stack-friendly Vec
+    let mut components: Vec<&str> = Vec::with_capacity(16);
+    for component in stripped.split('/') {
         match component {
             "" | "." => {}
             ".." => { components.pop(); }
@@ -552,10 +557,14 @@ pub fn normalize_path(raw: &str) -> String {
     }
 
     if components.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}", components.join("/"))
+        return "/".to_string();
     }
+
+    for comp in &components {
+        result.push('/');
+        result.push_str(comp);
+    }
+    result
 }
 
 // =============================================================================

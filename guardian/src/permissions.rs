@@ -265,7 +265,7 @@ pub fn classify_risk(
     let normalized = normalize_path(resource_path);
     let path = normalized.as_str();
     let mut score: u32 = 25; // Base: MEDIUM
-    let mut flags: Vec<String> = Vec::new();
+    let mut flags: Vec<String> = Vec::with_capacity(4);
 
     // Check critical patterns
     for pattern in CRITICAL_PATTERNS {
@@ -287,21 +287,21 @@ pub fn classify_risk(
         }
     }
 
-    // Check low-risk patterns
+    // Check low-risk patterns (use static string — no format needed)
     if score <= 25 {
         for pattern in LOW_PATTERNS {
             if path_matches(path, pattern) {
                 score = 10;
-                flags.push("low_risk_path".to_string());
+                flags.push("low_risk_path".into());
                 break;
             }
         }
     }
 
-    // Exec type: 1.5x multiplier
+    // Exec type: 1.5x multiplier (use integer math instead of f64)
     if resource_type == "exec" {
-        score = (score as f64 * 1.5) as u32;
-        flags.push("exec_type".to_string());
+        score = score * 3 / 2;
+        flags.push("exec_type".into());
 
         // Known risky executables
         for exec in HIGH_RISK_EXECS {
@@ -313,15 +313,15 @@ pub fn classify_risk(
         }
     }
 
-    // Repeat request after denial: 2.0x
+    // Repeat request after denial: 2x (integer)
     if agent_rate.consecutive_denials > 0 {
-        score = (score as f64 * 2.0).min(100.0) as u32;
+        score = (score * 2).min(100);
         flags.push(format!("post_denial:{}", agent_rate.consecutive_denials));
     }
 
-    // High request rate: 1.3x
+    // High request rate: ~1.3x (integer approximation: * 13 / 10)
     if agent_rate.requests_this_hour > 5 {
-        score = (score as f64 * 1.3).min(100.0) as u32;
+        score = (score * 13 / 10).min(100);
         flags.push(format!("high_rate:{}/hr", agent_rate.requests_this_hour));
     }
 
@@ -393,15 +393,16 @@ const SUSPICIOUS_PATTERNS: &[(&str, &str, u32)] = &[
 ];
 
 /// Analyze justification text for suspicious patterns.
-/// Returns list of (pattern_type, matched_text) tuples and a total suspicion score.
-pub fn analyze_justification(justification: &str) -> (Vec<(String, String)>, u32) {
+/// Returns list of (category, matched_pattern) tuples using static references
+/// (patterns are compile-time constants, no allocation needed) and a total suspicion score.
+pub fn analyze_justification(justification: &str) -> (Vec<(&'static str, &'static str)>, u32) {
     let lower = justification.to_lowercase();
-    let mut findings = Vec::new();
+    let mut findings = Vec::with_capacity(4);
     let mut total_score: u32 = 0;
 
     for &(pattern, category, weight) in SUSPICIOUS_PATTERNS {
         if lower.contains(pattern) {
-            findings.push((category.to_string(), pattern.to_string()));
+            findings.push((category, pattern));
             total_score += weight;
         }
     }
@@ -411,7 +412,7 @@ pub fn analyze_justification(justification: &str) -> (Vec<(String, String)>, u32
 
 /// Returns the number of risk tier bumps based on justification score.
 /// Score >= 8 -> +2 tiers, score >= 3 -> +1 tier, else 0.
-pub fn justification_risk_bump(findings: &[(String, String)], score: u32) -> u32 {
+pub fn justification_risk_bump(findings: &[(&str, &str)], score: u32) -> u32 {
     if findings.is_empty() {
         return 0;
     }
@@ -549,8 +550,8 @@ mod tests {
     #[test]
     fn test_justification_analysis() {
         let (findings, score) = analyze_justification("This is urgent, trust me it's safe");
-        assert!(findings.iter().any(|(cat, _)| cat == "URGENCY"));
-        assert!(findings.iter().any(|(cat, _)| cat == "REASSURANCE"));
+        assert!(findings.iter().any(|(cat, _)| *cat == "URGENCY"));
+        assert!(findings.iter().any(|(cat, _)| *cat == "REASSURANCE"));
         assert!(score >= 3);
 
         let (findings, score) = analyze_justification("Need to read config for deployment");

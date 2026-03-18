@@ -95,6 +95,10 @@ impl EventDb {
             CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_name);
             CREATE INDEX IF NOT EXISTS idx_events_action ON events(action);
 
+            -- Composite indexes for common filtered queries
+            CREATE INDEX IF NOT EXISTS idx_events_agent_action ON events(agent_name, action);
+            CREATE INDEX IF NOT EXISTS idx_events_severity_ts ON events(severity, timestamp DESC);
+
             CREATE TABLE IF NOT EXISTS permission_audit (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 request_id INTEGER NOT NULL,
@@ -112,7 +116,11 @@ impl EventDb {
             );
             CREATE INDEX IF NOT EXISTS idx_perm_audit_agent ON permission_audit(agent_name);
             CREATE INDEX IF NOT EXISTS idx_perm_audit_resolved ON permission_audit(resolved_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_perm_audit_approved ON permission_audit(approved);",
+            CREATE INDEX IF NOT EXISTS idx_perm_audit_approved ON permission_audit(approved);
+
+            -- Composite index for anomaly detection queries (agent + resolved_at + approved)
+            CREATE INDEX IF NOT EXISTS idx_perm_audit_agent_resolved ON permission_audit(agent_name, resolved_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_perm_audit_resolved_approved ON permission_audit(resolved_at, approved);",
         )
         .map_err(|e| format!("Failed to create tables: {}", e))?;
 

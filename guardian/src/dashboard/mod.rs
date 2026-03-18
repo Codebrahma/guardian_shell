@@ -124,9 +124,14 @@ async fn static_handler(
             } else {
                 "application/octet-stream"
             };
+            // Avoid .to_vec() allocation for embedded static files (Cow::Borrowed)
+            let body: bytes::Bytes = match file.data {
+                std::borrow::Cow::Borrowed(b) => bytes::Bytes::from_static(b),
+                std::borrow::Cow::Owned(v) => bytes::Bytes::from(v),
+            };
             (
                 [(axum::http::header::CONTENT_TYPE, mime)],
-                file.data.to_vec(),
+                body,
             )
                 .into_response()
         }

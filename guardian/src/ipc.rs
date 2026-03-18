@@ -472,12 +472,39 @@ async fn handle_register(
     };
     state.agents.insert(agent_name.clone(), agent);
 
+    // Phase 10: Build sandbox config from agent's policy for guardian-launch.
+    // This allows the launcher to set up Landlock + seccomp before exec.
+    let sandbox = {
+        let file_allow: Vec<String> = agent_config.file_access.allow.clone();
+        let exec_allow: Vec<String> = agent_config
+            .exec_policy
+            .as_ref()
+            .map(|e| e.allow.clone())
+            .unwrap_or_default();
+        let (net_allow_ports, net_default) = agent_config
+            .network_policy
+            .as_ref()
+            .map(|n| (n.allow_ports.clone(), n.default.clone()))
+            .unwrap_or_else(|| (vec![], "allow".to_string()));
+
+        guardian_common::ipc::SandboxConfig {
+            landlock: true,
+            seccomp_hardened: true,
+            no_new_privs: true,
+            file_default: agent_config.file_access.default.clone(),
+            file_allow,
+            exec_allow,
+            net_allow_ports,
+            net_default,
+        }
+    };
+
     info!(
         "Agent '{}' registered: cgroup={}, id={}",
         agent_name, cgroup_path, cgroup_id
     );
 
-    IpcResponse::Ack
+    IpcResponse::Ack { sandbox: Some(sandbox) }
 }
 
 async fn handle_list_agents(state: &SharedIpcState) -> IpcResponse {
@@ -548,7 +575,7 @@ async fn handle_stop_agent(state: &SharedIpcState, agent_name: &str) -> IpcRespo
     // Clean up BPF maps and state
     cleanup_agent(&mut state, agent_name);
 
-    IpcResponse::Ack
+    IpcResponse::Ack { sandbox: None }
 }
 
 async fn handle_grant_access(
@@ -628,7 +655,7 @@ async fn handle_grant_access(
         );
     }
 
-    IpcResponse::Ack
+    IpcResponse::Ack { sandbox: None }
 }
 
 // =============================================================================
@@ -1202,7 +1229,7 @@ async fn handle_approve_permission(
 ) -> IpcResponse {
     let reason = "Approved via CLI".to_string();
     match resolve_permission(state, request_id, true, reason, Some(duration_secs)).await {
-        Ok(()) => IpcResponse::Ack,
+        Ok(()) => IpcResponse::Ack { sandbox: None },
         Err(msg) => IpcResponse::Error { message: msg },
     }
 }
@@ -1214,7 +1241,7 @@ async fn handle_deny_permission(
 ) -> IpcResponse {
     let reason = reason.unwrap_or_else(|| "Denied via CLI".to_string());
     match resolve_permission(state, request_id, false, reason, None).await {
-        Ok(()) => IpcResponse::Ack,
+        Ok(()) => IpcResponse::Ack { sandbox: None },
         Err(msg) => IpcResponse::Error { message: msg },
     }
 }

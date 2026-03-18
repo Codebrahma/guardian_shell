@@ -268,13 +268,55 @@ pub mod ipc {
         },
     }
 
+    /// Sandbox configuration sent from daemon to launcher during registration.
+    /// Carries the agent's policy so guardian-launch can build Landlock + seccomp rules.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SandboxConfig {
+        /// Enable Landlock filesystem sandbox (inode-level, symlink-immune).
+        #[serde(default = "default_true")]
+        pub landlock: bool,
+        /// Enable expanded seccomp filter (blocks mount, namespace, chroot, etc.).
+        #[serde(default = "default_true")]
+        pub seccomp_hardened: bool,
+        /// Set PR_SET_NO_NEW_PRIVS to prevent SUID escalation.
+        #[serde(default = "default_true")]
+        pub no_new_privs: bool,
+        /// File access default action: "allow" or "deny".
+        pub file_default: String,
+        /// Allowed file access path patterns (e.g., "/tmp/**", "/proc/self/**").
+        #[serde(default)]
+        pub file_allow: Vec<String>,
+        /// Allowed exec path patterns (e.g., "/usr/bin/python3").
+        #[serde(default)]
+        pub exec_allow: Vec<String>,
+        /// Allowed network ports for outbound TCP connections.
+        #[serde(default)]
+        pub net_allow_ports: Vec<u16>,
+        /// Network default action: "allow" or "deny".
+        #[serde(default = "default_allow")]
+        pub net_default: String,
+    }
+
+    fn default_true() -> bool {
+        true
+    }
+
+    fn default_allow() -> String {
+        "allow".to_string()
+    }
+
     /// Response from the Guardian daemon.
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(tag = "type")]
     pub enum IpcResponse {
-        /// Success acknowledgment.
+        /// Success acknowledgment, optionally carrying sandbox config for launcher.
         #[serde(rename = "ack")]
-        Ack,
+        Ack {
+            /// Sandbox configuration for guardian-launch (Phase 10).
+            /// Present only in registration responses.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            sandbox: Option<SandboxConfig>,
+        },
 
         /// Error response.
         #[serde(rename = "error")]

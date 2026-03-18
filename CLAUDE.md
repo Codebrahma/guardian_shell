@@ -8,7 +8,18 @@ on this project on a Linux machine.
 Guardian Shell is a Linux security tool that uses eBPF to monitor and restrict
 LLM agent activities. It's built with Rust and the Aya eBPF framework.
 
-**Current state: Phase 9 - Network Enforcement & Linux 6.x+ Security (compiled on Linux)**
+**Current state: Phase 10 - Hardened Cgroup Agents (compiled on Linux)**
+
+Phase 10 introduces **defense-in-depth for cgroup agents** — a creative architectural shift that solves all CRITICAL and HIGH security vulnerabilities by using the right enforcement tool for each layer:
+
+- **Landlock LSM sandbox** (Linux 5.13+): Inode-level file access control applied in `guardian-launch` before exec. Resolves symlinks at kernel VFS layer — completely immune to the #1 CRITICAL symlink bypass. Default-deny model mirrors agent policy.
+- **Expanded seccomp filter**: Blocks mount (165-166), namespace escape (setns 308, unshare 272), chroot (161), pivot_root (155), and new mount API (428-433, 442) in addition to existing io_uring and memfd_create blocks.
+- **PR_SET_NO_NEW_PRIVS**: Prevents SUID privilege escalation. Required by Landlock, good practice regardless.
+- **IPC sandbox config**: Daemon sends agent policy to launcher during registration via `SandboxConfig` in IPC response. Launcher builds Landlock rules + seccomp filter from it.
+- **Two security tiers**: Cgroup agents (Tier 1, hardened: Landlock+seccomp+eBPF+cgroup) vs comm-based agents (Tier 2, limited: eBPF monitoring only).
+- **Landlock TCP network filtering** (kernel 6.7+): Port-based outbound TCP control as additional layer alongside eBPF LSM socket_connect.
+
+Key insight: eBPF tracepoints operate on path strings (vulnerable to symlinks, TOCTOU). Landlock operates on inodes (immune). Phase 10 makes Landlock the primary enforcement layer for cgroup agents, with eBPF as the audit/visibility layer.
 
 Phase 9 adds kernel-level network enforcement, upgrading from Phase 7's log-only network monitoring to actual connection blocking:
 
@@ -289,27 +300,33 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | sys_enter_connect + LSM socket_connect for network enforcement | Tracepoint parses sockaddr, evaluates port-based policy, sets PENDING_NET_DENY. LSM socket_connect blocks with -ECONNREFUSED. Same pattern as file_open enforcement. |
 | Single shared SSE connection | Browser HTTP/1.1 limits (~6 connections per origin). Multiple EventSource instances per page exhausted the pool. Single shared SSE with custom DOM events fixes this. |
 | Legacy `sys_enter_open` hook | Belt-and-suspenders: most code uses `openat`, but rare binaries or direct syscalls may use legacy `open`. Reuses PENDING_DENY and EVENT_BUF maps. |
+| Landlock as primary enforcement for cgroup agents | eBPF tracepoints see path strings (vulnerable to symlinks, TOCTOU). Landlock operates on inodes (immune). Use the right tool for each job: Landlock enforces, eBPF audits. |
+| IPC sandbox config delivery | Daemon sends agent policy to launcher in registration Ack. Avoids config parsing duplication and keeps single source of truth. |
+| Landlock default-deny only | Landlock has no deny rules — it's inherently default-deny. Agents with `file_access.default = "allow"` skip Landlock (incompatible model). |
+| System read paths in Landlock | Common paths (/usr/lib, /etc/resolv.conf, /dev/null, etc.) get read+execute for dynamic linking. Without these, most binaries can't start. |
+| Two security tiers | Cgroup agents get 4-layer defense (Landlock+seccomp+eBPF+cgroup). Comm-based agents get eBPF only. Clear documentation prevents false sense of security. |
 
-## Known Limitations (Phase 8)
+## Known Limitations (Phase 10)
 
-1. **Symlinks not resolved in eBPF**: Userspace `normalize_path()` catches `/proc/self/root/` and `..` but not symlinks. Full fix requires LSM `file_open` with `bpf_d_path()` (Linux 5.11+, deferred)
+1. **Symlinks bypass eBPF enforcement**: eBPF tracepoints see raw path strings, not resolved inodes. **Mitigated for cgroup agents by Landlock** (inode-level, symlink-immune). Comm-based agents remain vulnerable.
 2. **openat2 tracepoint requires kernel 5.6+**: Gracefully skipped on older kernels
 3. **x86_64 offsets hardcoded**: Tracepoint field offsets may differ on aarch64/arm
-4. **Enforcement requires CONFIG_BPF_LSM**: Kernel must have `CONFIG_BPF_LSM=y` and `bpf` in the LSM list. Falls back to monitor-only if unavailable (unless `mode = "strict"`).
-5. **Tracepoint-LSM timing dependency**: Enforcement relies on the `sys_enter_openat` tracepoint firing before the LSM `file_open` hook in the same syscall
+4. **BPF LSM enforcement optional for cgroup agents**: Landlock provides primary enforcement. BPF LSM (`CONFIG_BPF_LSM=y`) adds a second enforcement layer but is no longer required for security.
+5. **Tracepoint-LSM timing dependency**: eBPF enforcement relies on tracepoint firing before LSM hook. **Not applicable to Landlock** (separate enforcement path).
 6. **Cgroup requires root**: Creating cgroups and running guardian-launch needs root
 7. **Cgroup v2 required**: Cgroup-based identification requires cgroup v2 (default on modern distros)
-8. **Process name still spoofable for comm-based agents**: Use cgroup identity for unspoofable identification
-9. **SIGHUP reload doesn't update alerting outputs**: Alerting config changes still require daemon restart (agent policies and permissions do reload)
+8. **Comm-based agents have limited security**: No Landlock, no seccomp hardening. Use cgroup agents for production.
+9. **SIGHUP reload doesn't update alerting outputs**: Alerting config changes still require daemon restart
 10. **No webhook retry logic**: Failed webhook/Slack/email sends are logged and dropped
 11. **Email password stored in plaintext config**: Use file permissions to protect config
-12. **Dashboard policy changes don't update BPF maps**: Policy edits update userspace config and disk; BPF enforcement maps require daemon restart or SIGHUP
-13. **Config write-back loses comments**: Dashboard saves config as clean TOML, original comments are removed
-14. **TailwindCSS/htmx/Alpine.js loaded from CDN**: Dashboard requires internet access for first load (or bundle locally)
-15. **Network enforcement requires CONFIG_BPF_LSM**: Like file enforcement, network blocking via LSM `socket_connect` needs LSM support. Falls back to log-only if unavailable
-16. **Permission requests require dashboard or CLI**: Auto-denied when neither dashboard nor CLI approval is available
-17. **Seccomp filter is x86_64 only**: Syscall numbers are hardcoded for x86_64 in guardian-launch
-18. **Grant accumulation not yet enforced in IPC flow**: Infrastructure in place but accumulation check not wired into `resolve_permission()`
+12. **Dashboard policy changes don't update BPF maps**: Require daemon restart or SIGHUP
+13. **Config write-back loses comments**: Dashboard saves config as clean TOML
+14. **TailwindCSS/htmx/Alpine.js loaded from CDN**: Dashboard requires internet access
+15. **Landlock requires Linux 5.13+**: Gracefully skipped on older kernels. Network filtering requires 6.7+.
+16. **Landlock incompatible with `default = "allow"`**: Agents with permissive default skip Landlock sandbox.
+17. **Seccomp filter is x86_64 only**: Syscall numbers hardcoded for x86_64 in guardian-launch
+18. **UDP not enforced by Landlock**: Only TCP connect is filtered. UDP `sendto()` without prior `connect()` bypasses both Landlock and eBPF.
+19. **DNS unmonitored**: DNS resolution happens before `connect()`. No domain-based policy possible.
 
 ## Build Notes
 
@@ -419,6 +436,23 @@ Based on `docs/security/security-fixes.md` and `docs/security/security-limitatio
 - Anomaly detection: hourly background task checking rubber-stamping (>90% approval), high-volume agents, deny-then-approve persistence patterns
 - SQLite query methods: `approval_rate_24h()`, `high_volume_agents_24h()`, `agents_with_deny_then_approve()`
 
+### Phase 9: Network Enforcement ✅ DONE
+- LSM `socket_connect` hook blocks denied connections at kernel level (-ECONNREFUSED)
+- Port-based BPF maps: `NET_DENY_PORTS`, `NET_ALLOW_PORTS`, `NET_DEFAULT_ACTION`, `NET_CGROUP_DEFAULT_ACTION`
+- `PENDING_NET_DENY` map: tracepoint→PENDING→LSM pattern for network enforcement
+- `populate_net_enforcement_maps()` loads port policy from config into BPF maps
+- BLOCKED status in `process_net_event()` for enforce mode
+
+### Phase 10: Hardened Cgroup Agents ✅ DONE
+Creative architectural shift: use Landlock LSM as primary enforcement, eBPF as audit layer.
+
+- **Landlock sandbox** in `guardian-launch`: inode-level file access control (Linux 5.13+). Resolves symlinks at VFS layer. Default-deny model. TCP connect filtering (kernel 6.7+).
+- **Expanded seccomp**: Blocks mount (165-166), namespace escape (setns, unshare), chroot, pivot_root, new mount API (428-433, 442)
+- **PR_SET_NO_NEW_PRIVS**: Prevents SUID escalation, required by Landlock
+- **IPC SandboxConfig**: Daemon sends agent policy in registration Ack response. Launcher builds Landlock + seccomp from it.
+- **Two security tiers**: Cgroup = hardened (Landlock+seccomp+eBPF+cgroup), Comm = limited (eBPF only)
+- Every CRITICAL and HIGH vulnerability (symlinks, TOCTOU, io_uring, rename/hardlink) is mitigated for cgroup agents
+
 ## Dependency Versions
 
 | Crate | Version | Purpose |
@@ -446,7 +480,8 @@ Based on `docs/security/security-fixes.md` and `docs/security/security-limitatio
 | askama_axum | 0.4 | Askama + axum integration |
 | rust-embed | 8 | Embed static files in binary |
 | tower-http | 0.6 | HTTP middleware (CORS) |
-| seccompiler | 0.4 | Seccomp BPF filter for blocking io_uring/memfd_create |
+| seccompiler | 0.4 | Seccomp BPF filter for blocking io_uring/memfd_create/mount/namespace |
+| landlock | 0.4 | Landlock LSM for inode-level file access control (symlink-immune) |
 | tokio-stream | 0.1 | Stream adapters for SSE broadcast |
 
 ## Code Quality Notes

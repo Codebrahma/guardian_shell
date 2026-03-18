@@ -43,5 +43,8 @@ env_logger = "0.11"
 # Unix-specific operations (for libc calls)
 libc = "0.2"
 
-# Seccomp BPF filter for blocking dangerous syscalls (io_uring, memfd_create)
+# Seccomp BPF filter for blocking dangerous syscalls (io_uring, memfd_create, mount, etc.)
 seccompiler = "0.4"
+
+# Landlock LSM for inode-level file access control (symlink-immune)
+landlock = "0.4"

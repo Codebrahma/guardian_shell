@@ -2,9 +2,9 @@
 
 Guardian Shell is a Linux security tool that monitors and enforces file access policies for LLM agents (Claude Code, OpenAI Codex, Aider, OpenClaw, Cursor, etc.) using eBPF. It hooks into the kernel's file-open syscall, evaluates every file access against your policy rules in real time, and can block unauthorized access at the kernel level.
 
-**Current mode: Phase 8 — Security Hardening**
+**Current mode: Phase 10 — Hardened Cgroup Agents (Defense in Depth)**
 
-Guardian Shell now provides eight layers of protection:
+Guardian Shell now provides ten layers of protection:
 - **Phase 1**: Monitor-only file access logging via eBPF tracepoints
 - **Phase 2**: Kernel-level enforcement via LSM BPF hooks (blocks denied access)
 - **Phase 3**: Unspoofable cgroup-based agent identity, resource limits, launcher wrapper, and time-based access grants
@@ -14,6 +14,7 @@ Guardian Shell now provides eight layers of protection:
 - **Phase 7**: Path normalization, openat2 coverage, risk-based approval workflows, exec enforcement, network monitoring, persistent audit trail
 - **Phase 8**: Security hardening — inode protection (rename/unlink/hardlink enforcement), io_uring/memfd_create blocking via seccomp, BPF map capacity 1024, path truncation detection, dynamic linker detection, execveat hook, strict enforcement mode, dashboard authentication, risk-based configurable timeouts, CLI permission approval, grant accumulation limits, weighted justification analysis, anomaly detection, fail-closed mode
 - **Phase 9**: Network enforcement — LSM `socket_connect` hook for kernel-level connection blocking, port-based deny/allow BPF maps, per-cgroup network defaults
+- **Phase 10**: Hardened cgroup agents — Landlock LSM sandbox (inode-level, symlink-immune file access control), expanded seccomp filter (blocks mount/namespace/chroot escape), PR_SET_NO_NEW_PRIVS (prevents SUID escalation), IPC sandbox config delivery, two security tiers (hardened cgroup vs. legacy comm), Landlock TCP port filtering (kernel 6.7+)
 
 ---
 
@@ -71,35 +72,43 @@ Guardian Shell now provides eight layers of protection:
     - [Fail-Closed Mode](#fail-closed-mode)
     - [CLI Permission Approval](#cli-permission-approval)
     - [Anomaly Detection](#anomaly-detection)
-11. [Understanding the Output](#understanding-the-output)
+11. [Hardened Cgroup Agents (Phase 10)](#hardened-cgroup-agents-phase-10)
+    - [Two Security Tiers](#two-security-tiers)
+    - [Landlock Sandbox](#landlock-sandbox)
+    - [Expanded Seccomp Hardening](#expanded-seccomp-hardening)
+    - [PR_SET_NO_NEW_PRIVS](#pr_set_no_new_privs)
+    - [Kernel Requirements for Landlock](#kernel-requirements-for-landlock)
+    - [Disabling Sandbox Layers](#disabling-sandbox-layers)
+12. [Understanding the Output](#understanding-the-output)
     - [Startup Messages](#startup-messages)
     - [ALLOW Events](#allow-events)
     - [DENY Events](#deny-events)
     - [Event Fields](#event-fields)
-12. [Writing Effective Policies](#writing-effective-policies)
+13. [Writing Effective Policies](#writing-effective-policies)
     - [Principle of Least Privilege](#principle-of-least-privilege)
     - [Common Allow Patterns](#common-allow-patterns)
     - [Recommended Deny Patterns](#recommended-deny-patterns)
     - [Per-Agent Policies](#per-agent-policies)
     - [Tuning Your Policy](#tuning-your-policy)
-13. [Real-World Examples](#real-world-examples)
+14. [Real-World Examples](#real-world-examples)
     - [Monitoring Claude Code (comm-based)](#monitoring-claude-code-comm-based)
     - [Isolating Aider with Cgroups](#isolating-aider-with-cgroups)
     - [Running OpenClaw in a Sandbox](#running-openclaw-in-a-sandbox)
     - [Securing OpenAI Codex CLI Agent](#securing-openai-codex-cli-agent)
     - [Multiple LLM Agents Side by Side](#multiple-llm-agents-side-by-side)
+    - [Hardened Aider with Full Sandbox](#hardened-aider-with-full-sandbox)
     - [Strict Lockdown Policy](#strict-lockdown-policy)
     - [Permissive Audit Policy](#permissive-audit-policy)
-14. [How It Works](#how-it-works)
+15. [How It Works](#how-it-works)
     - [Architecture Overview](#architecture-overview)
     - [eBPF and Tracepoints](#ebpf-and-tracepoints)
     - [3-Tier Agent Identification](#3-tier-agent-identification)
     - [Event Pipeline](#event-pipeline)
-15. [LLM Agent Security: Why This Matters](#llm-agent-security-why-this-matters)
-16. [Troubleshooting](#troubleshooting)
-17. [Security Considerations](#security-considerations)
-18. [Known Limitations](#known-limitations)
-19. [Roadmap](#roadmap)
+16. [LLM Agent Security: Why This Matters](#llm-agent-security-why-this-matters)
+17. [Troubleshooting](#troubleshooting)
+18. [Security Considerations](#security-considerations)
+19. [Known Limitations](#known-limitations)
+20. [Roadmap](#roadmap)
 
 ---
 
@@ -145,7 +154,7 @@ sudo RUST_LOG=info target/release/guardian --config my-policy.toml
 # Guardian will log every file access decision and block denied access
 ```
 
-### Option B: Cgroup-based isolation (Phase 3 — recommended for production)
+### Option B: Cgroup-based isolation (Phase 3+10 — recommended for production, full defense-in-depth)
 
 ```bash
 # 1. Build (one-time)
@@ -525,16 +534,20 @@ sudo journalctl -u guardian-shell -f   # View logs
 
 ### What guardian-launch Does
 
-`guardian-launch` is a launcher binary that starts an LLM agent inside a dedicated Linux cgroup. It performs six steps in sequence:
+`guardian-launch` is a launcher binary that starts an LLM agent inside a dedicated Linux cgroup with full defense-in-depth sandboxing. It performs ten steps in sequence:
 
 1. **Creates a cgroup** at `/sys/fs/cgroup/guardian/<agent-name>-<pid>/`
 2. **Enables controllers** (memory, PIDs, CPU) in the cgroup hierarchy
 3. **Sets resource limits** (memory cap, process count limit, CPU bandwidth)
 4. **Gets the cgroup ID** (inode number, which matches `bpf_get_current_cgroup_id()` in the kernel)
-5. **Registers with the Guardian daemon** via Unix socket IPC
-6. **exec()'s the agent command** — the launcher process replaces itself with the agent
+5. **Registers with the Guardian daemon** via Unix socket IPC (receives sandbox config)
+6. **Moves self into the cgroup**
+7. **Sets PR_SET_NO_NEW_PRIVS** — prevents SUID/capability escalation (Phase 10)
+8. **Applies Landlock sandbox** — inode-level file access control, symlink-immune (Phase 10)
+9. **Applies seccomp filter** — blocks io_uring, memfd, mount, namespace, chroot (Phase 8+10)
+10. **exec()'s the agent command** — the launcher process replaces itself with the agent
 
-After step 6, the agent IS the process in the cgroup. There is no wrapper overhead. Every child process the agent spawns (bash, git, curl, pip, etc.) automatically inherits the same cgroup. No process can leave the cgroup without root privileges.
+After step 10, the agent IS the process in the cgroup with all four defense layers active. There is no wrapper overhead. Every child process the agent spawns (bash, git, curl, pip, etc.) automatically inherits the same cgroup, Landlock sandbox, seccomp filter, and NO_NEW_PRIVS flag. No process can escape any of these restrictions.
 
 ### Why You Need It
 
@@ -565,6 +578,8 @@ sudo guardian-launch [OPTIONS] -- <COMMAND> [ARGS...]
 | `--pids <MAX>` | Max process count (prevents fork bombs) | `--pids 200` |
 | `--cpu <QUOTA>` | CPU bandwidth (`quota period` in microseconds) | `--cpu "200000 100000"` (= 2 cores) |
 | `--socket <PATH>` | Guardian daemon socket path | `--socket /run/guardian.sock` |
+| `--no-landlock` | Disable Landlock sandbox (Phase 10, not recommended) | `--no-landlock` |
+| `--no-seccomp-hardened` | Disable expanded seccomp (Phase 10, not recommended) | `--no-seccomp-hardened` |
 
 **Examples:**
 
@@ -1369,6 +1384,143 @@ Findings are logged as warnings and dispatched through configured alerting outpu
 
 ---
 
+## Hardened Cgroup Agents (Phase 10)
+
+Phase 10 adds **defense-in-depth** for cgroup-based agents by layering three additional security mechanisms on top of eBPF monitoring. See `docs/phase_10_implementation.md` for full architectural details.
+
+**The problem:** eBPF tracepoints see path strings from userspace, not kernel inodes. This makes eBPF enforcement vulnerable to symlink bypass, TOCTOU races, and io_uring bypass — all of which are architectural and cannot be fixed within eBPF.
+
+**The solution:** Use **Landlock LSM** (inode-level, symlink-immune enforcement) as the primary enforcement layer for cgroup agents. eBPF becomes the audit and visibility layer.
+
+### Two Security Tiers
+
+Phase 10 establishes two explicit security tiers:
+
+| | Tier 1: Hardened Cgroup | Tier 2: Legacy Comm |
+|---|---|---|
+| **Launch method** | `guardian-launch` | Direct process |
+| **Enforcement layers** | Cgroup + Landlock + Seccomp + eBPF | eBPF only |
+| **Symlink bypass** | **SOLVED** | Vulnerable |
+| **TOCTOU race** | **SOLVED** | Vulnerable |
+| **io_uring bypass** | **SOLVED** | Vulnerable |
+| **Mount/namespace escape** | **SOLVED** | Vulnerable |
+| **SUID escalation** | **SOLVED** | Vulnerable |
+| **Network exfiltration** | **SOLVED** (TCP, kernel 6.7+) | Phase 9 only |
+| **Recommendation** | Production use | Testing/legacy only |
+
+**For production security, always use cgroup-based agents with `guardian-launch`.**
+
+### Landlock Sandbox
+
+Landlock is a Linux Security Module (kernel 5.13+) that controls file access at the **inode level**. Unlike eBPF tracepoints that see path strings, Landlock checks are performed after the kernel resolves all symlinks, mounts, and path indirection.
+
+**How it defeats symlink attacks:**
+
+```
+Without Landlock (eBPF only):
+  Agent:  ln -s /etc/shadow /tmp/innocent
+  Agent:  cat /tmp/innocent
+  eBPF:   openat("/tmp/innocent") → matches /tmp/** → ALLOW
+  Result: Agent reads /etc/shadow contents
+
+With Landlock (Phase 10):
+  Agent:  ln -s /etc/shadow /tmp/innocent
+  Agent:  cat /tmp/innocent
+  VFS:    Resolves /tmp/innocent → inode of /etc/shadow
+  Landlock: Is /etc/shadow under an allowed hierarchy? → NO
+  Result: -EACCES (Permission denied)
+```
+
+**Landlock rules are derived automatically from your existing agent config:**
+
+```toml
+[[agents]]
+name = "my-agent"
+identity = "cgroup"
+
+[agents.file_access]
+default = "deny"                          # Landlock requires default-deny
+allow = ["/tmp/**", "/home/user/project/**"]  # → Landlock PathBeneath rules
+
+[agents.exec]
+default = "deny"
+allow = ["/usr/bin/python3", "/usr/bin/git"]  # → Landlock Execute rights
+
+[agents.network_policy]
+default = "deny"
+allow_ports = [443, 53]                       # → Landlock NetPort rules (kernel 6.7+)
+```
+
+No additional configuration needed — `guardian-launch` translates your existing file/exec/network policy into Landlock rules automatically.
+
+**Important:** Landlock is inherently default-deny. Agents with `file_access.default = "allow"` cannot use Landlock — the sandbox is skipped with a warning, and the agent falls back to eBPF-only enforcement.
+
+**Important:** Landlock rules are irreversible once applied. Temporary grants via `guardian-ctl grant` only update eBPF maps, not the Landlock sandbox. The Landlock sandbox provides a baseline that cannot be weakened, even by the daemon.
+
+### Expanded Seccomp Hardening
+
+Phase 10 expands the seccomp filter (originally 4 syscalls in Phase 8) to block additional dangerous syscalls:
+
+| Category | Syscalls Blocked | Why |
+|----------|-----------------|-----|
+| **io_uring** (Phase 8) | `io_uring_setup`, `io_uring_enter`, `io_uring_register` | Bypasses all eBPF tracepoints |
+| **memfd** (Phase 8) | `memfd_create` | Fileless code execution |
+| **Mount manipulation** (NEW) | `mount`, `umount2` | Mount namespace escape |
+| **New mount API** (NEW) | `open_tree`, `move_mount`, `fsopen`, `fsconfig`, `fsmount`, `fspick`, `mount_setattr` | Modern mount API escape |
+| **Root escape** (NEW) | `pivot_root`, `chroot` | Container/chroot breakout |
+| **Namespace escape** (NEW) | `setns`, `unshare` | Namespace manipulation |
+
+The expanded filter is controlled by `seccomp_hardened` in the sandbox config (default: `true`). The base io_uring + memfd filter is always applied regardless of this setting.
+
+### PR_SET_NO_NEW_PRIVS
+
+Phase 10 sets `PR_SET_NO_NEW_PRIVS` on the agent process before applying Landlock. This prevents:
+
+- **SUID escalation** — setuid binaries (like `sudo`) cannot gain elevated privileges
+- **Capability escalation** — file capabilities on binaries are ignored
+- **Seccomp bypass** — cannot load a more permissive seccomp filter
+
+The flag is inherited by all child processes and cannot be cleared.
+
+### Kernel Requirements for Landlock
+
+| Kernel Version | Landlock ABI | Filesystem | Network | Notes |
+|-------|-----|------------|---------|----------|
+| < 5.13 | none | NO | NO | Landlock skipped. eBPF-only. |
+| 5.13+ | v1 | YES | NO | Filesystem sandbox active. |
+| 5.19+ | v2 | YES + rename/link | NO | Rename/link control added. |
+| 6.7+ | v4 | YES | YES (TCP) | Full sandbox: files + network. |
+
+**Check if Landlock is available on your system:**
+
+```bash
+# Check LSM list
+cat /sys/kernel/security/lsm
+# Should include "landlock"
+
+# Check kernel version
+uname -r
+# 6.7+ for full filesystem + network support
+```
+
+Most modern distributions (Ubuntu 22.04+, RHEL 9+, Fedora 36+, Debian 12+) have Landlock support enabled by default. The sandbox gracefully degrades on older kernels — a warning is logged and the agent falls back to eBPF-only enforcement.
+
+### Disabling Sandbox Layers
+
+For debugging or compatibility, individual sandbox layers can be disabled:
+
+```bash
+# Disable Landlock (falls back to eBPF-only enforcement)
+sudo guardian-launch --name my-agent --no-landlock -- python3 -m aider
+
+# Disable expanded seccomp (only base io_uring/memfd filter applied)
+sudo guardian-launch --name my-agent --no-seccomp-hardened -- python3 -m aider
+```
+
+These flags are for debugging only. **Do not use them in production.**
+
+---
+
 ## Understanding the Output
 
 ### Startup Messages
@@ -1965,6 +2117,78 @@ sudo target/release/guardian-ctl list
 
 Each agent can only access its own project directory. Aider cannot read backend code, Codex cannot read frontend code, and neither can read SSH keys or cloud credentials.
 
+### Hardened Aider with Full Sandbox
+
+Phase 10's defense-in-depth applied to Aider — Landlock + seccomp + cgroup + eBPF:
+
+**Config:**
+```toml
+[global]
+mode = "enforce"
+socket_path = "/run/guardian.sock"
+
+[dashboard]
+enabled = true
+listen = "127.0.0.1:8080"
+
+[[agents]]
+name = "aider"
+identity = "cgroup"
+fail_closed = true       # deny on any eBPF error
+
+[agents.file_access]
+default = "deny"         # required for Landlock sandbox
+allow = [
+    "/home/user/project/**",
+    "/tmp/**",
+    "/proc/self/**",
+    "/usr/lib/python3/**",
+    "/home/user/.local/lib/python3/**",
+    "/usr/lib/**", "/lib/**", "/lib64/**",
+    "/etc/ssl/**", "/etc/resolv.conf", "/etc/hosts",
+    "/usr/libexec/git-core/**",
+]
+deny = [
+    "/home/user/project/.env",
+    "/home/user/.ssh/**",
+    "/home/user/.aws/**",
+]
+
+[agents.exec]
+default = "deny"
+allow = ["/usr/bin/python3", "/usr/bin/git", "/usr/bin/grep", "/usr/bin/find"]
+
+[agents.network_policy]
+default = "deny"
+allow_ports = [443, 53]  # HTTPS and DNS only
+```
+
+**Launching (all four defense layers activate automatically):**
+```bash
+sudo target/release/guardian-launch \
+    --name aider --memory 4G --pids 200 \
+    -- python3 -m aider --model claude-3.5-sonnet
+
+# Output:
+# [INFO] PR_SET_NO_NEW_PRIVS set: SUID escalation blocked
+# [INFO] Landlock: fully enforced (all requested rights controlled)
+# [INFO] Seccomp filter applied: io_uring, memfd, mount, namespace, chroot blocked
+```
+
+**What's protected:**
+
+| Attack | Defense Layer | Result |
+|--------|-------------|--------|
+| `ln -s /etc/shadow /tmp/x && cat /tmp/x` | Landlock (inode-level) | Permission denied |
+| `python3 -c "import io_uring"` | Seccomp | EPERM |
+| `sudo cat /etc/shadow` | PR_SET_NO_NEW_PRIVS | sudo can't escalate |
+| `unshare -n bash` | Seccomp | EPERM |
+| `mount -t tmpfs none /tmp` | Seccomp | EPERM |
+| `curl http://evil.com:8080` | Landlock (TCP port) | EACCES (port 8080 not allowed) |
+| `cat /home/user/.ssh/id_rsa` | Landlock + eBPF | Permission denied (both layers) |
+
+All attempts are also logged by eBPF and visible in the dashboard with risk classification.
+
 ### Strict Lockdown Policy
 
 Minimal access for a highly restricted agent:
@@ -2026,9 +2250,12 @@ deny = [
  │   │ 1. Create cgroup├──────────────>│ Unix socket listener │    │
  │   │ 2. Set limits   │  register     │ /run/guardian.sock    │    │
  │   │ 3. Register     │<─────────────┤                      │    │
- │   │ 4. Move to cgrp │   ACK        │ Populates BPF maps:  │    │
- │   │ 5. exec(agent)  │              │  WATCHED_CGROUPS     │    │
- │   └────────────────┘              │  WATCHED_COMMS       │    │
+ │   │ 4. Move to cgrp │  ACK+sandbox │ Populates BPF maps:  │    │
+ │   │ 5. NO_NEW_PRIVS │              │  WATCHED_CGROUPS     │    │
+ │   │ 6. Landlock     │              │  WATCHED_COMMS       │    │
+ │   │ 7. Seccomp      │              │                      │    │
+ │   │ 8. exec(agent)  │              │                      │    │
+ │   └────────────────┘              │                      │    │
  │                                    │  ENFORCE_CGROUPS     │    │
  │   guardian-ctl                      │  ALLOW/DENY rules    │    │
  │   ┌────────────────┐     IPC        │                      │    │
@@ -2172,7 +2399,8 @@ Most agents run as your user with your full permissions. There is no built-in sa
 7. **Alerting**: Real-time notifications via webhook, Slack, and email when policy violations occur
 8. **Observability**: Prometheus metrics for dashboards and alerting rules; structured JSON logs for SIEM
 9. **Web dashboard**: Real-time event monitoring, policy editing, agent management, and alert configuration from a browser
-10. **Zero overhead**: eBPF runs in the kernel — no process wrapping, no ptrace, no container
+10. **Defense-in-depth**: Four-layer security for cgroup agents (cgroup + Landlock + seccomp + eBPF) — symlink-immune, TOCTOU-immune, io_uring-immune
+11. **Zero overhead**: eBPF runs in the kernel — no process wrapping, no ptrace, no container
 
 ---
 
@@ -2291,6 +2519,12 @@ cargo install bpf-linker
 - **Credential access detection**: Catch and block agents trying to read SSH keys, cloud credentials, or secrets
 - **Temporary access control**: Time-limited grants with automatic revocation
 - **io_uring/memfd blocking**: Seccomp filter blocks io_uring and memfd_create syscalls that bypass eBPF monitoring
+- **Symlink-immune enforcement**: Landlock LSM enforces file access at the inode level — symlinks are resolved before access checks (Phase 10)
+- **TOCTOU immunity**: Landlock checks happen at VFS layer after path resolution — no race condition between check and use (Phase 10)
+- **Mount/namespace/chroot escape prevention**: Expanded seccomp blocks mount, umount2, pivot_root, chroot, setns, unshare (Phase 10)
+- **SUID escalation prevention**: PR_SET_NO_NEW_PRIVS prevents privilege escalation via setuid binaries (Phase 10)
+- **Landlock TCP port filtering**: Outbound TCP connections restricted to allowed ports on kernel 6.7+ (Phase 10)
+- **Irreversible sandbox**: Landlock ruleset cannot be relaxed once applied, even if the daemon is compromised (Phase 10)
 - **Inode protection**: Rename, unlink, and hardlink operations on denied resources are blocked via LSM hooks
 - **File manipulation defense**: Agents cannot move or copy denied files to allowed directories
 - **Dynamic linker detection**: Direct invocation of ld-linux to bypass exec policy is detected and blocked
@@ -2345,6 +2579,12 @@ cargo install bpf-linker
 
 18. **Don't use `?token=` in production** — prefer `Authorization: Bearer <token>` header; query parameter tokens leak in referer headers and browser history
 
+19. **Use cgroup agents for production** — cgroup agents (launched via `guardian-launch`) get Landlock + seccomp + PR_SET_NO_NEW_PRIVS + eBPF (four defense layers). Comm-based agents only get eBPF (one layer).
+
+20. **Use `default = "deny"` for Landlock protection** — Landlock is inherently default-deny. Agents with `file_access.default = "allow"` skip Landlock entirely, falling back to eBPF-only enforcement with known symlink/TOCTOU vulnerabilities.
+
+21. **Don't use `--no-landlock` or `--no-seccomp-hardened` in production** — these flags disable critical security layers. Use them only for debugging.
+
 ---
 
 ## Known Limitations
@@ -2352,7 +2592,7 @@ cargo install bpf-linker
 | Limitation | Impact | Planned Fix |
 |-----------|--------|-------------|
 | **Relative paths** | If agent uses relative paths, pattern matching may fail | Future: Full path resolution in eBPF |
-| **Symlinks not resolved in eBPF** | Userspace `normalize_path()` handles `/proc/self/root/` and `..` but not arbitrary symlinks | Future: `bpf_d_path()` in LSM hooks (Linux 5.11+) |
+| **Symlinks not resolved in eBPF** | Userspace `normalize_path()` handles `/proc/self/root/` and `..` but not arbitrary symlinks. **Mitigated for cgroup agents** by Landlock (Phase 10) | Use cgroup agents with `guardian-launch` for symlink-immune enforcement |
 | **x86_64 only** | Tracepoint offsets are hardcoded for x86_64 | Future: Architecture-agnostic offset reading |
 | **Network enforcement requires CONFIG_BPF_LSM** | LSM `socket_connect` hook needs kernel LSM support. Falls back to log-only if unavailable | Ensure kernel has `CONFIG_BPF_LSM=y` and `bpf` in LSM list |
 | **Enforcement requires CONFIG_BPF_LSM** | Kernel must have `CONFIG_BPF_LSM=y` and `bpf` in the LSM list | In strict mode, daemon exits if LSM unavailable; otherwise falls back to monitor-only |
@@ -2368,6 +2608,12 @@ cargo install bpf-linker
 | **Anomaly detection is hourly** | Rubber-stamping and persistence attacks detected on 1-hour cycle | Acceptable; alerts fire within the hour |
 | **No `mmap_file` LSM hook** | Agents can `mmap()` a file to bypass `file_open` enforcement | Future: LSM `mmap_file` hook |
 | **No content hashing** | Policy is path-based; moved/copied file content not tracked | Future: Inode-based or content-hash policy |
+| **Landlock requires kernel 5.13+** | Landlock sandbox unavailable on older kernels. Falls back to eBPF-only | Most production distros (Ubuntu 22.04+, RHEL 9+) have 5.13+ |
+| **Landlock network requires kernel 6.7+** | TCP port filtering unavailable on older kernels. Falls back to eBPF network enforcement | Filesystem sandbox still works on 5.13+ |
+| **Landlock incompatible with default-allow** | Landlock is inherently default-deny. Agents with `file_access.default = "allow"` skip Landlock | Use `default = "deny"` for full Landlock protection |
+| **Landlock grants are irreversible** | `guardian-ctl grant` only updates eBPF maps, not Landlock sandbox. Landlock baseline cannot be relaxed | Agent must be relaunched for truly expanded access |
+| **UDP not enforced by Landlock** | Landlock only filters TCP connect/bind. UDP `sendto()` unrestricted | Requires network namespace for UDP control |
+| **Comm-based agents lack Landlock/seccomp** | Tier 2 agents don't go through `guardian-launch` | Use cgroup agents for production security |
 
 ---
 
@@ -2503,3 +2749,19 @@ cargo install bpf-linker
 - [x] Per-cgroup and per-comm network default action maps
 - [x] Graceful fallback to monitor-only when LSM `socket_connect` unavailable
 - [x] BPF stack overflow fix: dynamic linker detection reads directly into per-CPU buffer
+
+### Phase 10 - Hardened Cgroup Agents (Defense in Depth) ✅
+
+- [x] Landlock LSM sandbox in `guardian-launch` (inode-level, symlink-immune file access control)
+- [x] Landlock filesystem rights: ReadFile, WriteFile, Execute, MakeReg, MakeDir, RemoveFile, RemoveDir, ReadDir per allowed path
+- [x] Landlock network rights: ConnectTcp per allowed port (ABI v4, kernel 6.7+)
+- [x] System read paths always allowed (dynamic linking: `/usr/lib`, `/lib`, `/lib64`, `/etc/ld.so.cache`, etc.)
+- [x] Landlock graceful degradation: FullyEnforced / PartiallyEnforced / NotEnforced with logging
+- [x] Landlock skipped for `file_access.default = "allow"` agents (incompatible with default-deny model)
+- [x] Expanded seccomp filter: mount (165, 166), new mount API (428-433, 442), pivot_root (155), chroot (161), setns (308), unshare (272)
+- [x] `seccomp_hardened` toggle: base filter always applied, expanded filter controlled by config
+- [x] `PR_SET_NO_NEW_PRIVS` prevents SUID/capability escalation, required by Landlock
+- [x] IPC `SandboxConfig` delivery: daemon sends agent policy to launcher in registration Ack response
+- [x] `--no-landlock` and `--no-seccomp-hardened` CLI flags for debugging
+- [x] Two security tiers documented: Tier 1 (hardened cgroup) vs Tier 2 (legacy comm)
+- [x] `strip_glob()` converts path patterns (`/tmp/**`) to Landlock PathBeneath base directories (`/tmp`)

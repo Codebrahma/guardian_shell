@@ -149,7 +149,7 @@ fn main() -> Result<()> {
     let response = send_request(&cli.socket, &request, is_permission_request)?;
 
     match response {
-        IpcResponse::Ack => {
+        IpcResponse::Ack { .. } => {
             match &cli.command {
                 Commands::Stop { name } => println!("Agent '{}' stopped.", name),
                 Commands::Grant { name, path, duration, grant_type } => {

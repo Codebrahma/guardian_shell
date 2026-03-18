@@ -5,6 +5,9 @@ mod state;
 pub use state::DashboardState;
 
 use axum::Router;
+use axum::extract::Request;
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use log::{error, info};
 use rust_embed::Embed;
 use std::sync::Arc;
@@ -17,7 +20,10 @@ struct StaticFiles;
 pub fn router(state: Arc<DashboardState>) -> Router {
     use axum::routing::{get, post, put};
 
-    Router::new()
+    let has_auth = state.auth_token.is_some();
+    let auth_state = state.clone();
+
+    let app = Router::new()
         // Full pages
         .route("/", get(routes::pages::index))
         .route("/agents", get(routes::pages::agents))
@@ -41,11 +47,65 @@ pub fn router(state: Arc<DashboardState>) -> Router {
         .route("/api/permissions/{id}/deny", post(routes::api::deny_permission))
         // SSE live event stream
         .route("/events/stream", get(routes::sse::event_stream))
-        // Prometheus metrics
+        // Prometheus metrics (no auth — scrapers need direct access)
         .route("/metrics", get(routes::api::prometheus_metrics))
         // Static files
         .route("/static/{*path}", get(static_handler))
-        .with_state(state)
+        .with_state(state);
+
+    // Phase 8: Add auth middleware if token is configured
+    if has_auth {
+        app.layer(middleware::from_fn(move |req, next| {
+            let state = auth_state.clone();
+            auth_middleware(state, req, next)
+        }))
+    } else {
+        app
+    }
+}
+
+/// Authentication middleware: checks Bearer token in Authorization header
+/// or `token` query parameter. Skips auth for /metrics and /static/ paths.
+async fn auth_middleware(
+    state: Arc<DashboardState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let path = req.uri().path().to_string();
+
+    // Skip auth for metrics endpoint (Prometheus scrapers) and static files
+    if path == "/metrics" || path.starts_with("/static/") {
+        return next.run(req).await;
+    }
+
+    let expected = match &state.auth_token {
+        Some(t) => t.as_str(),
+        None => return next.run(req).await,
+    };
+
+    // Check Authorization: Bearer <token> header
+    if let Some(auth_header) = req.headers().get("authorization") {
+        if let Ok(val) = auth_header.to_str() {
+            if let Some(token) = val.strip_prefix("Bearer ") {
+                if token == expected {
+                    return next.run(req).await;
+                }
+            }
+        }
+    }
+
+    // Check ?token=<token> query parameter
+    if let Some(query) = req.uri().query() {
+        for param in query.split('&') {
+            if let Some(token) = param.strip_prefix("token=") {
+                if token == expected {
+                    return next.run(req).await;
+                }
+            }
+        }
+    }
+
+    (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized: provide Bearer token or ?token= query parameter").into_response()
 }
 
 async fn static_handler(

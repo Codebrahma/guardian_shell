@@ -13,4 +13,6 @@ pub struct DashboardState {
     pub permission_bus: broadcast::Sender<PermissionEvent>,
     pub config_path: PathBuf,
     pub db: Arc<EventDb>,
+    /// Phase 8: Optional authentication token for dashboard access.
+    pub auth_token: Option<String>,
 }

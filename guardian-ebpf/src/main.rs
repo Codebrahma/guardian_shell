@@ -14,33 +14,33 @@ use aya_ebpf::{
     programs::{LsmContext, TracePointContext},
 };
 use aya_ebpf::maps::lpm_trie::Key;
-use guardian_common::{ExecEvent, FileAccessEvent, NetworkEvent, MAX_FILENAME_LEN};
+use guardian_common::{ExecEvent, FileAccessEvent, NetworkEvent, MAX_FILENAME_LEN, EVENT_FLAG_TRUNCATED};
 
 // =============================================================================
-// Maps
+// Maps (Phase 8: capacity increased from 256 to 1024 for rule/config maps)
 // =============================================================================
 
 /// Process comm names to monitor (key: comm, value: 1).
 #[map]
-static WATCHED_COMMS: HashMap<[u8; 16], u8> = HashMap::with_max_entries(256, 0);
+static WATCHED_COMMS: HashMap<[u8; 16], u8> = HashMap::with_max_entries(1024, 0);
 
 /// Process comm names in enforcement mode (key: comm, value: 1).
 #[map]
-static ENFORCE_COMMS: HashMap<[u8; 16], u8> = HashMap::with_max_entries(256, 0);
+static ENFORCE_COMMS: HashMap<[u8; 16], u8> = HashMap::with_max_entries(1024, 0);
 
 /// Watched cgroup IDs (key: cgroup_id, value: 1).
 /// Phase 3: Primary identification method — unspoofable.
 #[map]
-static WATCHED_CGROUPS: HashMap<u64, u8> = HashMap::with_max_entries(256, 0);
+static WATCHED_CGROUPS: HashMap<u64, u8> = HashMap::with_max_entries(1024, 0);
 
 /// Enforced cgroup IDs (key: cgroup_id, value: 1).
 /// Phase 3: Enforcement for cgroup-based agents.
 #[map]
-static ENFORCE_CGROUPS: HashMap<u64, u8> = HashMap::with_max_entries(256, 0);
+static ENFORCE_CGROUPS: HashMap<u64, u8> = HashMap::with_max_entries(1024, 0);
 
 /// Default action per cgroup: key = cgroup_id, value: 0 = deny, 1 = allow.
 #[map]
-static CGROUP_DEFAULT_ACTION: HashMap<u64, u8> = HashMap::with_max_entries(256, 0);
+static CGROUP_DEFAULT_ACTION: HashMap<u64, u8> = HashMap::with_max_entries(1024, 0);
 
 /// Per-CPU scratch buffer for file access events.
 #[map]
@@ -67,26 +67,26 @@ static PENDING_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
 /// Key data is the path prefix (with trailing '/'), prefix_len in bits.
 #[map]
 static DENY_PREFIXES: LpmTrie<[u8; MAX_FILENAME_LEN], u8> =
-    LpmTrie::with_max_entries(256, 0);
+    LpmTrie::with_max_entries(1024, 0);
 
 /// Deny rules: HashMap for exact path matching.
 #[map]
 static DENY_EXACT: HashMap<[u8; MAX_FILENAME_LEN], u8> =
-    HashMap::with_max_entries(256, 0);
+    HashMap::with_max_entries(1024, 0);
 
 /// Allow rules: LPM trie for prefix matching (/** patterns).
 #[map]
 static ALLOW_PREFIXES: LpmTrie<[u8; MAX_FILENAME_LEN], u8> =
-    LpmTrie::with_max_entries(256, 0);
+    LpmTrie::with_max_entries(1024, 0);
 
 /// Allow rules: HashMap for exact path matching.
 #[map]
 static ALLOW_EXACT: HashMap<[u8; MAX_FILENAME_LEN], u8> =
-    HashMap::with_max_entries(256, 0);
+    HashMap::with_max_entries(1024, 0);
 
 /// Default action per comm: key = comm, value: 0 = deny, 1 = allow.
 #[map]
-static DEFAULT_ACTION: HashMap<[u8; 16], u8> = HashMap::with_max_entries(256, 0);
+static DEFAULT_ACTION: HashMap<[u8; 16], u8> = HashMap::with_max_entries(1024, 0);
 
 /// Child PID tracking: key = child tgid, value = parent tgid.
 #[map]
@@ -101,36 +101,36 @@ static WATCHED_TGIDS: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
 static ENFORCE_TGIDS: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
 
 // =============================================================================
-// Exec Enforcement Maps (Phase 7)
+// Exec Enforcement Maps (Phase 7, capacity increased in Phase 8)
 // =============================================================================
 
 /// Exec deny rules: exact path matching.
 #[map]
 static EXEC_DENY_EXACT: HashMap<[u8; MAX_FILENAME_LEN], u8> =
-    HashMap::with_max_entries(256, 0);
+    HashMap::with_max_entries(1024, 0);
 
 /// Exec deny rules: LPM trie for prefix matching (/** patterns).
 #[map]
 static EXEC_DENY_PREFIXES: LpmTrie<[u8; MAX_FILENAME_LEN], u8> =
-    LpmTrie::with_max_entries(256, 0);
+    LpmTrie::with_max_entries(1024, 0);
 
 /// Exec allow rules: exact path matching.
 #[map]
 static EXEC_ALLOW_EXACT: HashMap<[u8; MAX_FILENAME_LEN], u8> =
-    HashMap::with_max_entries(256, 0);
+    HashMap::with_max_entries(1024, 0);
 
 /// Exec allow rules: LPM trie for prefix matching (/** patterns).
 #[map]
 static EXEC_ALLOW_PREFIXES: LpmTrie<[u8; MAX_FILENAME_LEN], u8> =
-    LpmTrie::with_max_entries(256, 0);
+    LpmTrie::with_max_entries(1024, 0);
 
 /// Default exec action per comm: key = comm, value: 0 = deny, 1 = allow.
 #[map]
-static EXEC_DEFAULT_ACTION: HashMap<[u8; 16], u8> = HashMap::with_max_entries(256, 0);
+static EXEC_DEFAULT_ACTION: HashMap<[u8; 16], u8> = HashMap::with_max_entries(1024, 0);
 
 /// Default exec action per cgroup: key = cgroup_id, value: 0 = deny, 1 = allow.
 #[map]
-static EXEC_CGROUP_DEFAULT_ACTION: HashMap<u64, u8> = HashMap::with_max_entries(256, 0);
+static EXEC_CGROUP_DEFAULT_ACTION: HashMap<u64, u8> = HashMap::with_max_entries(1024, 0);
 
 /// Pending exec deny decisions: key = pid_tgid, value = 1.
 /// Set by the execve tracepoint, consumed by the bprm_check_security LSM hook.
@@ -148,6 +148,43 @@ static NET_EVENT_BUF: PerCpuArray<NetworkEvent> = PerCpuArray::with_max_entries(
 /// Perf buffer for network events to userspace.
 #[map]
 static NET_EVENTS: PerfEventArray<NetworkEvent> = PerfEventArray::new(0);
+
+// =============================================================================
+// Phase 8 Maps: Inode Protection (rename/unlink/hardlink enforcement)
+// =============================================================================
+
+/// Pending rename deny decisions: key = pid_tgid, value = 1.
+/// Set by sys_enter_renameat2, consumed by LSM inode_rename.
+#[map]
+static PENDING_RENAME_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+
+/// Pending unlink deny decisions: key = pid_tgid, value = 1.
+/// Set by sys_enter_unlinkat, consumed by LSM inode_unlink.
+#[map]
+static PENDING_UNLINK_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+
+/// Pending hardlink deny decisions: key = pid_tgid, value = 1.
+/// Set by sys_enter_linkat, consumed by LSM inode_link.
+#[map]
+static PENDING_LINK_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+
+// =============================================================================
+// Phase 8 Maps: Dynamic Linker Detection
+// =============================================================================
+
+/// Known dynamic linker paths. When execve sees one, check argv[1] for the real binary.
+#[map]
+static DYNAMIC_LINKERS: HashMap<[u8; MAX_FILENAME_LEN], u8> =
+    HashMap::with_max_entries(16, 0);
+
+// =============================================================================
+// Phase 8 Maps: Fail-Closed Mode
+// =============================================================================
+
+/// Cgroups configured for fail-closed behavior (deny on eBPF error).
+/// key = cgroup_id, value = 1.
+#[map]
+static FAIL_CLOSED_CGROUPS: HashMap<u64, u8> = HashMap::with_max_entries(1024, 0);
 
 // =============================================================================
 // Helpers
@@ -256,6 +293,18 @@ fn evaluate_policy(
     }
 }
 
+/// Phase 8: Check if cgroup is in fail-closed mode.
+/// Returns -EACCES (-13) for fail-closed, 0 for fail-open.
+#[inline(always)]
+fn fail_mode_for_cgroup() -> i32 {
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    if unsafe { FAIL_CLOSED_CGROUPS.get(&cgroup_id) }.is_some() {
+        -13 // -EACCES: fail-closed
+    } else {
+        0 // fail-open (default)
+    }
+}
+
 // =============================================================================
 // Tracepoint: sys_enter_openat (monitoring + enforcement decision)
 // =============================================================================
@@ -287,6 +336,7 @@ fn try_guardian_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
     event.pid = pid_tgid as u32;
     event.uid = (bpf_get_current_uid_gid() & 0xFFFF_FFFF) as u32;
     event.comm = comm;
+    event.status_flags = 0;
 
     // Read tracepoint args (x86_64 offsets for sys_enter_openat)
     let filename_ptr: u64 = unsafe { ctx.read_at(24)? };
@@ -298,6 +348,10 @@ fn try_guardian_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
     } {
         Ok(name_bytes) => {
             event.filename_len = name_bytes.len() as u32;
+            // Phase 8: Detect path truncation
+            if name_bytes.len() >= MAX_FILENAME_LEN - 1 {
+                event.status_flags |= EVENT_FLAG_TRUNCATED;
+            }
         }
         Err(_) => {
             event.filename_len = 0;
@@ -306,9 +360,14 @@ fn try_guardian_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
 
     // Kernel-side policy evaluation for enforcement
     if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
-        let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
-        if !allowed {
+        if event.status_flags & EVENT_FLAG_TRUNCATED != 0 {
+            // Phase 8: Truncated path — deny for safety (can't match policy correctly)
             let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+        } else {
+            let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
+            if !allowed {
+                let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+            }
         }
     }
 
@@ -352,6 +411,7 @@ fn try_guardian_file_openat2(ctx: &TracePointContext) -> Result<u32, i64> {
     event.pid = pid_tgid as u32;
     event.uid = (bpf_get_current_uid_gid() & 0xFFFF_FFFF) as u32;
     event.comm = comm;
+    event.status_flags = 0;
 
     // Read tracepoint args (x86_64 offsets for sys_enter_openat2)
     // filename pointer at offset 24 (same position as openat)
@@ -377,6 +437,9 @@ fn try_guardian_file_openat2(ctx: &TracePointContext) -> Result<u32, i64> {
     } {
         Ok(name_bytes) => {
             event.filename_len = name_bytes.len() as u32;
+            if name_bytes.len() >= MAX_FILENAME_LEN - 1 {
+                event.status_flags |= EVENT_FLAG_TRUNCATED;
+            }
         }
         Err(_) => {
             event.filename_len = 0;
@@ -385,9 +448,13 @@ fn try_guardian_file_openat2(ctx: &TracePointContext) -> Result<u32, i64> {
 
     // Kernel-side policy evaluation for enforcement
     if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
-        let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
-        if !allowed {
+        if event.status_flags & EVENT_FLAG_TRUNCATED != 0 {
             let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+        } else {
+            let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
+            if !allowed {
+                let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+            }
         }
     }
 
@@ -405,7 +472,7 @@ fn try_guardian_file_openat2(ctx: &TracePointContext) -> Result<u32, i64> {
 pub fn guardian_enforce_file_open(ctx: LsmContext) -> i32 {
     match try_enforce_file_open(&ctx) {
         Ok(ret) => ret,
-        Err(_) => 0, // fail-open on error
+        Err(_) => fail_mode_for_cgroup(), // Phase 8: fail-closed if configured
     }
 }
 
@@ -466,11 +533,129 @@ fn try_guardian_exec_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
         }
     }
 
-    // Phase 7: Kernel-side exec policy evaluation for enforcement
+    // Phase 7+8: Kernel-side exec policy evaluation for enforcement
     if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
-        let allowed = evaluate_exec_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
-        if !allowed {
+        // Phase 8: Dynamic linker detection — if the binary is a known linker,
+        // read argv[1] to find the real binary and evaluate policy on that.
+        if unsafe { DYNAMIC_LINKERS.get(&event.filename) }.is_some() {
+            // argv pointer is at offset 24 for sys_enter_execve (x86_64)
+            let argv_ptr: u64 = unsafe { ctx.read_at(24)? };
+            if argv_ptr != 0 {
+                // argv[1] = *(argv_ptr + 8) — second element of the pointer array
+                let argv1_ptr_result: Result<u64, i64> = unsafe {
+                    aya_ebpf::helpers::bpf_probe_read_user((argv_ptr + 8) as *const u64)
+                };
+                if let Ok(argv1_ptr) = argv1_ptr_result {
+                    if argv1_ptr != 0 {
+                        // Read the real binary path from argv[1]
+                        let mut real_filename = [0u8; MAX_FILENAME_LEN];
+                        if let Ok(name_bytes) = unsafe {
+                            bpf_probe_read_user_str_bytes(argv1_ptr as *const u8, &mut real_filename)
+                        } {
+                            let real_len = name_bytes.len();
+                            if real_len > 0 {
+                                let allowed = evaluate_exec_policy(&real_filename, real_len, &comm, cgroup_id);
+                                if !allowed {
+                                    let _ = PENDING_EXEC_DENY.insert(&pid_tgid, &1u8, 0);
+                                }
+                                // Update event filename to show the real binary
+                                event.filename = real_filename;
+                                event.filename_len = real_len as u32;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            let allowed = evaluate_exec_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
+            if !allowed {
+                let _ = PENDING_EXEC_DENY.insert(&pid_tgid, &1u8, 0);
+            }
+        }
+    }
+
+    EXEC_EVENTS.output(ctx, event, 0);
+
+    Ok(0)
+}
+
+// =============================================================================
+// Phase 8: Tracepoint: sys_enter_execveat (covers memfd_create + AT_EMPTY_PATH)
+// =============================================================================
+
+/// Hooks the execveat syscall. Catches AT_EMPTY_PATH fd-based execution
+/// (e.g., memfd_create + execveat) that bypasses the normal execve tracepoint.
+#[tracepoint]
+pub fn guardian_execveat_monitor(ctx: TracePointContext) -> u32 {
+    match try_guardian_execveat_monitor(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0,
+    }
+}
+
+fn try_guardian_execveat_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
+    let comm = bpf_get_current_comm().map_err(|e| e)?;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    if !is_process_watched(&comm, tgid, cgroup_id) {
+        return Ok(0);
+    }
+
+    // sys_enter_execveat args (x86_64):
+    // dfd at 16, filename at 24, argv at 32, envp at 40, flags at 48
+    let flags: i32 = unsafe { ctx.read_at(48)? };
+
+    let event = unsafe {
+        let ptr = EXEC_BUF.get_ptr_mut(0).ok_or(1i64)?;
+        &mut *ptr
+    };
+
+    event.tgid = tgid;
+    event.pid = pid_tgid as u32;
+    event.uid = (bpf_get_current_uid_gid() & 0xFFFF_FFFF) as u32;
+    event.comm = comm;
+
+    // AT_EMPTY_PATH = 0x1000 — execution via fd (likely memfd)
+    if flags & 0x1000 != 0 {
+        // This is an AT_EMPTY_PATH execveat — likely memfd execution.
+        // For enforced agents, deny unconditionally (no filesystem path to evaluate).
+        if is_process_enforcing(&comm, tgid, cgroup_id) {
             let _ = PENDING_EXEC_DENY.insert(&pid_tgid, &1u8, 0);
+        }
+        // Set a placeholder filename for the event
+        let memfd_path = b"/memfd:anonymous";
+        let mut i = 0;
+        while i < memfd_path.len() && i < MAX_FILENAME_LEN {
+            event.filename[i] = memfd_path[i];
+            i += 1;
+        }
+        while i < MAX_FILENAME_LEN {
+            event.filename[i] = 0;
+            i += 1;
+        }
+        event.filename_len = memfd_path.len() as u32;
+    } else {
+        // Normal execveat with a pathname — read and evaluate like execve
+        let filename_ptr: u64 = unsafe { ctx.read_at(24)? };
+
+        match unsafe {
+            bpf_probe_read_user_str_bytes(filename_ptr as *const u8, &mut event.filename)
+        } {
+            Ok(name_bytes) => {
+                event.filename_len = name_bytes.len() as u32;
+            }
+            Err(_) => {
+                event.filename_len = 0;
+            }
+        }
+
+        if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
+            let allowed = evaluate_exec_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
+            if !allowed {
+                let _ = PENDING_EXEC_DENY.insert(&pid_tgid, &1u8, 0);
+            }
         }
     }
 
@@ -536,7 +721,7 @@ fn try_guardian_exit_track(_ctx: &TracePointContext) -> Result<u32, i64> {
 pub fn guardian_enforce_exec(ctx: LsmContext) -> i32 {
     match try_enforce_exec(&ctx) {
         Ok(ret) => ret,
-        Err(_) => 0, // fail-open on error
+        Err(_) => fail_mode_for_cgroup(), // Phase 8: fail-closed if configured
     }
 }
 
@@ -582,6 +767,7 @@ fn try_guardian_file_open_legacy(ctx: &TracePointContext) -> Result<u32, i64> {
     event.pid = pid_tgid as u32;
     event.uid = (bpf_get_current_uid_gid() & 0xFFFF_FFFF) as u32;
     event.comm = comm;
+    event.status_flags = 0;
 
     // sys_enter_open (x86_64): filename at offset 16, flags at offset 24
     let filename_ptr: u64 = unsafe { ctx.read_at(16)? };
@@ -593,6 +779,9 @@ fn try_guardian_file_open_legacy(ctx: &TracePointContext) -> Result<u32, i64> {
     } {
         Ok(name_bytes) => {
             event.filename_len = name_bytes.len() as u32;
+            if name_bytes.len() >= MAX_FILENAME_LEN - 1 {
+                event.status_flags |= EVENT_FLAG_TRUNCATED;
+            }
         }
         Err(_) => {
             event.filename_len = 0;
@@ -600,9 +789,13 @@ fn try_guardian_file_open_legacy(ctx: &TracePointContext) -> Result<u32, i64> {
     }
 
     if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
-        let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
-        if !allowed {
+        if event.status_flags & EVENT_FLAG_TRUNCATED != 0 {
             let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+        } else {
+            let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
+            if !allowed {
+                let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+            }
         }
     }
 
@@ -688,6 +881,256 @@ fn try_guardian_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
     }
 
     NET_EVENTS.output(ctx, event, 0);
+
+    Ok(0)
+}
+
+// =============================================================================
+// Phase 8: Tracepoint: sys_enter_renameat2 (rename monitoring + enforcement)
+// =============================================================================
+
+/// Monitors rename operations. Evaluates policy on both source and destination
+/// paths. If either path is denied, blocks the rename via PENDING_RENAME_DENY.
+#[tracepoint]
+pub fn guardian_rename_monitor(ctx: TracePointContext) -> u32 {
+    match try_guardian_rename_monitor(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0,
+    }
+}
+
+fn try_guardian_rename_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
+    let comm = bpf_get_current_comm().map_err(|e| e)?;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    if !is_process_watched(&comm, tgid, cgroup_id) {
+        return Ok(0);
+    }
+
+    if !is_process_enforcing(&comm, tgid, cgroup_id) {
+        return Ok(0);
+    }
+
+    // sys_enter_renameat2 (x86_64): olddfd=16, oldname=24, newdfd=32, newname=40, flags=48
+    let oldname_ptr: u64 = unsafe { ctx.read_at(24)? };
+    let newname_ptr: u64 = unsafe { ctx.read_at(40)? };
+
+    // Use EVENT_BUF as scratch space for path reading (only need the filename field)
+    let scratch = unsafe {
+        let ptr = EVENT_BUF.get_ptr_mut(0).ok_or(1i64)?;
+        &mut *ptr
+    };
+
+    // Check source path — if it's denied, block rename of protected files
+    if oldname_ptr != 0 {
+        if let Ok(name_bytes) = unsafe {
+            bpf_probe_read_user_str_bytes(oldname_ptr as *const u8, &mut scratch.filename)
+        } {
+            let len = name_bytes.len();
+            if len > 0 {
+                let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
+                if !allowed {
+                    let _ = PENDING_RENAME_DENY.insert(&pid_tgid, &1u8, 0);
+                    return Ok(0);
+                }
+            }
+        }
+    }
+
+    // Check destination path — block renaming INTO denied directories
+    if newname_ptr != 0 {
+        if let Ok(name_bytes) = unsafe {
+            bpf_probe_read_user_str_bytes(newname_ptr as *const u8, &mut scratch.filename)
+        } {
+            let len = name_bytes.len();
+            if len > 0 {
+                let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
+                if !allowed {
+                    let _ = PENDING_RENAME_DENY.insert(&pid_tgid, &1u8, 0);
+                }
+            }
+        }
+    }
+
+    Ok(0)
+}
+
+// =============================================================================
+// Phase 8: LSM: inode_rename (blocks rename of protected files)
+// =============================================================================
+
+#[lsm(hook = "inode_rename")]
+pub fn guardian_enforce_rename(ctx: LsmContext) -> i32 {
+    match try_enforce_rename(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => fail_mode_for_cgroup(),
+    }
+}
+
+fn try_enforce_rename(_ctx: &LsmContext) -> Result<i32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+
+    if unsafe { PENDING_RENAME_DENY.get(&pid_tgid) }.is_some() {
+        let _ = PENDING_RENAME_DENY.remove(&pid_tgid);
+        return Ok(-13); // -EACCES
+    }
+
+    Ok(0)
+}
+
+// =============================================================================
+// Phase 8: Tracepoint: sys_enter_unlinkat (unlink/delete monitoring + enforcement)
+// =============================================================================
+
+/// Monitors file deletion. If the target path is denied, blocks the unlink.
+#[tracepoint]
+pub fn guardian_unlink_monitor(ctx: TracePointContext) -> u32 {
+    match try_guardian_unlink_monitor(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0,
+    }
+}
+
+fn try_guardian_unlink_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
+    let comm = bpf_get_current_comm().map_err(|e| e)?;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    if !is_process_watched(&comm, tgid, cgroup_id) {
+        return Ok(0);
+    }
+
+    if !is_process_enforcing(&comm, tgid, cgroup_id) {
+        return Ok(0);
+    }
+
+    // sys_enter_unlinkat (x86_64): dfd=16, pathname=24, flag=32
+    let pathname_ptr: u64 = unsafe { ctx.read_at(24)? };
+
+    if pathname_ptr == 0 {
+        return Ok(0);
+    }
+
+    let scratch = unsafe {
+        let ptr = EVENT_BUF.get_ptr_mut(0).ok_or(1i64)?;
+        &mut *ptr
+    };
+
+    if let Ok(name_bytes) = unsafe {
+        bpf_probe_read_user_str_bytes(pathname_ptr as *const u8, &mut scratch.filename)
+    } {
+        let len = name_bytes.len();
+        if len > 0 {
+            let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
+            if !allowed {
+                let _ = PENDING_UNLINK_DENY.insert(&pid_tgid, &1u8, 0);
+            }
+        }
+    }
+
+    Ok(0)
+}
+
+// =============================================================================
+// Phase 8: LSM: inode_unlink (blocks deletion of protected files)
+// =============================================================================
+
+#[lsm(hook = "inode_unlink")]
+pub fn guardian_enforce_unlink(ctx: LsmContext) -> i32 {
+    match try_enforce_unlink(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => fail_mode_for_cgroup(),
+    }
+}
+
+fn try_enforce_unlink(_ctx: &LsmContext) -> Result<i32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+
+    if unsafe { PENDING_UNLINK_DENY.get(&pid_tgid) }.is_some() {
+        let _ = PENDING_UNLINK_DENY.remove(&pid_tgid);
+        return Ok(-13); // -EACCES
+    }
+
+    Ok(0)
+}
+
+// =============================================================================
+// Phase 8: Tracepoint: sys_enter_linkat (hardlink monitoring + enforcement)
+// =============================================================================
+
+/// Monitors hardlink creation. If the source file is denied, blocks the link.
+#[tracepoint]
+pub fn guardian_link_monitor(ctx: TracePointContext) -> u32 {
+    match try_guardian_link_monitor(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0,
+    }
+}
+
+fn try_guardian_link_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
+    let comm = bpf_get_current_comm().map_err(|e| e)?;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let tgid = (pid_tgid >> 32) as u32;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+
+    if !is_process_watched(&comm, tgid, cgroup_id) {
+        return Ok(0);
+    }
+
+    if !is_process_enforcing(&comm, tgid, cgroup_id) {
+        return Ok(0);
+    }
+
+    // sys_enter_linkat (x86_64): olddfd=16, oldname=24, newdfd=32, newname=40, flags=48
+    let oldname_ptr: u64 = unsafe { ctx.read_at(24)? };
+
+    if oldname_ptr == 0 {
+        return Ok(0);
+    }
+
+    let scratch = unsafe {
+        let ptr = EVENT_BUF.get_ptr_mut(0).ok_or(1i64)?;
+        &mut *ptr
+    };
+
+    // Check if the source file (being hardlinked) is in a deny list
+    if let Ok(name_bytes) = unsafe {
+        bpf_probe_read_user_str_bytes(oldname_ptr as *const u8, &mut scratch.filename)
+    } {
+        let len = name_bytes.len();
+        if len > 0 {
+            let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
+            if !allowed {
+                let _ = PENDING_LINK_DENY.insert(&pid_tgid, &1u8, 0);
+            }
+        }
+    }
+
+    Ok(0)
+}
+
+// =============================================================================
+// Phase 8: LSM: inode_link (blocks hardlink creation for protected files)
+// =============================================================================
+
+#[lsm(hook = "inode_link")]
+pub fn guardian_enforce_link(ctx: LsmContext) -> i32 {
+    match try_enforce_link(&ctx) {
+        Ok(ret) => ret,
+        Err(_) => fail_mode_for_cgroup(),
+    }
+}
+
+fn try_enforce_link(_ctx: &LsmContext) -> Result<i32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+
+    if unsafe { PENDING_LINK_DENY.get(&pid_tgid) }.is_some() {
+        let _ = PENDING_LINK_DENY.remove(&pid_tgid);
+        return Ok(-13); // -EACCES
+    }
 
     Ok(0)
 }

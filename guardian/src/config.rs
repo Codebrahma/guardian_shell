@@ -126,6 +126,9 @@ pub struct DashboardConfig {
     pub listen_address: Option<String>,
     /// Path to SQLite database for event storage. Default: "/var/lib/guardian/events.db"
     pub db_path: Option<String>,
+    /// Phase 8: Optional authentication token for dashboard access.
+    /// When set, all dashboard requests must include this token.
+    pub auth_token: Option<String>,
 }
 
 // =============================================================================
@@ -152,6 +155,25 @@ pub struct PermissionsConfig {
     /// Max pending requests per agent. Default: 2.
     #[serde(default = "default_max_pending")]
     pub max_pending_per_agent: u32,
+    /// Phase 8: Risk-based configurable timeouts for permission requests (in seconds).
+    pub timeouts: Option<RiskTimeoutConfig>,
+    /// Phase 8: Maximum total grant seconds allowed per agent. Default: 3600 (1 hour).
+    #[serde(default = "default_max_grant_total_secs")]
+    pub max_grant_total_secs: u64,
+}
+
+/// Phase 8: Risk-based configurable timeouts for permission requests.
+/// Each field specifies the timeout in seconds for the corresponding risk level.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RiskTimeoutConfig {
+    #[serde(default = "default_timeout_low")]
+    pub low: u64,
+    #[serde(default = "default_timeout_medium")]
+    pub medium: u64,
+    #[serde(default = "default_timeout_high")]
+    pub high: u64,
+    #[serde(default = "default_timeout_critical")]
+    pub critical: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -166,6 +188,11 @@ fn default_rate_per_hour() -> u32 { 15 }
 fn default_deny_cooldown() -> u64 { 30 }
 fn default_max_pending() -> u32 { 2 }
 fn default_auto_approve_duration() -> u64 { 300 }
+fn default_max_grant_total_secs() -> u64 { 3600 }
+fn default_timeout_low() -> u64 { 60 }
+fn default_timeout_medium() -> u64 { 120 }
+fn default_timeout_high() -> u64 { 180 }
+fn default_timeout_critical() -> u64 { 300 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalConfig {
@@ -220,6 +247,9 @@ pub struct AgentConfig {
     /// Resource limits applied via cgroup controllers (Phase 3).
     /// Only effective for cgroup-based agents.
     pub resources: Option<ResourceLimits>,
+    /// Phase 8: Fail-closed mode. When true, the agent is blocked if the daemon
+    /// is unreachable or encounters an internal error. Default: None (not set).
+    pub fail_closed: Option<bool>,
 }
 
 impl AgentConfig {
@@ -310,10 +340,10 @@ fn validate_config(config: &Config) -> Result<()> {
 
     // Validate mode
     match config.global.mode.as_str() {
-        "monitor" | "enforce" => {}
+        "monitor" | "enforce" | "strict" => {}
         other => {
             anyhow::bail!(
-                "Invalid global mode '{}'. Must be 'monitor' or 'enforce'",
+                "Invalid global mode '{}'. Must be 'monitor', 'enforce', or 'strict'",
                 other
             );
         }
@@ -775,6 +805,7 @@ mod tests {
             network_policy: None,
             watch_children: true,
             resources: None,
+            fail_closed: None,
         };
         assert_eq!(agent.effective_identity(), "comm");
         assert_eq!(agent.effective_process_name(), "myproc");
@@ -795,6 +826,7 @@ mod tests {
             network_policy: None,
             watch_children: true,
             resources: None,
+            fail_closed: None,
         };
         assert_eq!(agent.effective_identity(), "cgroup");
         assert_eq!(agent.effective_process_name(), "test");

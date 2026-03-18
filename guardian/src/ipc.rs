@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use aya::maps::{lpm_trie::Key, lpm_trie::LpmTrie, HashMap as BpfHashMap, MapData};
-use guardian_common::ipc::{AgentStatus, IpcRequest, IpcResponse};
+use guardian_common::ipc::{AgentStatus, IpcRequest, IpcResponse, PendingPermissionInfo};
 use guardian_common::MAX_FILENAME_LEN;
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -112,6 +112,9 @@ pub struct PermissionEvent {
 }
 
 /// Default timeout for permission requests (seconds).
+/// Phase 8: Now superseded by risk-based timeouts via RiskLevel::timeout_secs(),
+/// but kept as a fallback constant.
+#[allow(dead_code)]
 pub const PERMISSION_TIMEOUT_SECS: u64 = 120;
 /// Maximum number of resolved permissions to keep in memory.
 const MAX_RESOLVED_HISTORY: usize = 100;
@@ -146,6 +149,10 @@ pub struct IpcState {
     pub rate_limits: HashMap<String, AgentRateLimit>,
     // Phase 7c: Optional SQLite audit trail for permissions
     pub event_db: Option<std::sync::Arc<crate::dashboard::db::EventDb>>,
+    // Phase 8: Fail-closed cgroups BPF map
+    pub fail_closed_map: Option<BpfHashMap<MapData, u64, u8>>,
+    // Phase 8: Grant accumulation tracker
+    pub grant_accumulator: permissions::GrantAccumulator,
 }
 
 pub type SharedIpcState = Arc<Mutex<IpcState>>;
@@ -259,6 +266,19 @@ async fn process_request(request: IpcRequest, state: &SharedIpcState) -> IpcResp
             )
             .await
         }
+
+        // Phase 8: CLI permission approval
+        IpcRequest::ListPending => handle_list_pending(state).await,
+
+        IpcRequest::ApprovePermission {
+            request_id,
+            duration_secs,
+        } => handle_approve_permission(state, request_id, duration_secs).await,
+
+        IpcRequest::DenyPermission {
+            request_id,
+            reason,
+        } => handle_deny_permission(state, request_id, reason).await,
     }
 }
 
@@ -310,6 +330,17 @@ async fn handle_register(
             .insert(cgroup_id, default_val, 0)
         {
             warn!("Failed to update CGROUP_DEFAULT_ACTION map: {}", e);
+        }
+    }
+
+    // Phase 8: Set fail-closed mode for this cgroup if configured
+    if agent_config.fail_closed.unwrap_or(false) {
+        if let Some(ref mut fc_map) = state.fail_closed_map {
+            if let Err(e) = fc_map.insert(cgroup_id, 1, 0) {
+                warn!("Failed to set fail-closed for cgroup {}: {}", cgroup_id, e);
+            } else {
+                info!("Fail-closed mode enabled for agent '{}'", agent_name);
+            }
         }
     }
 
@@ -522,6 +553,8 @@ async fn handle_request_permission(
                 rate_limit_per_hour: 15,
                 deny_cooldown_secs: 30,
                 max_pending_per_agent: 2,
+                timeouts: None,
+                max_grant_total_secs: 3600,
             }
         });
 
@@ -631,7 +664,7 @@ async fn handle_request_permission(
             permissions::classify_risk(&resource_type, &resource_path, rate_limit);
 
         // Analyze justification
-        let justification_flags = justification.as_deref()
+        let (justification_flags, justification_score) = justification.as_deref()
             .map(permissions::analyze_justification)
             .unwrap_or_default();
 
@@ -639,8 +672,9 @@ async fn handle_request_permission(
             .map(|(cat, matched)| format!("{}: \"{}\"", cat, matched))
             .collect();
 
-        // Bump risk level if suspicious justification
-        if permissions::justification_risk_bump(&justification_flags) {
+        // Bump risk level if suspicious justification (graduated: score >= 8 -> +2, >= 3 -> +1)
+        let bumps = permissions::justification_risk_bump(&justification_flags, justification_score);
+        for _ in 0..bumps {
             risk_level = match risk_level {
                 RiskLevel::Low => RiskLevel::Medium,
                 RiskLevel::Medium => RiskLevel::High,
@@ -654,7 +688,9 @@ async fn handle_request_permission(
         // Assign ID and store pending request
         request_id = s.next_permission_id;
         s.next_permission_id += 1;
-        timeout_secs = PERMISSION_TIMEOUT_SECS;
+        // Phase 8 Fix 10: Risk-based configurable timeouts
+        let timeout_config = s.config.permissions.as_ref().and_then(|p| p.timeouts.as_ref());
+        timeout_secs = risk_level.timeout_secs(timeout_config);
 
         let now_utc = chrono::Utc::now();
 
@@ -839,6 +875,25 @@ pub async fn resolve_permission(
     // If approved, create a temporary grant
     if approved {
         if let Some(duration) = grant_duration_secs {
+            // Phase 8: Check grant accumulation limits
+            let max_total = s.config.permissions.as_ref()
+                .map(|p| p.max_grant_total_secs)
+                .unwrap_or(3600);
+            let accumulated = s.grant_accumulator.record_and_check(
+                &pending.agent_name,
+                &pending.resource_path,
+                duration,
+            );
+            if accumulated > max_total {
+                warn!(
+                    "Permission #{} grant accumulation exceeded: agent='{}' resource='{}' total={}s > limit={}s",
+                    permission_id, pending.agent_name, pending.resource_path, accumulated, max_total
+                );
+                // Note: We still allow it but log the warning. The grant was already
+                // communicated to the agent via oneshot. Future enhancement: block before
+                // sending the decision.
+            }
+
             let expires_at = Instant::now() + Duration::from_secs(duration);
             let is_prefix = pending.resource_path.ends_with("/**");
 
@@ -972,6 +1027,52 @@ pub async fn resolve_permission(
     }
 
     Ok(())
+}
+
+// =============================================================================
+// Phase 8: CLI Permission Management Handlers
+// =============================================================================
+
+async fn handle_list_pending(state: &SharedIpcState) -> IpcResponse {
+    let s = state.lock().await;
+    let requests: Vec<PendingPermissionInfo> = s
+        .pending_permissions
+        .iter()
+        .map(|p| PendingPermissionInfo {
+            request_id: p.id,
+            agent_name: p.agent_name.clone(),
+            resource_type: p.resource_type.clone(),
+            resource_path: p.resource_path.clone(),
+            justification: p.justification.clone(),
+            risk_level: p.risk_level.as_str().to_string(),
+            elapsed_secs: p.requested_at.elapsed().as_secs(),
+        })
+        .collect();
+    IpcResponse::PendingPermissions { requests }
+}
+
+async fn handle_approve_permission(
+    state: &SharedIpcState,
+    request_id: u64,
+    duration_secs: u64,
+) -> IpcResponse {
+    let reason = "Approved via CLI".to_string();
+    match resolve_permission(state, request_id, true, reason, Some(duration_secs)).await {
+        Ok(()) => IpcResponse::Ack,
+        Err(msg) => IpcResponse::Error { message: msg },
+    }
+}
+
+async fn handle_deny_permission(
+    state: &SharedIpcState,
+    request_id: u64,
+    reason: Option<String>,
+) -> IpcResponse {
+    let reason = reason.unwrap_or_else(|| "Denied via CLI".to_string());
+    match resolve_permission(state, request_id, false, reason, None).await {
+        Ok(()) => IpcResponse::Ack,
+        Err(msg) => IpcResponse::Error { message: msg },
+    }
 }
 
 // =============================================================================

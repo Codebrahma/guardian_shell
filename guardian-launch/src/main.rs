@@ -86,6 +86,13 @@ fn main() -> Result<()> {
     move_to_cgroup(&cgroup_path)?;
     info!("Moved to cgroup");
 
+    // Step 5b: Apply seccomp filter (blocks io_uring + memfd_create)
+    if let Err(e) = apply_seccomp_filter() {
+        log::warn!("Failed to apply seccomp filter (non-fatal): {}", e);
+    } else {
+        info!("Seccomp filter applied: io_uring and memfd_create blocked");
+    }
+
     // Step 6: exec the agent command (replaces this process)
     info!("Launching: {:?}", args.command);
     let err = Command::new(&args.command[0])
@@ -249,6 +256,66 @@ fn register_with_daemon(
             bail!("Unexpected response from daemon");
         }
     }
+}
+
+// =============================================================================
+// Seccomp Filter (Phase 8 — blocks io_uring + memfd_create bypass vectors)
+// =============================================================================
+
+/// Apply a seccomp BPF filter that blocks dangerous syscalls with EPERM.
+/// Blocked syscalls:
+///   - io_uring_setup (425), io_uring_enter (426), io_uring_register (427)
+///     io_uring bypasses eBPF file monitoring entirely.
+///   - memfd_create (319)
+///     memfd_create + execveat(AT_EMPTY_PATH) bypasses exec monitoring.
+fn apply_seccomp_filter() -> Result<()> {
+    use seccompiler::{
+        BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp,
+        SeccompCondition, SeccompFilter, SeccompRule,
+    };
+    use std::collections::BTreeMap;
+    use std::convert::TryInto;
+
+    // Syscall numbers for x86_64
+    const SYS_MEMFD_CREATE: i64 = 319;
+    const SYS_IO_URING_SETUP: i64 = 425;
+    const SYS_IO_URING_ENTER: i64 = 426;
+    const SYS_IO_URING_REGISTER: i64 = 427;
+
+    let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
+
+    // Create a condition that always matches: arg0 & 0 == 0 (always true)
+    let always_match = SeccompCondition::new(
+        0,
+        SeccompCmpArgLen::Dword,
+        SeccompCmpOp::MaskedEq(0),
+        0,
+    ).context("Failed to create seccomp condition")?;
+
+    // Block each syscall unconditionally
+    for syscall_nr in [SYS_MEMFD_CREATE, SYS_IO_URING_SETUP, SYS_IO_URING_ENTER, SYS_IO_URING_REGISTER] {
+        rules.insert(
+            syscall_nr,
+            vec![SeccompRule::new(vec![always_match.clone()]).unwrap()],
+        );
+    }
+
+    let filter = SeccompFilter::new(
+        rules,
+        // Default action: allow everything else
+        SeccompAction::Allow,
+        // Action for matched rules: return EPERM
+        SeccompAction::Errno(libc::EPERM as u32),
+        std::env::consts::ARCH.try_into().context("Unsupported architecture for seccomp")?,
+    ).context("Failed to create seccomp filter")?;
+
+    let bpf_prog: BpfProgram = filter.try_into()
+        .map_err(|e| anyhow::anyhow!("Failed to compile seccomp filter: {:?}", e))?;
+
+    seccompiler::apply_filter(&bpf_prog)
+        .map_err(|e| anyhow::anyhow!("Failed to apply seccomp filter: {:?}", e))?;
+
+    Ok(())
 }
 
 // =============================================================================

@@ -54,6 +54,31 @@ enum Commands {
         grant_type: String,
     },
 
+    /// List pending permission requests
+    Pending,
+
+    /// Approve a pending permission request
+    Approve {
+        /// Permission request ID
+        #[arg(short, long)]
+        id: u64,
+
+        /// Grant duration in seconds
+        #[arg(short, long, default_value = "300")]
+        duration: u64,
+    },
+
+    /// Deny a pending permission request
+    Deny {
+        /// Permission request ID
+        #[arg(short, long)]
+        id: u64,
+
+        /// Reason for denial
+        #[arg(short, long)]
+        reason: Option<String>,
+    },
+
     /// Request permission for a resource (waits for human approval via dashboard)
     RequestPermission {
         /// Agent name
@@ -98,6 +123,15 @@ fn main() -> Result<()> {
             path: path.clone(),
             duration_secs: *duration,
             grant_type: grant_type.clone(),
+        },
+        Commands::Pending => IpcRequest::ListPending,
+        Commands::Approve { id, duration } => IpcRequest::ApprovePermission {
+            request_id: *id,
+            duration_secs: *duration,
+        },
+        Commands::Deny { id, reason } => IpcRequest::DenyPermission {
+            request_id: *id,
+            reason: reason.clone(),
         },
         Commands::RequestPermission {
             name,
@@ -149,6 +183,35 @@ fn main() -> Result<()> {
                         agent.cgroup_id,
                         uptime,
                     );
+                }
+            }
+        }
+        IpcResponse::PendingPermissions { requests } => {
+            if requests.is_empty() {
+                println!("No pending permission requests.");
+            } else {
+                println!(
+                    "{:<6} {:<18} {:<8} {:<40} {:<10} {:<8}",
+                    "ID", "AGENT", "TYPE", "RESOURCE", "RISK", "AGE"
+                );
+                println!("{}", "-".repeat(90));
+                for req in &requests {
+                    println!(
+                        "{:<6} {:<18} {:<8} {:<40} {:<10} {:<8}",
+                        req.request_id,
+                        req.agent_name,
+                        req.resource_type,
+                        if req.resource_path.len() > 38 {
+                            format!("{}...", &req.resource_path[..35])
+                        } else {
+                            req.resource_path.clone()
+                        },
+                        req.risk_level,
+                        format!("{}s", req.elapsed_secs),
+                    );
+                    if let Some(ref j) = req.justification {
+                        println!("       Justification: {}", j);
+                    }
                 }
             }
         }

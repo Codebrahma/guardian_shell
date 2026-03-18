@@ -2,15 +2,17 @@
 
 Guardian Shell is a Linux security tool that monitors and enforces file access policies for LLM agents (Claude Code, OpenAI Codex, Aider, OpenClaw, Cursor, etc.) using eBPF. It hooks into the kernel's file-open syscall, evaluates every file access against your policy rules in real time, and can block unauthorized access at the kernel level.
 
-**Current mode: Phase 6 — Interactive Permission Requests**
+**Current mode: Phase 8 — Security Hardening**
 
-Guardian Shell now provides six layers of protection:
+Guardian Shell now provides eight layers of protection:
 - **Phase 1**: Monitor-only file access logging via eBPF tracepoints
 - **Phase 2**: Kernel-level enforcement via LSM BPF hooks (blocks denied access)
 - **Phase 3**: Unspoofable cgroup-based agent identity, resource limits, launcher wrapper, and time-based access grants
 - **Phase 4**: Structured JSON logging, webhook/Slack/email alerts, Prometheus metrics, and config validation
 - **Phase 5**: Web dashboard with real-time event streaming, policy editor, agent management, and full application control
 - **Phase 6**: Interactive permission requests — agents can ask for temporary access, humans approve/deny via dashboard in real time
+- **Phase 7**: Path normalization, openat2 coverage, risk-based approval workflows, exec enforcement, network monitoring, persistent audit trail
+- **Phase 8**: Security hardening — inode protection (rename/unlink/hardlink enforcement), io_uring/memfd_create blocking via seccomp, BPF map capacity 1024, path truncation detection, dynamic linker detection, execveat hook, strict enforcement mode, dashboard authentication, risk-based configurable timeouts, CLI permission approval, grant accumulation limits, weighted justification analysis, anomaly detection, fail-closed mode
 
 ---
 
@@ -59,18 +61,27 @@ Guardian Shell now provides six layers of protection:
    - [Configuring Alerts from Dashboard](#configuring-alerts-from-dashboard)
    - [Permission Requests (Phase 6)](#permission-requests-phase-6)
    - [Dashboard Security](#dashboard-security)
-10. [Understanding the Output](#understanding-the-output)
-   - [Startup Messages](#startup-messages)
-   - [ALLOW Events](#allow-events)
-   - [DENY Events](#deny-events)
-   - [Event Fields](#event-fields)
-11. [Writing Effective Policies](#writing-effective-policies)
+10. [Security Hardening (Phase 8)](#security-hardening-phase-8)
+    - [Seccomp Syscall Blocking](#seccomp-syscall-blocking)
+    - [Strict Enforcement Mode](#strict-enforcement-mode)
+    - [Dashboard Authentication](#dashboard-authentication)
+    - [Risk-Based Timeouts](#risk-based-timeouts)
+    - [Grant Accumulation Limits](#grant-accumulation-limits)
+    - [Fail-Closed Mode](#fail-closed-mode)
+    - [CLI Permission Approval](#cli-permission-approval)
+    - [Anomaly Detection](#anomaly-detection)
+11. [Understanding the Output](#understanding-the-output)
+    - [Startup Messages](#startup-messages)
+    - [ALLOW Events](#allow-events)
+    - [DENY Events](#deny-events)
+    - [Event Fields](#event-fields)
+12. [Writing Effective Policies](#writing-effective-policies)
     - [Principle of Least Privilege](#principle-of-least-privilege)
     - [Common Allow Patterns](#common-allow-patterns)
     - [Recommended Deny Patterns](#recommended-deny-patterns)
     - [Per-Agent Policies](#per-agent-policies)
     - [Tuning Your Policy](#tuning-your-policy)
-12. [Real-World Examples](#real-world-examples)
+13. [Real-World Examples](#real-world-examples)
     - [Monitoring Claude Code (comm-based)](#monitoring-claude-code-comm-based)
     - [Isolating Aider with Cgroups](#isolating-aider-with-cgroups)
     - [Running OpenClaw in a Sandbox](#running-openclaw-in-a-sandbox)
@@ -78,16 +89,16 @@ Guardian Shell now provides six layers of protection:
     - [Multiple LLM Agents Side by Side](#multiple-llm-agents-side-by-side)
     - [Strict Lockdown Policy](#strict-lockdown-policy)
     - [Permissive Audit Policy](#permissive-audit-policy)
-13. [How It Works](#how-it-works)
+14. [How It Works](#how-it-works)
     - [Architecture Overview](#architecture-overview)
     - [eBPF and Tracepoints](#ebpf-and-tracepoints)
     - [3-Tier Agent Identification](#3-tier-agent-identification)
     - [Event Pipeline](#event-pipeline)
-13. [LLM Agent Security: Why This Matters](#llm-agent-security-why-this-matters)
-14. [Troubleshooting](#troubleshooting)
-15. [Security Considerations](#security-considerations)
-16. [Known Limitations](#known-limitations)
-17. [Roadmap](#roadmap)
+15. [LLM Agent Security: Why This Matters](#llm-agent-security-why-this-matters)
+16. [Troubleshooting](#troubleshooting)
+17. [Security Considerations](#security-considerations)
+18. [Known Limitations](#known-limitations)
+19. [Roadmap](#roadmap)
 
 ---
 
@@ -689,7 +700,7 @@ DENIED: Denied by user
 **How it works:**
 
 1. `guardian-ctl` sends a `RequestPermission` IPC message to the daemon
-2. The daemon creates a pending request with a 120-second timeout
+2. The daemon creates a pending request with a risk-based timeout (60-300 seconds depending on risk level)
 3. A notification banner appears on the dashboard (all pages) via SSE
 4. The human sees the agent name, resource path, justification, and a countdown timer
 5. The human selects a grant duration (1 min to 1 hour) and clicks **Approve** or **Deny**
@@ -713,9 +724,44 @@ fi
 ```
 
 **Requirements:**
-- The web dashboard must be enabled (`[dashboard] enabled = true` in config)
-- If the dashboard is disabled, requests are auto-denied immediately
-- The request times out after 120 seconds with an automatic denial if no human responds
+- The web dashboard must be enabled (`[dashboard] enabled = true` in config) OR use `guardian-ctl approve/deny` from the CLI
+- If the dashboard is disabled and no CLI approval is provided, requests are auto-denied after timeout
+- The request times out with an automatic denial if no human responds (timeout varies by risk level: 60s low, 120s medium, 180s high, 300s critical)
+
+### Managing Permissions via CLI (Phase 8)
+
+Phase 8 adds CLI-based permission management, enabling headless environments (no dashboard) to handle permission requests:
+
+```bash
+# List all pending permission requests
+sudo guardian-ctl pending
+```
+
+Output:
+```
+ID     AGENT              TYPE     RESOURCE                                 RISK       AGE
+------------------------------------------------------------------------------------------
+42     my-agent           exec     /usr/bin/curl                            medium     15s
+       Justification: Need to fetch config from internal API
+3      aider              file     /home/user/.aws/credentials              high       45s
+       Justification: Deploying to production
+```
+
+```bash
+# Approve a request (grant access for 5 minutes)
+sudo guardian-ctl approve --id 42 --duration 300
+
+# Deny a request with a reason
+sudo guardian-ctl deny --id 42 --reason "curl access not authorized"
+```
+
+| Command | Flags | Description |
+|---------|-------|-------------|
+| `pending` | — | List all pending permission requests with risk level and age |
+| `approve` | `--id`, `--duration` (default: 300s) | Approve a pending request by ID with grant duration |
+| `deny` | `--id`, `--reason` (optional) | Deny a pending request by ID with optional reason |
+
+The `approve` and `deny` commands have the same effect as clicking Approve/Deny in the dashboard — they create temporary grants, update the rate limiter, persist to the SQLite audit trail, and broadcast the resolution via SSE.
 
 ---
 
@@ -1167,21 +1213,40 @@ Requests that are not resolved within 120 seconds are automatically denied.
 
 ### Dashboard Security
 
-The dashboard listens on **localhost only** (`127.0.0.1:8080`) by default. It has **no authentication** — anyone who can reach the port has full control.
+The dashboard listens on **localhost only** (`127.0.0.1:8080`) by default.
 
-**For remote access**, use a reverse proxy with authentication:
+**Built-in authentication (Phase 8):**
+
+Phase 8 adds optional Bearer token authentication. Add `auth_token` to your dashboard config:
+
+```toml
+[dashboard]
+enabled = true
+listen = "127.0.0.1:8080"
+auth_token = "your-secret-token-here"
+```
+
+With `auth_token` set, all requests (except `/metrics` and `/static/`) require authentication via:
+- `Authorization: Bearer <token>` header, or
+- `?token=<token>` query parameter
+
+Without `auth_token`, the dashboard runs without authentication (backward compatible).
+
+**For remote access**, use a reverse proxy with TLS:
 
 ```nginx
 server {
     listen 443 ssl;
     server_name guardian.internal;
 
-    auth_basic "Guardian Shell";
-    auth_basic_user_file /etc/nginx/.htpasswd;
+    # Optional: Add nginx-level auth on top of Guardian's built-in auth
+    # auth_basic "Guardian Shell";
+    # auth_basic_user_file /etc/nginx/.htpasswd;
 
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
         # Required for SSE
         proxy_set_header Connection '';
         proxy_http_version 1.1;
@@ -1193,10 +1258,108 @@ server {
 ```
 
 **Best practices:**
-- Never bind the dashboard to `0.0.0.0` without authentication
+- Always set `auth_token` when binding to non-localhost addresses
 - Use TLS for remote access (nginx/caddy handles this)
-- The config file should be owned by root with `chmod 600` (the dashboard can write to it)
+- The config file should be owned by root with `chmod 600` (contains the auth token)
 - The dashboard provides the same level of control as `guardian-ctl` + editing `config.toml`
+- The Prometheus `/metrics` endpoint is exempt from auth to allow scraper access
+
+---
+
+## Security Hardening (Phase 8)
+
+Phase 8 implements 16 security fixes addressing known vulnerabilities documented in `docs/security/security-limitations.md`. See `docs/phase_8_implementation.md` for full architectural details.
+
+### Seccomp Syscall Blocking
+
+`guardian-launch` now applies a seccomp BPF filter that blocks dangerous syscalls for all launched agents:
+
+| Blocked Syscall | Number | Why |
+|----------------|--------|-----|
+| `io_uring_setup` | 425 | io_uring bypasses all eBPF tracepoint monitoring |
+| `io_uring_enter` | 426 | io_uring file I/O is invisible to Guardian |
+| `io_uring_register` | 427 | io_uring registration for async operations |
+| `memfd_create` | 319 | Creates in-memory files for fileless code execution |
+
+Blocked syscalls return `EPERM`. All other syscalls are allowed. The filter is inherited by all child processes. If seccomp is not available, a warning is logged and the agent launches without the filter.
+
+### Strict Enforcement Mode
+
+A new `strict` mode ensures Guardian never runs without enforcement:
+
+```toml
+[global]
+mode = "strict"  # exit immediately if LSM hooks fail to load
+```
+
+| Mode | LSM Failure Behavior |
+|------|---------------------|
+| `monitor` | No LSM hooks loaded (monitoring only) |
+| `enforce` | Warning logged, continues in monitor-only mode |
+| `strict` | **Daemon exits with error** — refuses to run without enforcement |
+
+Use `strict` in production where you cannot accept silent degradation to monitoring-only.
+
+### Dashboard Authentication
+
+See [Dashboard Security](#dashboard-security) above. Add `auth_token` to `[dashboard]` config to require Bearer token authentication.
+
+### Risk-Based Timeouts
+
+Permission request timeouts now vary by risk level instead of using a fixed 120-second window:
+
+```toml
+[permissions.timeouts]
+low = 60        # 1 minute for low-risk (e.g., /tmp files)
+medium = 120    # 2 minutes for medium-risk
+high = 180      # 3 minutes for high-risk (e.g., SSH keys)
+critical = 300  # 5 minutes for critical (e.g., /etc/shadow)
+```
+
+If `[permissions.timeouts]` is not configured, the defaults above are used automatically.
+
+### Grant Accumulation Limits
+
+Prevents agents from accumulating unlimited grant time through repeated requests:
+
+```toml
+[permissions]
+max_grant_total_secs = 3600  # max 1 hour of accumulated grants per resource per 24h
+```
+
+When an agent's total accumulated grant time for a specific resource exceeds this limit within a 24-hour window, a warning is logged. This helps detect patient agents that maintain permanent access through repeated short-duration grants.
+
+### Fail-Closed Mode
+
+By default, eBPF errors cause Guardian to allow access (fail-open). For high-security agents, enable fail-closed mode to deny access on any eBPF error:
+
+```toml
+[[agents]]
+name = "high-security-agent"
+identity = "cgroup"
+fail_closed = true  # deny on eBPF error instead of allowing
+
+[agents.file_access]
+default = "deny"
+```
+
+This is a per-agent setting — development agents can remain fail-open while security-critical agents use fail-closed.
+
+### CLI Permission Approval
+
+See [Managing Permissions via CLI (Phase 8)](#managing-permissions-via-cli-phase-8) above. Use `guardian-ctl pending`, `approve`, and `deny` to manage permissions without the dashboard.
+
+### Anomaly Detection
+
+An automated background task runs hourly to detect suspicious approval patterns:
+
+| Pattern | Detection | Threshold |
+|---------|-----------|-----------|
+| Rubber-stamping | >90% approval rate in 24h | 10+ total requests |
+| High-volume agent | Agent submits excessive requests | >20 requests in 24h |
+| Persistence attack | Agent denied then approved for same resource | Any occurrence in 24h |
+
+Findings are logged as warnings and dispatched through configured alerting outputs (Slack, webhook, email, JSON log).
 
 ---
 
@@ -2121,6 +2284,13 @@ cargo install bpf-linker
 - **Resource exhaustion prevention**: Memory, CPU, and process count limits via cgroups
 - **Credential access detection**: Catch and block agents trying to read SSH keys, cloud credentials, or secrets
 - **Temporary access control**: Time-limited grants with automatic revocation
+- **io_uring/memfd blocking**: Seccomp filter blocks io_uring and memfd_create syscalls that bypass eBPF monitoring
+- **Inode protection**: Rename, unlink, and hardlink operations on denied resources are blocked via LSM hooks
+- **File manipulation defense**: Agents cannot move or copy denied files to allowed directories
+- **Dynamic linker detection**: Direct invocation of ld-linux to bypass exec policy is detected and blocked
+- **Anomaly detection**: Automatic detection of rubber-stamping, persistence attacks, and approval flooding
+- **Fail-closed option**: Per-agent configuration to deny access on any eBPF error (instead of default fail-open)
+- **Dashboard authentication**: Optional Bearer token auth prevents unauthorized dashboard access
 
 ### Best Practices
 
@@ -2148,9 +2318,17 @@ cargo install bpf-linker
 
 10. **Use `--validate-config` in CI/CD** — catch config errors before deploying to production
 
-11. **Secure the dashboard** — bind to localhost only; use a reverse proxy with auth for remote access
+11. **Secure the dashboard** — set `auth_token` in dashboard config; use a reverse proxy with TLS for remote access
 
 12. **Use the dashboard for incident response** — the live events page with filtering makes it easy to investigate policy violations in real time
+
+13. **Use strict mode in production** — set `mode = "strict"` to prevent silent degradation to monitor-only when LSM hooks fail
+
+14. **Enable fail-closed for sensitive agents** — set `fail_closed = true` on agents handling critical resources to deny access on eBPF errors
+
+15. **Configure grant accumulation limits** — set `max_grant_total_secs` to prevent agents from accumulating unlimited access through repeated grants
+
+16. **Monitor anomaly detection alerts** — configure alerting outputs to receive notifications about rubber-stamping and persistence attack patterns
 
 ---
 
@@ -2159,25 +2337,22 @@ cargo install bpf-linker
 | Limitation | Impact | Planned Fix |
 |-----------|--------|-------------|
 | **Relative paths** | If agent uses relative paths, pattern matching may fail | Future: Full path resolution in eBPF |
-| **Only hooks `openat()`** | Doesn't cover `open()`, `openat2()`, `readlink()`, `stat()` | Future: Additional syscall hooks |
+| **Symlinks not resolved in eBPF** | Userspace `normalize_path()` handles `/proc/self/root/` and `..` but not arbitrary symlinks | Future: `bpf_d_path()` in LSM hooks (Linux 5.11+) |
 | **x86_64 only** | Tracepoint offsets are hardcoded for x86_64 | Future: Architecture-agnostic offset reading |
-| **No network monitoring** | Network access by agents is not tracked | Phase 4: Network policy hooks |
-| **Exec monitoring is log-only** | Exec events are logged but not blocked | Future: Exec enforcement via LSM |
-| **Max 64 deny/allow rules** | Combined across all agents for BPF map size limits | Future: Larger maps or dynamic sizing |
-| **Enforcement requires CONFIG_BPF_LSM** | Kernel must have `CONFIG_BPF_LSM=y` and `bpf` in the LSM list | Falls back to monitor-only if unavailable |
+| **Network monitoring is log-only** | Outbound connections logged with port-based policy, but not blocked in kernel | Future: LSM `socket_connect` enforcement or `cgroup/connect4/6` BPF |
+| **Enforcement requires CONFIG_BPF_LSM** | Kernel must have `CONFIG_BPF_LSM=y` and `bpf` in the LSM list | In strict mode, daemon exits if LSM unavailable; otherwise falls back to monitor-only |
 | **5-second grant/cleanup granularity** | Temporary grants and cgroup cleanup are checked every 5 seconds | Acceptable for most use cases |
 | **Comm-based agents still spoofable** | Process name can be changed via `prctl(PR_SET_NAME)` | Use cgroup-based identity for untrusted agents |
-| **SIGHUP doesn't reload alerting outputs** | Changing webhook URLs, Slack tokens, etc. requires daemon restart | Agent policies reload; output config requires restart |
 | **No webhook retry** | Failed webhook/Slack/email sends are logged and dropped | Monitor `alerts_sent{status="error"}` metric |
 | **Email password in plaintext** | SMTP password stored in config file | Protect config with `chmod 600` |
-| **Dashboard has no authentication** | Anyone who can reach the port has full control | Bind to localhost; use reverse proxy with auth |
 | **Dashboard CDN dependency** | First load requires internet for TailwindCSS/htmx/Alpine.js | Bundle libraries locally via rust-embed |
 | **Policy edits don't update BPF maps** | Kernel enforcement rules unchanged until reload | Use "Reload Config" button or SIGHUP |
 | **Config comments lost on dashboard save** | TOML write-back removes original comments | Use version control for config files |
-| **Permission requests require open dashboard** | If no browser tab is open, requests time out after 120s | Keep a dashboard tab open when agents are running |
-| **120s fixed permission timeout** | Cannot configure per-agent or per-request timeouts | Change `PERMISSION_TIMEOUT_SECS` constant and rebuild |
-| **Permission audit trail in-memory only** | Resolved history (last 100) is lost on daemon restart | Use webhook/JSON log for persistent audit records |
-| **No auto-approve rules** | Cannot pre-approve certain request patterns | Use static allow rules for known-safe patterns |
+| **openat2 requires kernel 5.6+** | `sys_enter_openat2` tracepoint not available on older kernels | Gracefully skipped; `openat` and `open` hooks still active |
+| **Seccomp filter is x86_64 syscall numbers** | `io_uring`/`memfd_create` blocking uses hardcoded x86_64 syscall numbers | Future: Per-arch syscall number mapping |
+| **Anomaly detection is hourly** | Rubber-stamping and persistence attacks detected on 1-hour cycle | Acceptable; alerts fire within the hour |
+| **No `mmap_file` LSM hook** | Agents can `mmap()` a file to bypass `file_open` enforcement | Future: LSM `mmap_file` hook |
+| **No content hashing** | Policy is path-based; moved/copied file content not tracked | Future: Inode-based or content-hash policy |
 
 ---
 
@@ -2234,7 +2409,7 @@ cargo install bpf-linker
 - [x] Prometheus metrics integrated into dashboard server
 - [x] Single binary deployment (templates compiled in, static files embedded)
 
-### Phase 6 - Interactive Permission Requests ✅ (Current)
+### Phase 6 - Interactive Permission Requests ✅
 - [x] Interactive permission request protocol (`guardian-ctl request-permission`)
 - [x] Long-poll IPC with oneshot channels (agent blocks while waiting for human)
 - [x] Real-time permission notification banner on all dashboard pages
@@ -2246,3 +2421,44 @@ cargo install bpf-linker
 - [x] Sidebar badge showing pending request count
 - [x] Exec grant type support (in addition to file access grants)
 - [x] Resolved permission audit trail (last 100 entries)
+
+### Phase 7 - Security Hardening (Partial) ✅
+- [x] Userspace path normalization (`normalize_path()` strips `/proc/self/root/`, resolves `..`)
+- [x] `openat2` tracepoint hook (closes openat2 syscall bypass, Linux 5.6+)
+- [x] Legacy `open()` syscall tracepoint (belt-and-suspenders coverage)
+- [x] Per-agent permission rate limiting (3/min, 15/hr, exponential backoff)
+- [x] 4-tier risk classification (Low/Medium/High/Critical) with path patterns
+- [x] Auto-deny for never-approve resources (`/etc/shadow`, SSH keys, etc.)
+- [x] Auto-approve for low-risk resources (`/tmp/**`, `/proc/self/**`)
+- [x] Justification text analysis (urgency, security bypass, reassurance, authority claims)
+- [x] UI friction: mandatory wait timers (0/3/5/10s by risk level), type-to-confirm for CRITICAL
+- [x] Persistent SQLite audit trail for all permission decisions
+- [x] Exec enforcement via LSM `bprm_check_security` hook with `PENDING_EXEC_DENY` map
+- [x] Network monitoring via `sys_enter_connect` tracepoint (AF_INET/AF_INET6, port-based policy)
+- [x] SSE single shared EventSource with custom DOM events
+
+### Phase 8 - Security Hardening (Complete) ✅ (Current)
+
+**8a: Critical Security Fixes**
+- [x] BPF map capacity increase (256 → 1024 entries per policy map)
+- [x] io_uring + memfd_create seccomp blocking via `seccompiler` crate
+- [x] Inode LSM hooks for rename/unlink/hardlink enforcement (`PENDING_RENAME/UNLINK/LINK_DENY` maps)
+- [x] Path truncation detection (`EVENT_FLAG_TRUNCATED` status flag, deny-on-truncation)
+
+**8b: Exec Hardening + Dashboard Security**
+- [x] Dynamic linker detection (`DYNAMIC_LINKERS` map + `argv[1]` inspection)
+- [x] `execveat` tracepoint with `AT_EMPTY_PATH` detection (blocks memfd-based exec)
+- [x] Strict enforcement mode (daemon exits if LSM hooks fail to attach)
+- [x] Default `/memfd:` prefix in exec deny maps
+- [x] Dashboard Bearer token authentication middleware (`auth_token` config)
+
+**8c: Approval Hardening**
+- [x] Risk-based configurable timeouts (`RiskTimeoutConfig`: 60/120/180/300s per tier)
+- [x] CLI permission approval (`guardian-ctl pending/approve/deny`)
+- [x] Grant accumulation limits (`max_grant_total_secs` per resource per 24h)
+- [x] Weighted justification analysis (graduated risk bumps: score ≥8 → +2 tiers, ≥3 → +1)
+
+**8d: Polish**
+- [x] Per-cgroup fail-closed mode (`FAIL_CLOSED_CGROUPS` BPF map, deny on eBPF errors)
+- [x] Full SIGHUP reload including alerting outputs (`Arc<RwLock<AlertSender>>`)
+- [x] Anomaly detection (rubber-stamping >90% approval, persistence attacks, flood detection)

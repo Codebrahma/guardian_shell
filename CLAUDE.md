@@ -8,7 +8,7 @@ on this project on a Linux machine.
 Guardian Shell is a Linux security tool that uses eBPF to monitor and restrict
 LLM agent activities. It's built with Rust and the Aya eBPF framework.
 
-**Current state: Phase 7 - Security Hardening (compiled on Linux)**
+**Current state: Phase 8 - Security Fixes (compiled on Linux)**
 
 Phase 7 adds (on top of Phase 6) security hardening from `docs/security-improvements-research.md`:
 
@@ -280,32 +280,26 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | Single shared SSE connection | Browser HTTP/1.1 limits (~6 connections per origin). Multiple EventSource instances per page exhausted the pool. Single shared SSE with custom DOM events fixes this. |
 | Legacy `sys_enter_open` hook | Belt-and-suspenders: most code uses `openat`, but rare binaries or direct syscalls may use legacy `open`. Reuses PENDING_DENY and EVENT_BUF maps. |
 
-## Known Limitations (Phase 7)
+## Known Limitations (Phase 8)
 
-1. **Symlinks not resolved in eBPF**: Userspace `normalize_path()` catches `/proc/self/root/` and `..` but not symlinks. Full fix requires LSM `file_open` with `bpf_d_path()` (Linux 5.11+, not yet implemented)
+1. **Symlinks not resolved in eBPF**: Userspace `normalize_path()` catches `/proc/self/root/` and `..` but not symlinks. Full fix requires LSM `file_open` with `bpf_d_path()` (Linux 5.11+, deferred)
 2. **openat2 tracepoint requires kernel 5.6+**: Gracefully skipped on older kernels
 3. **x86_64 offsets hardcoded**: Tracepoint field offsets may differ on aarch64/arm
-4. **Max 256 deny/allow rules**: Per BPF map entry limits
-5. **Enforcement requires CONFIG_BPF_LSM**: Kernel must have `CONFIG_BPF_LSM=y`
-   and `bpf` in the LSM list. Falls back to monitor-only if unavailable.
-6. **Exec enforcement requires CONFIG_BPF_LSM**: Like file enforcement, exec blocking via `bprm_check_security` needs LSM support
-7. **Tracepoint-LSM timing dependency**: Enforcement relies on the `sys_enter_openat`
-   tracepoint firing before the LSM `file_open` hook in the same syscall
-8. **Cgroup requires root**: Creating cgroups and running guardian-launch needs root
-9. **Cgroup v2 required**: Cgroup-based identification requires cgroup v2 (default on modern distros)
-10. **Process name still spoofable for comm-based agents**: Use cgroup identity for unspoofable identification
-11. **SIGHUP reload doesn't update alerting outputs**: Alerting config changes require daemon restart
-12. **No webhook retry logic**: Failed webhook/Slack/email sends are logged and dropped
-13. **Email password stored in plaintext config**: Use file permissions to protect config
-14. **Dashboard policy changes don't update BPF maps**: Policy edits update userspace config and disk; BPF enforcement maps require daemon restart or SIGHUP
-15. **Config write-back loses comments**: Dashboard saves config as clean TOML, original comments are removed
-16. **Dashboard has no authentication**: Bind to localhost only; use a reverse proxy for remote access with auth
-17. **TailwindCSS/htmx/Alpine.js loaded from CDN**: Dashboard requires internet access for first load (or bundle locally)
-18. **Permission request timeout is fixed at 120s**: Not configurable per-request or per-agent
-19. **Network monitoring is log-only**: Outbound connections logged with port-based policy in userspace, but not blocked in kernel (LSM `socket_connect` enforcement deferred)
-20. **No rename/unlink/hardlink enforcement**: Agents can move/delete files to bypass policy (Phase 7a planned)
-21. **Permission requests require dashboard enabled**: Auto-denied when dashboard is disabled
-22. **No anomaly detection on approval patterns**: Rubber-stamping / persistence attack detection not yet implemented
+4. **Enforcement requires CONFIG_BPF_LSM**: Kernel must have `CONFIG_BPF_LSM=y` and `bpf` in the LSM list. Falls back to monitor-only if unavailable (unless `mode = "strict"`).
+5. **Tracepoint-LSM timing dependency**: Enforcement relies on the `sys_enter_openat` tracepoint firing before the LSM `file_open` hook in the same syscall
+6. **Cgroup requires root**: Creating cgroups and running guardian-launch needs root
+7. **Cgroup v2 required**: Cgroup-based identification requires cgroup v2 (default on modern distros)
+8. **Process name still spoofable for comm-based agents**: Use cgroup identity for unspoofable identification
+9. **SIGHUP reload doesn't update alerting outputs**: Alerting config changes still require daemon restart (agent policies and permissions do reload)
+10. **No webhook retry logic**: Failed webhook/Slack/email sends are logged and dropped
+11. **Email password stored in plaintext config**: Use file permissions to protect config
+12. **Dashboard policy changes don't update BPF maps**: Policy edits update userspace config and disk; BPF enforcement maps require daemon restart or SIGHUP
+13. **Config write-back loses comments**: Dashboard saves config as clean TOML, original comments are removed
+14. **TailwindCSS/htmx/Alpine.js loaded from CDN**: Dashboard requires internet access for first load (or bundle locally)
+15. **Network monitoring is log-only**: Outbound connections logged with port-based policy in userspace, but not blocked in kernel (LSM `socket_connect`/`cgroup/connect4` deferred)
+16. **Permission requests require dashboard or CLI**: Auto-denied when neither dashboard nor CLI approval is available
+17. **Seccomp filter is x86_64 only**: Syscall numbers are hardcoded for x86_64 in guardian-launch
+18. **Grant accumulation not yet enforced in IPC flow**: Infrastructure in place but accumulation check not wired into `resolve_permission()`
 
 ## Build Notes
 
@@ -387,6 +381,34 @@ Based on `docs/security-improvements-research.md`:
 
 **Not yet implemented:** Phase 7b (network monitoring), Phase 7d (advanced hardening: inode deny map, content hashing, io_uring blocking, mmap_file LSM, anomaly detection)
 
+### Phase 8: Security Fixes ✅ DONE
+Based on `docs/security/security-fixes.md` and `docs/security/security-limitations.md`:
+
+**8a: Critical Security (P0+P1):**
+- BPF map capacity increased from 256 to 1024 entries (`MAX_POLICY_RULES = 1024`)
+- Seccomp filter in `guardian-launch` blocks io_uring (syscalls 425-427) and memfd_create (319) with EPERM
+- Inode LSM hooks: `inode_rename`, `inode_unlink`, `inode_link` with PENDING maps and tracepoints for rename/unlink/hardlink enforcement
+- Path truncation handling: `status_flags` field in `FileAccessEvent`, `EVENT_FLAG_TRUNCATED` flag, deny-by-default for truncated paths
+
+**8b: Exec Hardening + Dashboard Security (P2):**
+- Dynamic linker detection: `DYNAMIC_LINKERS` BPF map, reads `argv[1]` for real binary behind ld-linux
+- `execveat` tracepoint: detects `AT_EMPTY_PATH` flag (memfd_create + execveat attack vector)
+- Strict enforcement mode: `mode = "strict"` bails on any LSM load/attach failure
+- Default `/memfd:` exec deny: unconditionally blocks exec of memfd paths
+- Dashboard authentication: optional `auth_token` in config, Bearer header or `?token=` query param
+
+**8c: Approval Hardening (P3):**
+- Risk-based configurable timeouts: `RiskTimeoutConfig` with per-level timeout settings (60/120/180/300s defaults)
+- CLI permission approval: `guardian-ctl pending/approve/deny` commands + IPC message handlers
+- Grant accumulation limits: `GrantAccumulator` tracking 24h cumulative grant durations, `max_grant_total_secs` config
+- Improved justification analysis: weighted scoring (per-pattern weights), graduated risk bumps (score >= 8 -> +2, >= 3 -> +1)
+
+**8d: Polish (P4):**
+- Configurable fail-closed mode: `fail_closed: true` per agent, `FAIL_CLOSED_CGROUPS` BPF map
+- SIGHUP reload: agent policies and permissions config reloaded (alerting outputs still require restart)
+- Anomaly detection: hourly background task checking rubber-stamping (>90% approval), high-volume agents, deny-then-approve persistence patterns
+- SQLite query methods: `approval_rate_24h()`, `high_volume_agents_24h()`, `agents_with_deny_then_approve()`
+
 ## Dependency Versions
 
 | Crate | Version | Purpose |
@@ -414,6 +436,7 @@ Based on `docs/security-improvements-research.md`:
 | askama_axum | 0.4 | Askama + axum integration |
 | rust-embed | 8 | Embed static files in binary |
 | tower-http | 0.6 | HTTP middleware (CORS) |
+| seccompiler | 0.4 | Seccomp BPF filter for blocking io_uring/memfd_create |
 | tokio-stream | 0.1 | Stream adapters for SSE broadcast |
 
 ## Code Quality Notes

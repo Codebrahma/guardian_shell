@@ -290,6 +290,83 @@ impl EventDb {
         Ok(entries)
     }
 
+    // =========================================================================
+    // Anomaly Detection Queries (Phase 8d)
+    // =========================================================================
+
+    /// Get approval rate in the last 24 hours: (total, approved).
+    pub fn approval_rate_24h(&self) -> Result<(u64, u64), String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock poisoned: {}", e))?;
+        let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+        let total: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM permission_audit WHERE resolved_at > ?1",
+                params![cutoff],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Query failed: {}", e))?;
+        let approved: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM permission_audit WHERE resolved_at > ?1 AND approved = 1",
+                params![cutoff],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Query failed: {}", e))?;
+        Ok((total, approved))
+    }
+
+    /// Get agents with more than `threshold` permission requests in the last 24h.
+    pub fn high_volume_agents_24h(&self, threshold: u64) -> Result<Vec<(String, u64)>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock poisoned: {}", e))?;
+        let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+        let mut stmt = conn
+            .prepare(
+                "SELECT agent_name, COUNT(*) as cnt FROM permission_audit
+                 WHERE resolved_at > ?1 GROUP BY agent_name HAVING cnt > ?2",
+            )
+            .map_err(|e| format!("Query prepare failed: {}", e))?;
+        let rows = stmt
+            .query_map(params![cutoff, threshold as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })
+            .map_err(|e| format!("Query failed: {}", e))?;
+        let mut results = Vec::new();
+        for row in rows {
+            if let Ok(r) = row {
+                results.push(r);
+            }
+        }
+        Ok(results)
+    }
+
+    /// Find agents that had a deny followed by an approve for the same resource
+    /// within the last 24h (persistence/retry attack pattern).
+    pub fn agents_with_deny_then_approve(&self) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock poisoned: {}", e))?;
+        let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT d.agent_name FROM permission_audit d
+                 INNER JOIN permission_audit a
+                   ON d.agent_name = a.agent_name
+                   AND d.resource_path = a.resource_path
+                   AND d.approved = 0 AND a.approved = 1
+                   AND a.resolved_at > d.resolved_at
+                 WHERE d.resolved_at > ?1",
+            )
+            .map_err(|e| format!("Query prepare failed: {}", e))?;
+        let rows = stmt
+            .query_map(params![cutoff], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("Query failed: {}", e))?;
+        let mut results = Vec::new();
+        for row in rows {
+            if let Ok(name) = row {
+                results.push(name);
+            }
+        }
+        Ok(results)
+    }
+
     /// Delete events older than the given number of days.
     pub fn prune_old_events(&self, max_age_days: u32) -> Result<u64, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock poisoned: {}", e))?;

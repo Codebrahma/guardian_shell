@@ -6,7 +6,10 @@
 
 pub const MAX_FILENAME_LEN: usize = 256;
 pub const MAX_COMM_LEN: usize = 16;
-pub const MAX_POLICY_RULES: usize = 64;
+pub const MAX_POLICY_RULES: usize = 1024;
+
+/// Flag: path was truncated at MAX_FILENAME_LEN boundary (deny by default).
+pub const EVENT_FLAG_TRUNCATED: u32 = 1;
 
 /// Default Unix socket path for daemon IPC.
 pub const DEFAULT_SOCKET_PATH: &str = "/run/guardian.sock";
@@ -27,6 +30,8 @@ pub struct FileAccessEvent {
     pub uid: u32,
     pub flags: u32,
     pub filename_len: u32,
+    /// Bitfield: bit 0 = EVENT_FLAG_TRUNCATED (path was truncated at MAX_FILENAME_LEN).
+    pub status_flags: u32,
     pub comm: [u8; MAX_COMM_LEN],
     pub filename: [u8; MAX_FILENAME_LEN],
 }
@@ -150,6 +155,17 @@ pub const MAP_PENDING_EXEC_DENY: &str = "PENDING_EXEC_DENY";
 pub const MAP_NET_EVENTS: &str = "NET_EVENTS";
 pub const MAP_NET_EVENT_BUF: &str = "NET_EVENT_BUF";
 
+// Phase 8: Inode enforcement maps (rename/unlink/hardlink)
+pub const MAP_PENDING_RENAME_DENY: &str = "PENDING_RENAME_DENY";
+pub const MAP_PENDING_UNLINK_DENY: &str = "PENDING_UNLINK_DENY";
+pub const MAP_PENDING_LINK_DENY: &str = "PENDING_LINK_DENY";
+
+// Phase 8: Dynamic linker detection
+pub const MAP_DYNAMIC_LINKERS: &str = "DYNAMIC_LINKERS";
+
+// Phase 8: Fail-closed mode per cgroup
+pub const MAP_FAIL_CLOSED_CGROUPS: &str = "FAIL_CLOSED_CGROUPS";
+
 // =============================================================================
 // Aya Pod Implementations (userspace only)
 // =============================================================================
@@ -211,6 +227,24 @@ pub mod ipc {
             /// Human-readable justification for why this access is needed
             justification: Option<String>,
         },
+
+        /// List pending permission requests (for CLI approval workflow).
+        #[serde(rename = "list_pending")]
+        ListPending,
+
+        /// Approve a pending permission request by ID.
+        #[serde(rename = "approve_permission")]
+        ApprovePermission {
+            request_id: u64,
+            duration_secs: u64,
+        },
+
+        /// Deny a pending permission request by ID.
+        #[serde(rename = "deny_permission")]
+        DenyPermission {
+            request_id: u64,
+            reason: Option<String>,
+        },
     }
 
     /// Response from the Guardian daemon.
@@ -237,6 +271,12 @@ pub mod ipc {
             /// If approved, how long the grant lasts (seconds).
             grant_duration_secs: Option<u64>,
         },
+
+        /// List of pending permission requests.
+        #[serde(rename = "pending_permissions")]
+        PendingPermissions {
+            requests: Vec<PendingPermissionInfo>,
+        },
     }
 
     /// Status of a registered agent.
@@ -247,6 +287,18 @@ pub mod ipc {
         pub cgroup_id: u64,
         pub num_processes: u32,
         pub uptime_secs: u64,
+    }
+
+    /// Info about a pending permission request (for CLI listing).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct PendingPermissionInfo {
+        pub request_id: u64,
+        pub agent_name: String,
+        pub resource_type: String,
+        pub resource_path: String,
+        pub justification: Option<String>,
+        pub risk_level: String,
+        pub elapsed_secs: u64,
     }
 
     fn default_grant_type() -> String {

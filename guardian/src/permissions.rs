@@ -165,11 +165,65 @@ impl RiskLevel {
     pub fn requires_type_confirm(&self) -> bool {
         matches!(self, RiskLevel::Critical)
     }
+
+    /// Permission request timeout based on risk level.
+    pub fn timeout_secs(&self, config: Option<&crate::config::RiskTimeoutConfig>) -> u64 {
+        match config {
+            Some(c) => match self {
+                RiskLevel::Low => c.low,
+                RiskLevel::Medium => c.medium,
+                RiskLevel::High => c.high,
+                RiskLevel::Critical => c.critical,
+            },
+            None => match self {
+                RiskLevel::Low => 60,
+                RiskLevel::Medium => 120,
+                RiskLevel::High => 180,
+                RiskLevel::Critical => 300,
+            },
+        }
+    }
 }
 
 impl std::fmt::Display for RiskLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// Tracks cumulative grant durations per agent per resource within a 24-hour window.
+#[derive(Debug, Clone)]
+pub struct GrantAccumulator {
+    /// Map of (agent_name, resource_path) -> Vec<(grant_time, duration_secs)>
+    grants: HashMap<(String, String), Vec<(Instant, u64)>>,
+}
+
+impl GrantAccumulator {
+    pub fn new() -> Self {
+        Self { grants: HashMap::new() }
+    }
+
+    /// Record a grant and return the total accumulated seconds in the past 24 hours.
+    pub fn record_and_check(&mut self, agent_name: &str, resource_path: &str, duration_secs: u64) -> u64 {
+        let key = (agent_name.to_string(), resource_path.to_string());
+        let entries = self.grants.entry(key).or_default();
+        let now = Instant::now();
+        // Prune entries older than 24 hours
+        entries.retain(|(t, _)| now.duration_since(*t).as_secs() < 86400);
+        entries.push((now, duration_secs));
+        entries.iter().map(|(_, d)| *d).sum()
+    }
+
+    /// Get total accumulated grant seconds for an agent+resource in the past 24h.
+    pub fn total_secs(&mut self, agent_name: &str, resource_path: &str) -> u64 {
+        let key = (agent_name.to_string(), resource_path.to_string());
+        let now = Instant::now();
+        if let Some(entries) = self.grants.get_mut(&key) {
+            entries.retain(|(t, _)| now.duration_since(*t).as_secs() < 86400);
+            entries.iter().map(|(_, d)| *d).sum()
+        } else {
+            0
+        }
     }
 }
 
@@ -323,50 +377,121 @@ pub fn check_auto_approve(config: &PermissionsConfig, resource_path: &str) -> Op
 // Justification Analysis
 // =============================================================================
 
-/// Suspicious patterns in justification text.
-const SUSPICIOUS_PATTERNS: &[(&str, &str)] = &[
-    ("urgent", "URGENCY"),
-    ("immediately", "URGENCY"),
-    ("emergency", "URGENCY"),
-    ("asap", "URGENCY"),
-    ("disable security", "SECURITY_BYPASS"),
-    ("bypass", "SECURITY_BYPASS"),
-    ("override", "SECURITY_BYPASS"),
-    ("skip check", "SECURITY_BYPASS"),
-    ("trust me", "REASSURANCE"),
-    ("don't worry", "REASSURANCE"),
-    ("it's safe", "REASSURANCE"),
-    ("it's fine", "REASSURANCE"),
-    ("it's harmless", "REASSURANCE"),
-    ("admin told", "AUTHORITY_CLAIM"),
-    ("supervisor", "AUTHORITY_CLAIM"),
-    ("authorized by", "AUTHORITY_CLAIM"),
-    ("ssh key", "SENSITIVE_MENTION"),
-    ("password", "SENSITIVE_MENTION"),
-    ("credential", "SENSITIVE_MENTION"),
-    ("secret", "SENSITIVE_MENTION"),
-    ("token", "SENSITIVE_MENTION"),
-    ("api key", "SENSITIVE_MENTION"),
+/// Suspicious patterns in justification text: (pattern, category, weight).
+const SUSPICIOUS_PATTERNS: &[(&str, &str, u32)] = &[
+    ("urgent", "URGENCY", 3),
+    ("immediately", "URGENCY", 3),
+    ("emergency", "URGENCY", 4),
+    ("asap", "URGENCY", 2),
+    ("disable security", "SECURITY_BYPASS", 5),
+    ("bypass", "SECURITY_BYPASS", 4),
+    ("override", "SECURITY_BYPASS", 3),
+    ("skip check", "SECURITY_BYPASS", 4),
+    ("trust me", "REASSURANCE", 3),
+    ("don't worry", "REASSURANCE", 2),
+    ("it's safe", "REASSURANCE", 3),
+    ("it's fine", "REASSURANCE", 2),
+    ("it's harmless", "REASSURANCE", 3),
+    ("admin told", "AUTHORITY_CLAIM", 4),
+    ("supervisor", "AUTHORITY_CLAIM", 3),
+    ("authorized by", "AUTHORITY_CLAIM", 4),
+    ("ssh key", "SENSITIVE_MENTION", 2),
+    ("password", "SENSITIVE_MENTION", 2),
+    ("credential", "SENSITIVE_MENTION", 2),
+    ("secret", "SENSITIVE_MENTION", 2),
+    ("token", "SENSITIVE_MENTION", 1),
+    ("api key", "SENSITIVE_MENTION", 2),
 ];
 
 /// Analyze justification text for suspicious patterns.
-/// Returns list of (pattern_type, matched_text) tuples.
-pub fn analyze_justification(justification: &str) -> Vec<(String, String)> {
+/// Returns list of (pattern_type, matched_text) tuples and a total suspicion score.
+pub fn analyze_justification(justification: &str) -> (Vec<(String, String)>, u32) {
     let lower = justification.to_lowercase();
     let mut findings = Vec::new();
+    let mut total_score: u32 = 0;
 
-    for &(pattern, category) in SUSPICIOUS_PATTERNS {
+    for &(pattern, category, weight) in SUSPICIOUS_PATTERNS {
         if lower.contains(pattern) {
             findings.push((category.to_string(), pattern.to_string()));
+            total_score += weight;
         }
     }
 
-    findings
+    (findings, total_score)
 }
 
-/// Check if justification findings should bump risk level.
-pub fn justification_risk_bump(findings: &[(String, String)]) -> bool {
-    !findings.is_empty()
+/// Returns the number of risk tier bumps based on justification score.
+/// Score >= 8 -> +2 tiers, score >= 3 -> +1 tier, else 0.
+pub fn justification_risk_bump(findings: &[(String, String)], score: u32) -> u32 {
+    if findings.is_empty() {
+        return 0;
+    }
+    if score >= 8 {
+        2
+    } else if score >= 3 {
+        1
+    } else {
+        0
+    }
+}
+
+// =============================================================================
+// Anomaly Detection
+// =============================================================================
+
+/// Anomaly detection for approval patterns.
+/// Queries SQLite for rubber-stamping, persistence, and flood patterns.
+pub struct AnomalyDetector;
+
+impl AnomalyDetector {
+    pub fn new() -> Self { Self }
+
+    /// Run anomaly detection checks. Returns a list of findings.
+    pub fn detect_anomalies(&self, db: &crate::dashboard::db::EventDb) -> Vec<String> {
+        let mut findings = Vec::new();
+
+        // Check for rubber-stamping (>90% approval rate in last 24h)
+        match db.approval_rate_24h() {
+            Ok((total, approved)) if total >= 10 => {
+                let rate = approved as f64 / total as f64;
+                if rate > 0.9 {
+                    findings.push(format!(
+                        "Rubber-stamping detected: {:.0}% approval rate ({}/{} requests in 24h)",
+                        rate * 100.0, approved, total
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        // Check for high-volume agents
+        match db.high_volume_agents_24h(20) {
+            Ok(agents) => {
+                for (name, count) in agents {
+                    findings.push(format!(
+                        "High-volume agent '{}': {} permission requests in 24h",
+                        name, count
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        // Check for deny-then-approve patterns (persistence attacks)
+        match db.agents_with_deny_then_approve() {
+            Ok(agents) => {
+                for name in agents {
+                    findings.push(format!(
+                        "Persistence pattern: agent '{}' had denied requests later approved for same resource",
+                        name
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        findings
+    }
 }
 
 // =============================================================================
@@ -391,6 +516,8 @@ mod tests {
             rate_limit_per_hour: 15,
             deny_cooldown_secs: 30,
             max_pending_per_agent: 2,
+            timeouts: None,
+            max_grant_total_secs: 3600,
         }
     }
 
@@ -432,12 +559,14 @@ mod tests {
 
     #[test]
     fn test_justification_analysis() {
-        let findings = analyze_justification("This is urgent, trust me it's safe");
+        let (findings, score) = analyze_justification("This is urgent, trust me it's safe");
         assert!(findings.iter().any(|(cat, _)| cat == "URGENCY"));
         assert!(findings.iter().any(|(cat, _)| cat == "REASSURANCE"));
+        assert!(score >= 3);
 
-        let findings = analyze_justification("Need to read config for deployment");
+        let (findings, score) = analyze_justification("Need to read config for deployment");
         assert!(findings.is_empty());
+        assert_eq!(score, 0);
     }
 
     #[test]

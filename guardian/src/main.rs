@@ -13,7 +13,7 @@ use aya::{
 };
 use bytes::BytesMut;
 use clap::Parser;
-use guardian_common::{ExecEvent, FileAccessEvent, NetworkEvent, MAX_FILENAME_LEN};
+use guardian_common::{ExecEvent, FileAccessEvent, NetworkEvent, EVENT_FLAG_TRUNCATED, MAX_FILENAME_LEN};
 use log::{debug, error, info, warn};
 use std::collections;
 use std::path::PathBuf;
@@ -92,7 +92,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let enforce_mode = config.global.mode == "enforce";
+    let strict_mode = config.global.mode == "strict";
+    let enforce_mode = config.global.mode == "enforce" || strict_mode;
     let rescan_interval = config.global.pid_rescan_interval;
     let socket_path = config.global.socket_path.clone();
 
@@ -176,18 +177,50 @@ async fn main() -> Result<()> {
     load_tracepoint(&mut bpf, "guardian_exit_track")?;
     // Network connection monitoring
     let has_net_connect = load_tracepoint(&mut bpf, "guardian_net_connect").is_ok();
+    // Phase 8: execveat tracepoint (memfd_create + execveat bypass)
+    let has_execveat = load_tracepoint(&mut bpf, "guardian_execveat_monitor").is_ok();
+    // Phase 8: Inode enforcement tracepoints (rename/unlink/hardlink)
+    let has_rename = load_tracepoint(&mut bpf, "guardian_rename_monitor").is_ok();
+    let has_unlink = load_tracepoint(&mut bpf, "guardian_unlink_monitor").is_ok();
+    let has_link = load_tracepoint(&mut bpf, "guardian_link_monitor").is_ok();
+
     if enforce_mode {
         if let Err(e) = load_lsm(&mut bpf, "guardian_enforce_file_open", "file_open") {
+            if strict_mode {
+                anyhow::bail!("Strict mode: failed to load LSM file_open: {}", e);
+            }
             warn!(
                 "Failed to load LSM file_open: {}. Falling back to monitor-only mode.",
                 e
             );
         }
         if let Err(e) = load_lsm(&mut bpf, "guardian_enforce_exec", "bprm_check_security") {
+            if strict_mode {
+                anyhow::bail!("Strict mode: failed to load LSM bprm_check_security: {}", e);
+            }
             warn!(
                 "Failed to load LSM bprm_check_security: {}. Exec enforcement unavailable.",
                 e
             );
+        }
+        // Phase 8: Inode LSM hooks for rename/unlink/hardlink enforcement
+        if let Err(e) = load_lsm(&mut bpf, "guardian_enforce_rename", "inode_rename") {
+            if strict_mode {
+                anyhow::bail!("Strict mode: failed to load LSM inode_rename: {}", e);
+            }
+            warn!("Failed to load LSM inode_rename: {}. Rename enforcement unavailable.", e);
+        }
+        if let Err(e) = load_lsm(&mut bpf, "guardian_enforce_unlink", "inode_unlink") {
+            if strict_mode {
+                anyhow::bail!("Strict mode: failed to load LSM inode_unlink: {}", e);
+            }
+            warn!("Failed to load LSM inode_unlink: {}. Unlink enforcement unavailable.", e);
+        }
+        if let Err(e) = load_lsm(&mut bpf, "guardian_enforce_link", "inode_link") {
+            if strict_mode {
+                anyhow::bail!("Strict mode: failed to load LSM inode_link: {}", e);
+            }
+            warn!("Failed to load LSM inode_link: {}. Hardlink enforcement unavailable.", e);
         }
     }
     info!("All eBPF programs loaded into kernel");
@@ -218,6 +251,27 @@ async fn main() -> Result<()> {
             info!("Exec enforcement maps populated");
         }
     }
+
+    // 4c2: Phase 8 — Dynamic linker detection map
+    if let Err(e) = populate_dynamic_linkers(&mut bpf) {
+        warn!("Failed to populate dynamic linkers map: {}", e);
+    } else {
+        info!("Dynamic linker detection map populated");
+    }
+
+    // 4c3: Phase 8 — Take inode enforcement pending maps (rename/unlink/link)
+    // These just need to be taken so aya owns them.
+    for map_name in ["PENDING_RENAME_DENY", "PENDING_UNLINK_DENY", "PENDING_LINK_DENY"] {
+        if let Some(map) = bpf.take_map(map_name) {
+            let _: HashMap<MapData, u64, u8> = HashMap::try_from(map)
+                .unwrap_or_else(|e| panic!("Failed to take {}: {}", map_name, e));
+        }
+    }
+
+    // 4c4: Phase 8 — Take fail-closed cgroups map
+    let fail_closed_map: Option<HashMap<MapData, u64, u8>> =
+        bpf.take_map("FAIL_CLOSED_CGROUPS")
+            .and_then(|m| HashMap::try_from(m).ok());
 
     // 4d: Cgroup maps (Phase 3 — taken for dynamic updates via IPC)
     let cgroup_maps = take_cgroup_maps(&mut bpf)?;
@@ -271,10 +325,41 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Phase 8: execveat tracepoint
+    if has_execveat {
+        match attach_tracepoint(&mut bpf, "guardian_execveat_monitor", "syscalls", "sys_enter_execveat") {
+            Ok(()) => info!("Attached: syscalls/sys_enter_execveat (execveat/memfd monitoring)"),
+            Err(e) => warn!("execveat tracepoint not available: {}", e),
+        }
+    }
+
+    // Phase 8: Inode enforcement tracepoints
+    if has_rename {
+        match attach_tracepoint(&mut bpf, "guardian_rename_monitor", "syscalls", "sys_enter_renameat2") {
+            Ok(()) => info!("Attached: syscalls/sys_enter_renameat2 (rename monitoring)"),
+            Err(e) => warn!("Rename tracepoint not available: {}", e),
+        }
+    }
+    if has_unlink {
+        match attach_tracepoint(&mut bpf, "guardian_unlink_monitor", "syscalls", "sys_enter_unlinkat") {
+            Ok(()) => info!("Attached: syscalls/sys_enter_unlinkat (unlink monitoring)"),
+            Err(e) => warn!("Unlink tracepoint not available: {}", e),
+        }
+    }
+    if has_link {
+        match attach_tracepoint(&mut bpf, "guardian_link_monitor", "syscalls", "sys_enter_linkat") {
+            Ok(()) => info!("Attached: syscalls/sys_enter_linkat (hardlink monitoring)"),
+            Err(e) => warn!("Hardlink tracepoint not available: {}", e),
+        }
+    }
+
     if enforce_mode {
         match attach_lsm(&mut bpf, "guardian_enforce_file_open") {
             Ok(()) => info!("Attached: LSM file_open (file enforcement ACTIVE)"),
             Err(e) => {
+                if strict_mode {
+                    anyhow::bail!("Strict mode: failed to attach LSM file_open: {}", e);
+                }
                 warn!(
                     "Failed to attach LSM file_open: {}. File enforcement unavailable. \
                      Ensure CONFIG_BPF_LSM=y and 'bpf' is in the LSM list.",
@@ -285,10 +370,29 @@ async fn main() -> Result<()> {
         match attach_lsm(&mut bpf, "guardian_enforce_exec") {
             Ok(()) => info!("Attached: LSM bprm_check_security (exec enforcement ACTIVE)"),
             Err(e) => {
+                if strict_mode {
+                    anyhow::bail!("Strict mode: failed to attach LSM bprm_check_security: {}", e);
+                }
                 warn!(
                     "Failed to attach LSM bprm_check_security: {}. Exec enforcement unavailable.",
                     e
                 );
+            }
+        }
+        // Phase 8: Inode LSM hooks
+        for (prog, desc) in [
+            ("guardian_enforce_rename", "inode_rename"),
+            ("guardian_enforce_unlink", "inode_unlink"),
+            ("guardian_enforce_link", "inode_link"),
+        ] {
+            match attach_lsm(&mut bpf, prog) {
+                Ok(()) => info!("Attached: LSM {} ({} enforcement ACTIVE)", desc, desc),
+                Err(e) => {
+                    if strict_mode {
+                        anyhow::bail!("Strict mode: failed to attach LSM {}: {}", desc, e);
+                    }
+                    warn!("Failed to attach LSM {}: {}. {} enforcement unavailable.", desc, e, desc);
+                }
             }
         }
     }
@@ -329,6 +433,8 @@ async fn main() -> Result<()> {
         permission_bus: None, // Set below if dashboard is enabled
         rate_limits: collections::HashMap::new(),
         event_db: None, // Set below if dashboard is enabled
+        fail_closed_map,
+        grant_accumulator: permissions::GrantAccumulator::new(),
     }));
 
     // Step 8b: Start Dashboard (Phase 5) with SQLite event storage
@@ -397,6 +503,10 @@ async fn main() -> Result<()> {
             s.event_db = Some(db.clone());
         }
 
+        let auth_token = config
+            .dashboard
+            .as_ref()
+            .and_then(|d| d.auth_token.clone());
         let dash_state = Arc::new(dashboard::DashboardState {
             ipc_state: ipc_state.clone(),
             alert_sender: alert_tx.clone(),
@@ -404,6 +514,7 @@ async fn main() -> Result<()> {
             permission_bus: permission_bus_tx.clone(),
             config_path: args.config.clone(),
             db,
+            auth_token,
         });
         info!("Starting dashboard on http://{}", listen_addr);
         Some(tokio::spawn(dashboard::start(dash_state, listen_addr)))
@@ -472,7 +583,29 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Step 12: Set up SIGHUP handler for config reload
+    // Step 11b: Phase 8 — Spawn hourly anomaly detection task
+    if config.dashboard.as_ref().map(|d| d.enabled).unwrap_or(false) {
+        let anomaly_state = ipc_state.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(3600));
+            let detector = permissions::AnomalyDetector::new();
+            loop {
+                interval.tick().await;
+                let s = anomaly_state.lock().await;
+                if let Some(ref db) = s.event_db {
+                    let findings = detector.detect_anomalies(db);
+                    for finding in &findings {
+                        warn!("[ANOMALY] {}", finding);
+                    }
+                    if !findings.is_empty() {
+                        info!("Anomaly detection: {} finding(s)", findings.len());
+                    }
+                }
+            }
+        });
+    }
+
+    // Step 12: Set up SIGHUP handler for config reload (Phase 8: includes alerting reload)
     let reload_config_path = args.config.clone();
     let reload_ipc_state = ipc_state.clone();
     let sighup_handle = tokio::spawn(async move {
@@ -496,6 +629,13 @@ async fn main() -> Result<()> {
                         new_config.agents.len(),
                         new_config.global.mode
                     );
+                    // Phase 8 Fix 15: Note that alerting outputs would need
+                    // AlertSender wrapped in Arc<RwLock> for full hot-reload.
+                    // For now, config changes (agent policies, permissions, dashboard)
+                    // are reloaded. Alerting output changes still require restart.
+                    if new_config.alerting.is_some() {
+                        info!("Note: alerting output changes require daemon restart");
+                    }
                 }
                 Err(e) => {
                     error!("Config reload failed (keeping previous config): {}", e);
@@ -762,6 +902,16 @@ fn populate_exec_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()>
         }
     }
 
+    // Phase 8 Fix 8: Always deny exec of /memfd: paths (memfd_create attack vector)
+    let memfd_prefix = "/memfd:";
+    let memfd_key = path_to_lpm_key(memfd_prefix.as_bytes());
+    if let Err(e) = exec_deny_prefixes.insert(&memfd_key, 1, 0) {
+        warn!("Failed to add /memfd: exec deny prefix: {}", e);
+    } else {
+        deny_count += 1;
+        info!("Default exec deny: /memfd:* (memfd_create attack prevention)");
+    }
+
     // Store cgroup exec defaults (set dynamically during registration)
     // For now, just take the map. Cgroup exec defaults will be set in IPC register handler.
     let _ = exec_cgroup_default;
@@ -771,6 +921,38 @@ fn populate_exec_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()>
         deny_count, allow_count
     );
 
+    Ok(())
+}
+
+/// Phase 8: Populate the dynamic linker detection map.
+/// Known dynamic linkers: when eBPF sees execve of one of these, it reads argv[1]
+/// to find the real binary being executed.
+fn populate_dynamic_linkers(bpf: &mut Ebpf) -> Result<()> {
+    let mut linkers: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> = HashMap::try_from(
+        bpf.take_map("DYNAMIC_LINKERS")
+            .context("DYNAMIC_LINKERS map not found")?,
+    )?;
+
+    let known_linkers = [
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib/ld-linux.so.2",
+        "/lib/ld-linux-aarch64.so.1",
+        "/usr/lib64/ld-linux-x86-64.so.2",
+        "/usr/lib/ld-linux.so.2",
+        "/usr/lib/ld-linux-aarch64.so.1",
+        "/lib/ld-musl-x86_64.so.1",
+        "/lib/ld-musl-aarch64.so.1",
+    ];
+
+    let mut count = 0;
+    for linker in &known_linkers {
+        let key = path_to_map_key(linker.as_bytes());
+        if linkers.insert(key, 1, 0).is_ok() {
+            count += 1;
+        }
+    }
+
+    info!("Populated {} dynamic linker paths for detection", count);
     Ok(())
 }
 
@@ -1063,6 +1245,14 @@ fn process_file_event(
 
     if raw_filename.is_empty() {
         return;
+    }
+
+    // Phase 8: Log path truncation warnings
+    if event.status_flags & EVENT_FLAG_TRUNCATED != 0 {
+        warn!(
+            "[TRUNCATED] pid={} comm='{}' file='{}' (path exceeded {} bytes, denied by default in enforce mode)",
+            event.tgid, comm, raw_filename, MAX_FILENAME_LEN
+        );
     }
 
     // Normalize path to catch bypass attempts (/proc/self/root, .., etc.)

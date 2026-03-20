@@ -5,6 +5,105 @@
 {% block content %}
 <h2 class="section-title">Agent Management</h2>
 
+<!-- Add New Agent -->
+<div class="card accordion mb-lg" x-data="{ open: false }">
+  <button @click="open = !open" class="accordion-header">
+    <div class="accordion-agent-info">
+      <span class="accordion-agent-name">Add New Agent</span>
+    </div>
+    <svg class="accordion-chevron" :class="open && 'open'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </button>
+  <div x-show="open" x-cloak class="accordion-body">
+    <form hx-post="/api/agents" hx-target="#toast" hx-swap="innerHTML"
+          hx-on::after-request="if(event.detail.successful) setTimeout(function() { window.location.reload(); }, 1500)"
+          x-data="{ identity: 'cgroup', execEnabled: false }">
+
+      <div class="grid-2">
+        <!-- Basic Info -->
+        <div>
+          <h4 class="section-subtitle">Identity</h4>
+          <div class="form-group">
+            <label>Agent Name</label>
+            <input name="name" type="text" placeholder="my-agent" required>
+          </div>
+          <div class="form-group">
+            <label>Identity Method</label>
+            <select name="identity" x-model="identity">
+              <option value="cgroup">cgroup (Tier 1 — recommended)</option>
+              <option value="comm">comm (Tier 2 — limited security)</option>
+            </select>
+          </div>
+          <div class="form-group" x-show="identity === 'comm'">
+            <label>Process Name</label>
+            <input name="process_name" type="text" placeholder="e.g. python3">
+            <span class="text-xs text-muted">Matched against /proc/&lt;pid&gt;/comm</span>
+          </div>
+          <div class="form-group">
+            <label>
+              <input name="watch_children" type="checkbox" checked> Watch child processes
+            </label>
+          </div>
+        </div>
+
+        <!-- File Access Policy -->
+        <div>
+          <h4 class="section-subtitle">File Access Policy</h4>
+          <div class="form-group">
+            <label>Default Action</label>
+            <select name="default_action">
+              <option value="deny" selected>deny</option>
+              <option value="allow">allow</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Allow Rules (one per line)</label>
+            <textarea name="allow_rules" rows="5" class="font-mono" placeholder="/tmp/**&#10;/proc/**&#10;/usr/lib/**"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Deny Rules (one per line)</label>
+            <textarea name="deny_rules" rows="3" class="font-mono" placeholder="/etc/shadow&#10;~/.ssh/**"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Exec Policy (optional) -->
+      <div class="mt-md">
+        <label>
+          <input type="checkbox" x-model="execEnabled"> Enable Exec Policy
+          <input type="hidden" name="exec_enabled" :value="execEnabled ? 'on' : ''">
+        </label>
+      </div>
+      <div x-show="execEnabled" x-cloak class="grid-2 mt-md">
+        <div>
+          <div class="form-group">
+            <label>Exec Default</label>
+            <select name="exec_default">
+              <option value="allow">allow</option>
+              <option value="deny">deny</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Exec Allow (one per line)</label>
+            <textarea name="exec_allow" rows="3" class="font-mono" placeholder="/usr/bin/**&#10;/bin/**"></textarea>
+          </div>
+        </div>
+        <div>
+          <div class="form-group">
+            <label>Exec Deny (one per line)</label>
+            <textarea name="exec_deny" rows="3" class="font-mono" placeholder="/usr/bin/curl&#10;/usr/bin/wget"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-end mt-md">
+        <button type="submit" class="btn btn-primary">Create Agent</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- Configured Agents -->
 <div class="mb-lg">
   <h3 class="section-subtitle">Configured Agents</h3>
@@ -15,9 +114,11 @@
           <tr>
             <th>Name</th>
             <th>Identity</th>
+            <th>Security</th>
+            <th>Status</th>
             <th>Default</th>
-            <th>Allow Rules</th>
-            <th>Deny Rules</th>
+            <th>Allow</th>
+            <th>Deny</th>
             <th>Exec Policy</th>
           </tr>
         </thead>
@@ -31,6 +132,24 @@
               </span>
             </td>
             <td>
+              {% if agent.security_tier == "Tier 1" %}
+              <span class="badge badge-success" title="Hardened: Landlock + seccomp + eBPF + cgroup">{{ agent.security_tier }}</span>
+              {% else %}
+              <span class="badge badge-warning" title="Limited: eBPF monitoring only. No Landlock, no seccomp. Use cgroup identity for production.">{{ agent.security_tier }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if agent.identity == "cgroup" %}
+                {% if agent.is_running %}
+                <span class="badge badge-success">Running</span>
+                {% else %}
+                <span class="badge badge-warning" title="Not launched with guardian-launch. Use: guardian-launch --name {{ agent.name }} -- &lt;command&gt;">Not Launched</span>
+                {% endif %}
+              {% else %}
+              <span class="badge badge-gray" title="Comm-based agents are detected via /proc scanning">Passive</span>
+              {% endif %}
+            </td>
+            <td>
               <span class="badge {% if agent.default_action == "deny" %}badge-critical{% else %}badge-success{% endif %}">
                 {{ agent.default_action }}
               </span>
@@ -41,7 +160,7 @@
           </tr>
           {% endfor %}
           {% if config_agents.is_empty() %}
-          <tr><td colspan="6" class="empty-state">No agents configured</td></tr>
+          <tr><td colspan="8" class="empty-state">No agents configured</td></tr>
           {% endif %}
         </tbody>
       </table>

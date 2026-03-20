@@ -77,5 +77,6 @@ allow = [
     "/bin/**",
 ]
 deny = [
+    "/usr/bin/grep",
 ]
 

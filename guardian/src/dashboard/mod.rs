@@ -117,6 +117,7 @@ pub fn router(state: Arc<DashboardState>) -> Router {
         .route("/api/permissions/resolved", get(routes::api::list_resolved_permissions))
         .route("/api/permissions/audit", get(routes::api::query_permission_audit))
         // htmx API endpoints
+        .route("/api/agents", post(routes::api::create_agent))
         .route("/api/agents/{name}/stop", post(routes::api::stop_agent))
         .route("/api/agents/{name}/grant", post(routes::api::grant_access))
         .route("/api/policy/{agent_name}", put(routes::api::update_policy).post(routes::api::update_policy))

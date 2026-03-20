@@ -126,6 +126,128 @@ pub async fn stop_agent(
     ))
 }
 
+// =============================================================================
+// Create Agent
+// =============================================================================
+
+#[derive(Deserialize)]
+pub struct CreateAgentForm {
+    pub name: String,
+    pub identity: String,
+    pub process_name: Option<String>,
+    pub default_action: String,
+    pub allow_rules: String,
+    pub deny_rules: String,
+    pub exec_enabled: Option<String>,
+    pub exec_default: Option<String>,
+    pub exec_allow: Option<String>,
+    pub exec_deny: Option<String>,
+    pub watch_children: Option<String>,
+}
+
+pub async fn create_agent(
+    State(state): State<Arc<DashboardState>>,
+    Form(form): Form<CreateAgentForm>,
+) -> Html<String> {
+    // Validate name
+    let name = form.name.trim().to_string();
+    if name.is_empty() {
+        return Html(r#"<div class="toast-error">Agent name is required.</div>"#.to_string());
+    }
+    if name.contains('/') || name.contains('\0') {
+        return Html(r#"<div class="toast-error">Agent name must not contain '/' or null bytes.</div>"#.to_string());
+    }
+    if name.len() > 64 {
+        return Html(r#"<div class="toast-error">Agent name must be 64 characters or fewer.</div>"#.to_string());
+    }
+
+    let mut ipc = state.ipc_state.lock().await;
+
+    // Check for duplicate name
+    if ipc.config.agents.iter().any(|a| a.name == name) {
+        return Html(format!(
+            r#"<div class="toast-error">Agent '{}' already exists.</div>"#, name
+        ));
+    }
+
+    // Validate comm identity requires process_name
+    let identity = form.identity.trim().to_string();
+    let process_name = form.process_name.as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if identity == "comm" && process_name.is_none() {
+        return Html(r#"<div class="toast-error">Comm-based agents require a process name.</div>"#.to_string());
+    }
+
+    // Build file access policy
+    let file_access = config::FileAccessPolicy {
+        default: form.default_action,
+        allow: form.allow_rules.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        deny: form.deny_rules.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+    };
+
+    // Build exec policy if enabled
+    let exec_policy = if form.exec_enabled.as_deref().is_some_and(|v| !v.is_empty()) {
+        Some(config::ExecPolicy {
+            default: form.exec_default.unwrap_or_else(|| "allow".to_string()),
+            allow: form.exec_allow.unwrap_or_default().lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect(),
+            deny: form.exec_deny.unwrap_or_default().lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect(),
+        })
+    } else {
+        None
+    };
+
+    let agent_config = config::AgentConfig {
+        name: name.clone(),
+        identity: Some(identity.clone()),
+        process_name,
+        file_access,
+        exec_policy,
+        network_policy: None,
+        watch_children: form.watch_children.is_some(),
+        resources: None,
+        fail_closed: None,
+    };
+
+    ipc.config.agents.push(agent_config);
+
+    // Write to disk while holding the lock
+    let config_path = state.config_path.clone();
+    if let Err(e) = write_config_toml(&config_path, &ipc.config) {
+        // Roll back the in-memory change
+        ipc.config.agents.retain(|a| a.name != name);
+        return Html(format!(
+            r#"<div class="toast-error">Failed to write config: {}</div>"#, e
+        ));
+    }
+
+    info!("Dashboard: created agent '{}' (identity={})", name, identity);
+    drop(ipc);
+
+    let note = if identity == "comm" {
+        " Comm-based agents are detected on next /proc rescan. For full enforcement, restart the daemon."
+    } else {
+        " Launch with: guardian-launch --name &lt;name&gt; -- &lt;command&gt;"
+    };
+
+    Html(format!(
+        r#"<div class="toast-success">Agent '{}' created.{}</div>"#,
+        name, note
+    ))
+}
+
 #[derive(Deserialize)]
 pub struct GrantForm {
     pub grant_type: String,
@@ -288,22 +410,19 @@ pub async fn update_policy(
 
     info!("Dashboard: updated policy for agent '{}'", agent_name);
 
-    // Write config to disk
+    // Write config to disk while holding the lock to prevent concurrent
+    // policy updates from overwriting each other (read-modify-write race).
     let config_path = state.config_path.clone();
-    let config = ipc.config.clone();
-    drop(ipc);
-
-    if let Err(e) = write_config_toml(&config_path, &config) {
+    if let Err(e) = write_config_toml(&config_path, &ipc.config) {
         return Html(format!(
             r#"<div class="toast-error">Policy updated in memory but failed to write config: {}</div>"#,
             e
         ));
     }
 
-    // Reload config from disk into memory to ensure consistency and apply changes
+    // Reload config from disk to ensure round-trip consistency
     match config::load_config(&config_path) {
         Ok(new_config) => {
-            let mut ipc = state.ipc_state.lock().await;
             ipc.config = new_config;
             info!("Dashboard: config reloaded after policy update for '{}'", agent_name);
         }
@@ -314,6 +433,8 @@ pub async fn update_policy(
             ));
         }
     }
+
+    drop(ipc);
 
     Html(format!(
         r#"<div class="toast-success">Policy for '{}' saved and applied.</div>"#,

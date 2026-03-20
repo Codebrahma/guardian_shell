@@ -37,6 +37,10 @@ struct AgentInfo {
     allow_count: usize,
     deny_count: usize,
     has_exec_policy: bool,
+    /// Whether a cgroup agent is actively running (registered via guardian-launch).
+    is_running: bool,
+    /// "Tier 1" for cgroup (hardened), "Tier 2" for comm (limited).
+    security_tier: String,
 }
 
 #[allow(dead_code)]
@@ -65,6 +69,9 @@ struct PolicyAgentInfo {
     exec_default: Option<String>,
     exec_allow: Vec<String>,
     exec_deny: Vec<String>,
+    net_default: Option<String>,
+    net_allow_ports: Vec<u16>,
+    net_deny_ports: Vec<u16>,
 }
 
 #[derive(Template)]
@@ -178,13 +185,19 @@ pub async fn agents(
         .config
         .agents
         .iter()
-        .map(|a| AgentInfo {
-            name: a.name.clone(),
-            identity: a.effective_identity().to_string(),
-            default_action: a.file_access.default.clone(),
-            allow_count: a.file_access.allow.len(),
-            deny_count: a.file_access.deny.len(),
-            has_exec_policy: a.exec_policy.is_some(),
+        .map(|a| {
+            let ident = a.effective_identity();
+            let is_cgroup = ident == "cgroup";
+            AgentInfo {
+                name: a.name.clone(),
+                identity: ident.to_string(),
+                default_action: a.file_access.default.clone(),
+                allow_count: a.file_access.allow.len(),
+                deny_count: a.file_access.deny.len(),
+                has_exec_policy: a.exec_policy.is_some(),
+                is_running: if is_cgroup { ipc.agents.contains_key(&a.name) } else { false },
+                security_tier: if is_cgroup { "Tier 1".to_string() } else { "Tier 2".to_string() },
+            }
         })
         .collect();
 

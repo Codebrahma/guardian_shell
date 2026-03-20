@@ -70,7 +70,7 @@ deny = [
 ]
 
 [agents.exec_policy]
-default = "deny"
+default = "allow"
 allow = [
     "/usr/bin/**",
     "/usr/local/bin/**",
@@ -79,4 +79,81 @@ allow = [
 deny = [
     "/usr/bin/grep",
 ]
+
+[agents.network_policy]
+default = "allow"
+deny_ports = [8000]
+
+[[agents]]
+name = "claude-cgroup"
+identity = "cgroup"
+watch_children = true
+
+[agents.file_access]
+default = "deny"
+allow = [
+    # Project workspace
+    "/home/suren/codebrahma/**",
+
+    # Home directory (Claude needs dotfiles, configs, cache)
+    "/home/suren/**",
+
+    # Claude binary + node (installed via mise)
+    "/home/suren/.local/**",
+
+    # Temp and runtime
+    "/tmp/**",
+    "/proc/**",
+    "/sys/**",
+    "/dev/**",
+    "/run/**",
+    "/var/tmp/**",
+
+    # Shared libraries (dynamic linker)
+    "/usr/lib/**",
+    "/usr/lib64/**",
+    "/usr/share/**",
+    "/usr/local/**",
+    "/usr/bin/**",
+    "/lib/**",
+    "/lib64/**",
+    "/bin/**",
+
+    # System config
+    "/etc/ld.so.cache",
+    "/etc/ssl/**",
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/hostname",
+    "/etc/passwd",
+    "/etc/nsswitch.conf",
+    "/etc/localtime",
+    "/etc/claude-code/**",
+    "/etc/pki/**",
+    "/etc/crypto-policies/**",
+    "/etc/alternatives/**",
+]
+deny = [
+    "/home/suren/codebrahma/.env",
+    "/etc/shadow",
+    "/etc/gshadow",
+    "/home/suren/.ssh/**",
+    "/home/suren/.aws/**",
+    "/home/suren/.gnupg/**",
+]
+
+[agents.exec_policy]
+default = "allow"
+allow = [
+    "/usr/bin/**",
+    "/usr/local/bin/**",
+    "/bin/**",
+]
+deny = [
+    "/usr/bin/grep",
+]
+
+[agents.network_policy]
+default = "allow"
+deny_ports = [8000]
 

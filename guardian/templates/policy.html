@@ -4,7 +4,81 @@
 
 {% block content %}
 <h2 class="section-title">Policy Editor</h2>
-<p class="section-desc">Edit file access and exec policies per agent. Changes are saved to the config file on disk.</p>
+<p class="section-desc">Edit file access, exec, and network policies per agent. Changes are saved to the config file on disk.</p>
+
+<!-- Help Panel -->
+<div class="card mb-lg" x-data="{ open: false }">
+  <button @click="open = !open" class="accordion-header">
+    <div class="accordion-agent-info">
+      <span class="accordion-agent-name">
+        <svg style="width:16px;height:16px;vertical-align:middle;margin-right:4px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        How Policies Work
+      </span>
+    </div>
+    <svg class="accordion-chevron" :class="open && 'open'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </button>
+  <div x-show="open" x-cloak class="accordion-body">
+    <div class="grid-3">
+      <div class="help-section">
+        <h4 class="help-title">File Access Policy</h4>
+        <p class="help-text">Controls which files the agent can read/write. Deny rules always override allow rules.</p>
+        <div class="help-label">Pattern syntax:</div>
+        <pre class="help-examples">/tmp/**          # Everything under /tmp/
+/etc/hosts       # Exact file match
+/home/user/*.log # Single-level wildcard</pre>
+        <div class="help-label">Example allow list (default: deny):</div>
+        <pre class="help-examples">/tmp/**
+/proc/**
+/usr/lib/**
+/home/user/project/**</pre>
+        <div class="help-label">Example deny list:</div>
+        <pre class="help-examples">/etc/shadow
+/home/user/.ssh/**
+/home/user/.aws/**
+/home/user/.gnupg/**</pre>
+      </div>
+      <div class="help-section">
+        <h4 class="help-title">Exec Policy</h4>
+        <p class="help-text">Controls which commands the agent can execute. Uses the same pattern syntax as file access.</p>
+        <div class="help-label">Allowlist approach (default: deny):</div>
+        <pre class="help-examples"># Only allow specific tools
+/usr/bin/git
+/usr/bin/node
+/usr/bin/python3
+/bin/bash</pre>
+        <div class="help-label">Blocklist approach (default: allow):</div>
+        <pre class="help-examples"># Block dangerous commands
+/usr/bin/curl
+/usr/bin/wget
+/usr/bin/rm
+/usr/bin/ssh
+/usr/bin/scp</pre>
+        <div class="help-label">Tip:</div>
+        <p class="help-text">With <code class="inline">default: deny</code>, allow the agent's own binary, a shell, and all needed tools.</p>
+      </div>
+      <div class="help-section">
+        <h4 class="help-title">Network Policy</h4>
+        <p class="help-text">Controls outbound TCP connections by port number. Enforced by eBPF LSM <code class="inline">socket_connect</code> hook + Landlock (kernel 6.7+).</p>
+        <div class="help-label">Common ports:</div>
+        <pre class="help-examples">80    # HTTP
+443   # HTTPS
+22    # SSH
+5432  # PostgreSQL
+3306  # MySQL
+6379  # Redis
+8080  # Dev server</pre>
+        <div class="help-label">Example (default: deny, allow specific):</div>
+        <pre class="help-examples">Allow: 80, 443
+# Agent can only make HTTP/HTTPS requests</pre>
+        <div class="help-label">Example (default: allow, block specific):</div>
+        <pre class="help-examples">Deny: 22, 25, 3306, 5432
+# Block SSH, SMTP, database ports</pre>
+      </div>
+    </div>
+  </div>
+</div>
 
 {% for agent in agents %}
 <div class="card accordion" x-data="{ open: {% if loop.first %}true{% else %}false{% endif %} }">
@@ -13,6 +87,9 @@
       <span class="accordion-agent-name">{{ agent.name }}</span>
       <span class="badge {% if agent.identity == "cgroup" %}badge-purple{% else %}badge-gray{% endif %}">{{ agent.identity }}</span>
       <span class="badge {% if agent.default_action == "deny" %}badge-critical{% else %}badge-success{% endif %}">{{ agent.default_action }}</span>
+      {% if agent.net_default.is_some() %}
+      <span class="badge badge-info">net</span>
+      {% endif %}
     </div>
     <svg class="accordion-chevron" :class="open && 'open'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
@@ -34,13 +111,13 @@
             </select>
           </div>
           <div class="form-group">
-            <label>Allow Rules (one per line)</label>
-            <textarea name="allow_rules" rows="8" class="font-mono">{% for rule in agent.allow_rules %}{{ rule }}
+            <label>Allow Rules <span class="help-hint" title="One path per line. Supports ** (recursive) and * (single-level) wildcards.">?</span></label>
+            <textarea name="allow_rules" rows="8" class="font-mono" placeholder="/tmp/**&#10;/proc/**&#10;/usr/lib/**">{% for rule in agent.allow_rules %}{{ rule }}
 {% endfor %}</textarea>
           </div>
           <div class="form-group">
-            <label>Deny Rules (one per line)</label>
-            <textarea name="deny_rules" rows="6" class="font-mono">{% for rule in agent.deny_rules %}{{ rule }}
+            <label>Deny Rules <span class="help-hint" title="Deny always overrides allow. Put sensitive paths here.">?</span></label>
+            <textarea name="deny_rules" rows="6" class="font-mono" placeholder="/etc/shadow&#10;~/.ssh/**">{% for rule in agent.deny_rules %}{{ rule }}
 {% endfor %}</textarea>
           </div>
         </div>
@@ -57,19 +134,52 @@
             </select>
           </div>
           <div class="form-group">
-            <label>Allow Rules (one per line)</label>
-            <textarea name="exec_allow" rows="6" class="font-mono">{% for rule in agent.exec_allow %}{{ rule }}
+            <label>Allow Rules <span class="help-hint" title="Binary paths to allow. e.g. /usr/bin/git, /bin/bash, /usr/bin/**">?</span></label>
+            <textarea name="exec_allow" rows="6" class="font-mono" placeholder="/usr/bin/git&#10;/usr/bin/node&#10;/bin/bash">{% for rule in agent.exec_allow %}{{ rule }}
 {% endfor %}</textarea>
           </div>
           <div class="form-group">
-            <label>Deny Rules (one per line)</label>
-            <textarea name="exec_deny" rows="4" class="font-mono">{% for rule in agent.exec_deny %}{{ rule }}
+            <label>Deny Rules <span class="help-hint" title="Binary paths to block. Deny overrides allow.">?</span></label>
+            <textarea name="exec_deny" rows="4" class="font-mono" placeholder="/usr/bin/curl&#10;/usr/bin/wget">{% for rule in agent.exec_deny %}{{ rule }}
 {% endfor %}</textarea>
           </div>
           {% else %}
           <p class="text-muted mt-lg text-sm">No exec policy configured for this agent. All exec is allowed.</p>
           {% endif %}
         </div>
+      </div>
+
+      <!-- Network Policy -->
+      <div class="mt-md">
+        <h4 class="section-subtitle">Network Policy <span class="help-hint" title="Controls outbound TCP connections by port. Enforced by eBPF + Landlock (kernel 6.7+).">?</span></h4>
+        {% if agent.net_default.is_some() %}
+        <div class="grid-3">
+          <div class="form-group">
+            <label>Default Action</label>
+            <select name="net_default">
+              <option value="deny" {% if agent.net_default.as_deref() == Some("deny") %}selected{% endif %}>deny</option>
+              <option value="allow" {% if agent.net_default.as_deref() == Some("allow") %}selected{% endif %}>allow</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Allow Ports <span class="help-hint" title="Comma or space separated port numbers. e.g. 80, 443, 8080">?</span></label>
+            <input name="net_allow_ports" type="text" class="font-mono"
+                   value="{{ agent.net_allow_ports|join(", ") }}"
+                   placeholder="80, 443, 8080">
+          </div>
+          <div class="form-group">
+            <label>Deny Ports <span class="help-hint" title="Ports to block. Deny overrides allow. e.g. 22, 25, 3306">?</span></label>
+            <input name="net_deny_ports" type="text" class="font-mono"
+                   value="{{ agent.net_deny_ports|join(", ") }}"
+                   placeholder="22, 25, 3306">
+          </div>
+        </div>
+        {% else %}
+        <p class="text-muted text-sm">No network policy configured. All outbound connections allowed.
+          <span class="text-xs" style="color: var(--accent);">To enable, add <code class="inline">[agents.network_policy]</code> to config.toml or recreate this agent with network policy.</span>
+        </p>
+        <input type="hidden" name="net_default" value="">
+        {% endif %}
       </div>
 
       <div class="flex justify-end mt-md">
@@ -82,7 +192,7 @@
 
 {% if agents.is_empty() %}
 <div class="card card-padded">
-  <p class="empty-state">No agents configured. Add agents to your config.toml file.</p>
+  <p class="empty-state">No agents configured. Add agents from the <a href="/agents" style="color: var(--accent);">Agents</a> page.</p>
 </div>
 {% endif %}
 {% endblock %}

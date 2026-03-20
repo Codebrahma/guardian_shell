@@ -9,7 +9,7 @@
 <div class="card accordion mb-lg" x-data="{ open: false }">
   <button @click="open = !open" class="accordion-header">
     <div class="accordion-agent-info">
-      <span class="accordion-agent-name">Add New Agent</span>
+      <span class="accordion-agent-name">+ Add New Agent</span>
     </div>
     <svg class="accordion-chevron" :class="open && 'open'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
@@ -18,18 +18,19 @@
   <div x-show="open" x-cloak class="accordion-body">
     <form hx-post="/api/agents" hx-target="#toast" hx-swap="innerHTML"
           hx-on::after-request="if(event.detail.successful) setTimeout(function() { window.location.reload(); }, 1500)"
-          x-data="{ identity: 'cgroup', execEnabled: false }">
+          x-data="{ identity: 'cgroup', execEnabled: false, netEnabled: false, homePath: '' }"
+          x-init="homePath = ''">
 
       <div class="grid-2">
         <!-- Basic Info -->
         <div>
           <h4 class="section-subtitle">Identity</h4>
           <div class="form-group">
-            <label>Agent Name</label>
+            <label>Agent Name <span class="help-hint" title="Unique name to identify this agent. Used in logs and policy references.">?</span></label>
             <input name="name" type="text" placeholder="my-agent" required>
           </div>
           <div class="form-group">
-            <label>Identity Method</label>
+            <label>Identity Method <span class="help-hint" title="Cgroup (Tier 1): Hardened with Landlock+seccomp+eBPF. Launch with guardian-launch.&#10;Comm (Tier 2): eBPF monitoring only. Detected by process name.">?</span></label>
             <select name="identity" x-model="identity">
               <option value="cgroup">cgroup (Tier 1 — recommended)</option>
               <option value="comm">comm (Tier 2 — limited security)</option>
@@ -37,8 +38,13 @@
           </div>
           <div class="form-group" x-show="identity === 'comm'">
             <label>Process Name</label>
-            <input name="process_name" type="text" placeholder="e.g. python3">
-            <span class="text-xs text-muted">Matched against /proc/&lt;pid&gt;/comm</span>
+            <input name="process_name" type="text" placeholder="e.g. python3, node, aider">
+            <span class="text-xs text-muted">Matched against /proc/&lt;pid&gt;/comm (max 16 chars)</span>
+          </div>
+          <div class="form-group">
+            <label>Home / Project Path <span class="help-hint" title="The agent's working directory. Added to allow rules so it can read/write project files.">?</span></label>
+            <input type="text" x-model="homePath" placeholder="/home/user/project" required>
+            <span class="text-xs text-muted">Agent will have read/write access to this path</span>
           </div>
           <div class="form-group">
             <label>
@@ -49,21 +55,23 @@
 
         <!-- File Access Policy -->
         <div>
-          <h4 class="section-subtitle">File Access Policy</h4>
+          <h4 class="section-subtitle">File Access Policy <span class="help-hint" title="Controls file read/write. Deny rules always override allow rules.&#10;&#10;Patterns: /tmp/** (recursive), /etc/hosts (exact), *.log (wildcard)">?</span></h4>
           <div class="form-group">
             <label>Default Action</label>
             <select name="default_action">
-              <option value="deny" selected>deny</option>
+              <option value="deny" selected>deny (recommended)</option>
               <option value="allow">allow</option>
             </select>
           </div>
           <div class="form-group">
             <label>Allow Rules (one per line)</label>
-            <textarea name="allow_rules" rows="5" class="font-mono" placeholder="/tmp/**&#10;/proc/**&#10;/usr/lib/**"></textarea>
+            <textarea name="allow_rules" rows="16" class="font-mono"
+                      :value="(homePath ? homePath.replace(/\/$/, '') + '/**\n' : '') + '{{ user_home }}/**\n/tmp/**\n/proc/**\n/sys/**\n/dev/**\n/run/**\n/var/tmp/**\n/usr/lib/**\n/usr/lib64/**\n/usr/share/**\n/usr/local/**\n/usr/bin/**\n/lib/**\n/lib64/**\n/bin/**\n/etc/ld.so.cache\n/etc/ssl/**\n/etc/resolv.conf\n/etc/hosts\n/etc/hostname\n/etc/passwd\n/etc/nsswitch.conf\n/etc/localtime'"></textarea>
           </div>
           <div class="form-group">
             <label>Deny Rules (one per line)</label>
-            <textarea name="deny_rules" rows="3" class="font-mono" placeholder="/etc/shadow&#10;~/.ssh/**"></textarea>
+            <textarea name="deny_rules" rows="5" class="font-mono"
+                      :value="(homePath ? homePath.replace(/\/$/, '') + '/.env\n' : '') + '/etc/shadow\n/etc/gshadow\n{{ user_home }}/.ssh/**\n{{ user_home }}/.aws/**\n{{ user_home }}/.gnupg/**'"></textarea>
           </div>
         </div>
       </div>
@@ -72,6 +80,7 @@
       <div class="mt-md">
         <label>
           <input type="checkbox" x-model="execEnabled"> Enable Exec Policy
+          <span class="help-hint" title="Controls which binaries the agent can execute.&#10;&#10;Allowlist: default=deny + allow specific commands&#10;Blocklist: default=allow + deny dangerous commands">?</span>
           <input type="hidden" name="exec_enabled" :value="execEnabled ? 'on' : ''">
         </label>
       </div>
@@ -80,20 +89,48 @@
           <div class="form-group">
             <label>Exec Default</label>
             <select name="exec_default">
-              <option value="allow">allow</option>
-              <option value="deny">deny</option>
+              <option value="allow">allow (blocklist approach)</option>
+              <option value="deny">deny (allowlist approach)</option>
             </select>
           </div>
           <div class="form-group">
             <label>Exec Allow (one per line)</label>
-            <textarea name="exec_allow" rows="3" class="font-mono" placeholder="/usr/bin/**&#10;/bin/**"></textarea>
+            <textarea name="exec_allow" rows="4" class="font-mono">/usr/bin/**
+/usr/local/bin/**
+/bin/**</textarea>
           </div>
         </div>
         <div>
           <div class="form-group">
             <label>Exec Deny (one per line)</label>
-            <textarea name="exec_deny" rows="3" class="font-mono" placeholder="/usr/bin/curl&#10;/usr/bin/wget"></textarea>
+            <textarea name="exec_deny" rows="4" class="font-mono" placeholder="/usr/bin/curl&#10;/usr/bin/wget&#10;/usr/bin/ssh&#10;/usr/bin/nc"></textarea>
           </div>
+        </div>
+      </div>
+
+      <!-- Network Policy (optional) -->
+      <div class="mt-md">
+        <label>
+          <input type="checkbox" x-model="netEnabled"> Enable Network Policy
+          <span class="help-hint" title="Controls outbound TCP connections by port.&#10;Enforced by eBPF LSM socket_connect + Landlock (kernel 6.7+).&#10;&#10;Common ports: 80 (HTTP), 443 (HTTPS), 22 (SSH), 5432 (Postgres)">?</span>
+          <input type="hidden" name="net_enabled" :value="netEnabled ? 'on' : ''">
+        </label>
+      </div>
+      <div x-show="netEnabled" x-cloak class="grid-3 mt-md">
+        <div class="form-group">
+          <label>Net Default</label>
+          <select name="net_default">
+            <option value="allow">allow</option>
+            <option value="deny">deny</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Allow Ports <span class="help-hint" title="Comma or space separated. e.g. 80, 443, 8080">?</span></label>
+          <input name="net_allow_ports" type="text" class="font-mono" placeholder="80, 443">
+        </div>
+        <div class="form-group">
+          <label>Deny Ports <span class="help-hint" title="Comma or space separated. e.g. 22, 25, 3306">?</span></label>
+          <input name="net_deny_ports" type="text" class="font-mono" placeholder="22, 25">
         </div>
       </div>
 
@@ -120,11 +157,12 @@
             <th>Allow</th>
             <th>Deny</th>
             <th>Exec Policy</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
           {% for agent in config_agents %}
-          <tr>
+          <tr id="cfg-agent-{{ agent.name }}">
             <td class="text-primary fw-500">{{ agent.name }}</td>
             <td>
               <span class="badge {% if agent.identity == "cgroup" %}badge-purple{% else %}badge-gray{% endif %}">
@@ -157,10 +195,17 @@
             <td>{{ agent.allow_count }}</td>
             <td>{{ agent.deny_count }}</td>
             <td>{% if agent.has_exec_policy %}<span class="badge badge-info">Yes</span>{% else %}<span class="text-muted">No</span>{% endif %}</td>
+            <td>
+              <button hx-delete="/api/agents/{{ agent.name }}"
+                      hx-target="#toast" hx-swap="innerHTML"
+                      hx-confirm="Delete agent '{{ agent.name }}'? This removes it from the config."
+                      hx-on::after-request="if(event.detail.successful) setTimeout(function() { window.location.reload(); }, 1000)"
+                      class="btn btn-danger btn-sm">Delete</button>
+            </td>
           </tr>
           {% endfor %}
           {% if config_agents.is_empty() %}
-          <tr><td colspan="8" class="empty-state">No agents configured</td></tr>
+          <tr><td colspan="9" class="empty-state">No agents configured</td></tr>
           {% endif %}
         </tbody>
       </table>

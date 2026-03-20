@@ -27,6 +27,7 @@ struct IndexTemplate {
 struct AgentsTemplate {
     config_agents: Vec<AgentInfo>,
     cgroup_agents: Vec<CgroupAgentInfo>,
+    user_home: String,
 }
 
 #[allow(dead_code)]
@@ -219,9 +220,14 @@ pub async fn agents(
         })
         .collect();
 
+    let user_home = std::env::var("HOME")
+        .or_else(|_| std::env::var("SUDO_USER").map(|u| format!("/home/{}", u)))
+        .unwrap_or_else(|_| "/home".to_string());
+
     let tmpl = AgentsTemplate {
         config_agents,
         cgroup_agents,
+        user_home,
     };
 
     Html(tmpl.render().unwrap_or_else(|e| format!("Template error: {}", e)))
@@ -245,6 +251,9 @@ pub async fn policy(
             exec_default: a.exec_policy.as_ref().map(|e| e.default.clone()),
             exec_allow: a.exec_policy.as_ref().map(|e| e.allow.clone()).unwrap_or_default(),
             exec_deny: a.exec_policy.as_ref().map(|e| e.deny.clone()).unwrap_or_default(),
+            net_default: a.network_policy.as_ref().map(|n| n.default.clone()),
+            net_allow_ports: a.network_policy.as_ref().map(|n| n.allow_ports.clone()).unwrap_or_default(),
+            net_deny_ports: a.network_policy.as_ref().map(|n| n.deny_ports.clone()).unwrap_or_default(),
         })
         .collect();
 

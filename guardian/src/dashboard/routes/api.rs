@@ -127,6 +127,51 @@ pub async fn stop_agent(
 }
 
 // =============================================================================
+// Delete Agent
+// =============================================================================
+
+pub async fn delete_agent(
+    State(state): State<Arc<DashboardState>>,
+    Path(name): Path<String>,
+) -> Html<String> {
+    let mut ipc = state.ipc_state.lock().await;
+
+    let existed = ipc.config.agents.iter().any(|a| a.name == name);
+    if !existed {
+        return Html(format!(
+            r#"<div class="toast-error">Agent '{}' not found in config.</div>"#,
+            name
+        ));
+    }
+
+    // If it's a running cgroup agent, stop it first
+    if ipc.agents.contains_key(&name) {
+        crate::ipc::cleanup_agent_pub(&mut ipc, &name);
+        info!("Dashboard: cleaned up running cgroup agent '{}' before deletion", name);
+    }
+
+    // Remove from config
+    ipc.config.agents.retain(|a| a.name != name);
+
+    // Write to disk while holding the lock
+    let config_path = state.config_path.clone();
+    if let Err(e) = write_config_toml(&config_path, &ipc.config) {
+        return Html(format!(
+            r#"<div class="toast-error">Failed to write config after deleting '{}': {}</div>"#,
+            name, e
+        ));
+    }
+
+    info!("Dashboard: deleted agent '{}'", name);
+    drop(ipc);
+
+    Html(format!(
+        r#"<div class="toast-success">Agent '{}' deleted.</div>"#,
+        name
+    ))
+}
+
+// =============================================================================
 // Create Agent
 // =============================================================================
 
@@ -142,6 +187,10 @@ pub struct CreateAgentForm {
     pub exec_default: Option<String>,
     pub exec_allow: Option<String>,
     pub exec_deny: Option<String>,
+    pub net_enabled: Option<String>,
+    pub net_default: Option<String>,
+    pub net_allow_ports: Option<String>,
+    pub net_deny_ports: Option<String>,
     pub watch_children: Option<String>,
 }
 
@@ -209,13 +258,32 @@ pub async fn create_agent(
         None
     };
 
+    // Build network policy if enabled
+    let network_policy = if form.net_enabled.as_deref().is_some_and(|v| !v.is_empty()) {
+        Some(config::NetworkPolicy {
+            default: form.net_default.unwrap_or_else(|| "allow".to_string()),
+            allow_ports: form.net_allow_ports.unwrap_or_default()
+                .replace(',', " ")
+                .split_whitespace()
+                .filter_map(|s| s.parse::<u16>().ok())
+                .collect(),
+            deny_ports: form.net_deny_ports.unwrap_or_default()
+                .replace(',', " ")
+                .split_whitespace()
+                .filter_map(|s| s.parse::<u16>().ok())
+                .collect(),
+        })
+    } else {
+        None
+    };
+
     let agent_config = config::AgentConfig {
         name: name.clone(),
         identity: Some(identity.clone()),
         process_name,
         file_access,
         exec_policy,
-        network_policy: None,
+        network_policy,
         watch_children: form.watch_children.is_some(),
         resources: None,
         fail_closed: None,
@@ -350,6 +418,9 @@ pub struct PolicyUpdate {
     pub exec_default: Option<String>,
     pub exec_allow: Option<String>,
     pub exec_deny: Option<String>,
+    pub net_default: Option<String>,
+    pub net_allow_ports: Option<String>,
+    pub net_deny_ports: Option<String>,
 }
 
 pub async fn update_policy(
@@ -406,6 +477,28 @@ pub async fn update_policy(
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
             .collect();
+    }
+
+    // Update network policy if provided
+    if let Some(net_default) = form.net_default {
+        if !net_default.is_empty() {
+            let net = agent.network_policy.get_or_insert(config::NetworkPolicy {
+                default: "allow".to_string(),
+                allow_ports: vec![],
+                deny_ports: vec![],
+            });
+            net.default = net_default;
+            let allow_str = form.net_allow_ports.unwrap_or_default().replace(',', " ");
+            net.allow_ports = allow_str
+                .split_whitespace()
+                .filter_map(|s| s.parse::<u16>().ok())
+                .collect();
+            let deny_str = form.net_deny_ports.unwrap_or_default().replace(',', " ");
+            net.deny_ports = deny_str
+                .split_whitespace()
+                .filter_map(|s| s.parse::<u16>().ok())
+                .collect();
+        }
     }
 
     info!("Dashboard: updated policy for agent '{}'", agent_name);

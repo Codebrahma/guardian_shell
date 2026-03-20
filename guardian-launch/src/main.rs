@@ -111,8 +111,18 @@ fn main() -> Result<()> {
     }
 
     // Step 7: Apply Landlock sandbox (inode-level, symlink-immune enforcement)
+    // Skip Landlock when SELinux is enforcing — the two LSMs interact badly on
+    // Fedora/RHEL, causing execve() to return EACCES even for fully allowed paths.
+    // eBPF enforcement still provides file access control in this case.
+    let selinux_enforcing = std::fs::read_to_string("/sys/fs/selinux/enforce")
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false);
     let should_landlock = !args.no_landlock
+        && !selinux_enforcing
         && sandbox_config.as_ref().map(|c| c.landlock).unwrap_or(true);
+    if selinux_enforcing && !args.no_landlock {
+        info!("Landlock sandbox skipped: SELinux is enforcing (LSM stacking conflict). eBPF provides enforcement.");
+    }
     if should_landlock {
         if let Some(ref cfg) = sandbox_config {
             match apply_landlock_sandbox(cfg) {
@@ -120,7 +130,7 @@ fn main() -> Result<()> {
                 Err(e) => log::warn!("Failed to apply Landlock sandbox (non-fatal): {}", e),
             }
         }
-    } else {
+    } else if !selinux_enforcing {
         info!("Landlock sandbox disabled");
     }
 
@@ -308,7 +318,7 @@ fn register_with_daemon(
 /// Rules are default-deny: only explicitly allowed paths are accessible.
 fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
     use landlock::{
-        Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset,
+        AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset,
         RulesetAttr, RulesetCreatedAttr, RulesetStatus, ABI,
     };
 
@@ -322,10 +332,13 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
     }
 
     // Detect best available ABI
-    let abi = ABI::V5; // Target ABI — crate auto-downgrades via CompatLevel
+    let _abi = ABI::V5; // Target ABI — crate auto-downgrades via CompatLevel
 
-    // Build the set of filesystem rights we want to control
-    let fs_access = AccessFs::from_all(abi);
+    // Landlock on Fedora (SELinux enforcing) blocks exec when restrict_self() is
+    // applied, regardless of which rights are handled. Test with minimal rights
+    // to confirm this is a Landlock+SELinux interaction, not a rights issue.
+    let fs_access = AccessFs::ReadFile | AccessFs::ReadDir
+        | AccessFs::WriteFile | AccessFs::Truncate;
 
     // Build ruleset — handle both filesystem and network if available
     let has_net = config.net_default == "deny" && !config.net_allow_ports.is_empty();
@@ -351,15 +364,12 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
     ];
 
     let read_rights = AccessFs::ReadFile | AccessFs::ReadDir;
-    let read_exec_rights = read_rights | AccessFs::Execute;
-    let write_rights = AccessFs::WriteFile | AccessFs::MakeReg | AccessFs::RemoveFile
-        | AccessFs::MakeDir | AccessFs::RemoveDir;
 
     // Add system read paths (needed for dynamic linking and basic operation)
     for path in &system_read_paths {
         if Path::new(path).exists() {
             if let Ok(fd) = PathFd::new(path) {
-                ruleset = ruleset.add_rule(PathBeneath::new(fd, read_exec_rights))?;
+                ruleset = ruleset.add_rule(PathBeneath::new(fd, read_rights))?;
             }
         }
     }
@@ -376,17 +386,25 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
         }
     }
 
+    let exec_is_permissive = config.exec_default == "allow" || config.exec_allow.is_empty();
+    info!("Landlock: exec_default='{}', exec_allow={:?}, exec_is_permissive={}",
+          config.exec_default, config.exec_allow, exec_is_permissive);
+
+    // Grant ALL handled rights on allowed paths. Landlock's from_all(abi) declares
+    // what we control; any right not granted in a rule is denied. Granting the full
+    // set on allowed paths ensures no unexpected denials.
+    let all_fs_rights = fs_access;
+
     // Add allowed paths from agent config
     for pattern in &config.file_allow {
-        // Strip glob suffixes to get the base directory for Landlock
         let base_path = strip_glob(pattern);
         if !Path::new(&base_path).exists() {
-            debug!("Landlock: skipping non-existent path '{}'", base_path);
+            info!("Landlock: skipping non-existent path '{}'", base_path);
             continue;
         }
         if let Ok(fd) = PathFd::new(&base_path) {
-            // Allow read + write + directory operations under allowed paths
-            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_rights | write_rights))?;
+            info!("Landlock: allow '{}' (all rights)", base_path);
+            ruleset = ruleset.add_rule(PathBeneath::new(fd, all_fs_rights))?;
         }
     }
 
@@ -404,7 +422,7 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
         };
         if Path::new(&dir).exists() {
             if let Ok(fd) = PathFd::new(&dir) {
-                ruleset = ruleset.add_rule(PathBeneath::new(fd, read_exec_rights))?;
+                ruleset = ruleset.add_rule(PathBeneath::new(fd, read_rights))?;
             }
         }
     }

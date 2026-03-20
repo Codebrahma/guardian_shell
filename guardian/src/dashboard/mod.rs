@@ -98,7 +98,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Build the dashboard axum router.
 pub fn router(state: Arc<DashboardState>) -> Router {
-    use axum::routing::{get, post, put};
+    use axum::routing::{delete, get, post, put};
 
     let has_auth = state.auth_token.is_some();
     let auth_state = state.clone();
@@ -118,6 +118,7 @@ pub fn router(state: Arc<DashboardState>) -> Router {
         .route("/api/permissions/audit", get(routes::api::query_permission_audit))
         // htmx API endpoints
         .route("/api/agents", post(routes::api::create_agent))
+        .route("/api/agents/{name}", delete(routes::api::delete_agent))
         .route("/api/agents/{name}/stop", post(routes::api::stop_agent))
         .route("/api/agents/{name}/grant", post(routes::api::grant_access))
         .route("/api/policy/{agent_name}", put(routes::api::update_policy).post(routes::api::update_policy))

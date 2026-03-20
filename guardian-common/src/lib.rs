@@ -286,6 +286,9 @@ pub mod ipc {
         /// Allowed file access path patterns (e.g., "/tmp/**", "/proc/self/**").
         #[serde(default)]
         pub file_allow: Vec<String>,
+        /// Exec policy default action: "allow" or "deny".
+        #[serde(default = "default_allow")]
+        pub exec_default: String,
         /// Allowed exec path patterns (e.g., "/usr/bin/python3").
         #[serde(default)]
         pub exec_allow: Vec<String>,

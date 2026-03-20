@@ -590,3 +590,60 @@ code.inline {
   .popover { width: 220px !important; }
   .form-row { flex-direction: column; }
 }
+
+/* ─── Help / Examples Panel ─── */
+.help-section {
+  padding: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+}
+.help-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  margin: 0 0 6px;
+}
+.help-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0 0 8px;
+  line-height: 1.4;
+}
+.help-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 8px 0 4px;
+}
+.help-examples {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  margin: 0;
+  white-space: pre;
+  overflow-x: auto;
+  line-height: 1.6;
+}
+.help-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-radius: 50%;
+  cursor: help;
+  vertical-align: middle;
+  margin-left: 4px;
+  position: relative;
+}

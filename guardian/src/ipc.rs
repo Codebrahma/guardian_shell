@@ -487,12 +487,19 @@ async fn handle_register(
             .map(|n| (n.allow_ports.clone(), n.default.clone()))
             .unwrap_or_else(|| (vec![], "allow".to_string()));
 
+        let exec_default = agent_config
+            .exec_policy
+            .as_ref()
+            .map(|e| e.default.clone())
+            .unwrap_or_else(|| "allow".to_string());
+
         guardian_common::ipc::SandboxConfig {
             landlock: true,
             seccomp_hardened: true,
             no_new_privs: true,
             file_default: agent_config.file_access.default.clone(),
             file_allow,
+            exec_default,
             exec_allow,
             net_allow_ports,
             net_default,

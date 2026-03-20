@@ -300,8 +300,23 @@ pub async fn update_policy(
         ));
     }
 
+    // Reload config from disk into memory to ensure consistency and apply changes
+    match config::load_config(&config_path) {
+        Ok(new_config) => {
+            let mut ipc = state.ipc_state.lock().await;
+            ipc.config = new_config;
+            info!("Dashboard: config reloaded after policy update for '{}'", agent_name);
+        }
+        Err(e) => {
+            return Html(format!(
+                r#"<div class="toast-error">Policy written to disk but reload failed: {}. Try manual reload.</div>"#,
+                e
+            ));
+        }
+    }
+
     Html(format!(
-        r#"<div class="toast-success">Policy for '{}' saved. Config written to disk. Send SIGHUP or use reload to apply to BPF maps.</div>"#,
+        r#"<div class="toast-success">Policy for '{}' saved and applied.</div>"#,
         agent_name
     ))
 }
@@ -686,6 +701,9 @@ fn write_config_toml(
         if let Some(ref db) = dash.db_path {
             out.push_str(&format!("db_path = \"{}\"\n", db));
         }
+        if let Some(ref token) = dash.auth_token {
+            out.push_str(&format!("auth_token = \"{}\"\n", token));
+        }
         out.push_str("\n");
     }
 
@@ -825,6 +843,24 @@ fn write_config_toml(
                 out.push_str(&format!("    \"{}\",\n", rule));
             }
             out.push_str("]\n\n");
+        }
+
+        if let Some(ref net) = agent.network_policy {
+            out.push_str("[agents.network_policy]\n");
+            out.push_str(&format!("default = \"{}\"\n", net.default));
+            if !net.allow_ports.is_empty() {
+                let ports: Vec<String> = net.allow_ports.iter().map(|p| p.to_string()).collect();
+                out.push_str(&format!("allow_ports = [{}]\n", ports.join(", ")));
+            }
+            if !net.deny_ports.is_empty() {
+                let ports: Vec<String> = net.deny_ports.iter().map(|p| p.to_string()).collect();
+                out.push_str(&format!("deny_ports = [{}]\n", ports.join(", ")));
+            }
+            out.push_str("\n");
+        }
+
+        if let Some(fc) = agent.fail_closed {
+            out.push_str(&format!("fail_closed = {}\n\n", fc));
         }
 
         if let Some(ref res) = agent.resources {

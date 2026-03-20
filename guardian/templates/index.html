@@ -78,8 +78,9 @@ function recentEvents() {
 
     init() {
       const self = this;
-      // Check if shared SSE is already open
-      self.connected = !!(window.__guardianSSE && window.__guardianSSE.readyState === EventSource.OPEN);
+      // Read connection state from window (handles race where onopen fired before Alpine init)
+      self.connected = window.__guardianSSEConnected ||
+        !!(window.__guardianSSE && window.__guardianSSE.readyState === EventSource.OPEN);
 
       // Listen to events relayed from the shared SSE in base.html
       document.addEventListener('guardian:event', function(e) {
@@ -92,6 +93,14 @@ function recentEvents() {
       });
       document.addEventListener('guardian:sse-open', function() { self.connected = true; });
       document.addEventListener('guardian:sse-error', function() { self.connected = false; });
+
+      // Periodic self-heal: check actual readyState in case events were missed
+      setInterval(function() {
+        var sse = window.__guardianSSE;
+        if (sse && sse.readyState === EventSource.OPEN) {
+          self.connected = true;
+        }
+      }, 3000);
     },
 
     formatTime(ts) {

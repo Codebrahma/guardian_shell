@@ -5,9 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Guardian Shell — {% block title %}Dashboard{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
-  <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-M06VwgoUOHG3FN0UchwWKqh9jS4ejwpoL0yjF3EVljtsxFwFETEYMkyNL5lXbJ5/" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js" integrity="sha384-fw+eTlCc7suMV/1w/7fr2/PmwElUIt5i82bi+qTiLXvjRXZ2/FkiTNA/w0MhXnGI" crossorigin="anonymous"></script>
-  <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" integrity="sha384-X9kJyAubVxnP0hcA+AMMs21U445qsnqhnUF8EBlEpP3a42Kh/JwWjlv2ZcvGfphb" crossorigin="anonymous"></script>
+  <script src="/static/htmx.min.js"></script>
+  <script defer src="/static/alpine.min.js"></script>
 </head>
 <body x-data="{ sidebarOpen: false }">
   <!-- Mobile header -->
@@ -170,8 +169,12 @@
   <script>
   // Single shared SSE connection — prevents HTTP/1.1 connection exhaustion.
   // Child pages listen to custom DOM events instead of opening their own EventSource.
+  // Connection state is tracked on window.__guardianSSEConnected so Alpine components
+  // can read it even if onopen fires before their listeners are registered.
   (function() {
     var sse = null;
+    var errorTimer = null;
+    window.__guardianSSEConnected = false;
 
     function connectSSE() {
       if (sse) { sse.close(); }
@@ -179,21 +182,42 @@
       window.__guardianSSE = sse;
 
       sse.onopen = function() {
+        // Clear any pending error timer — connection recovered
+        if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+        window.__guardianSSEConnected = true;
         document.dispatchEvent(new CustomEvent('guardian:sse-open'));
       };
       sse.onerror = function() {
-        document.dispatchEvent(new CustomEvent('guardian:sse-error'));
-        // Browser auto-reconnects EventSource; no manual retry needed
+        // Debounce: only mark as disconnected if not recovered within 2s.
+        // EventSource fires onerror during normal reconnect cycles.
+        if (!errorTimer) {
+          errorTimer = setTimeout(function() {
+            window.__guardianSSEConnected = false;
+            document.dispatchEvent(new CustomEvent('guardian:sse-error'));
+            errorTimer = null;
+          }, 2000);
+        }
       };
 
       // Relay SSE event types as custom DOM events for child page components
       sse.addEventListener('event', function(e) {
+        // Receiving events means we're connected — ensure state is correct
+        if (!window.__guardianSSEConnected) {
+          if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+          window.__guardianSSEConnected = true;
+          document.dispatchEvent(new CustomEvent('guardian:sse-open'));
+        }
         document.dispatchEvent(new CustomEvent('guardian:event', { detail: e.data }));
       });
       sse.addEventListener('lag', function(e) {
         document.dispatchEvent(new CustomEvent('guardian:lag', { detail: e.data }));
       });
       sse.addEventListener('permission', function(e) {
+        if (!window.__guardianSSEConnected) {
+          if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+          window.__guardianSSEConnected = true;
+          document.dispatchEvent(new CustomEvent('guardian:sse-open'));
+        }
         document.dispatchEvent(new CustomEvent('guardian:permission', { detail: e.data }));
       });
     }
@@ -202,7 +226,8 @@
 
     // Close SSE on page navigation to free the connection slot
     window.addEventListener('beforeunload', function() {
-      if (sse) { sse.close(); sse = null; window.__guardianSSE = null; }
+      if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+      if (sse) { sse.close(); sse = null; window.__guardianSSE = null; window.__guardianSSEConnected = false; }
     });
   })();
 

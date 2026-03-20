@@ -20,7 +20,8 @@
   </button>
 
   <div x-show="open" x-cloak class="accordion-body">
-    <form hx-put="/api/policy/{{ agent.name }}" hx-target="#toast" hx-swap="innerHTML">
+    <form hx-put="/api/policy/{{ agent.name }}" hx-target="#toast" hx-swap="innerHTML"
+          hx-on::after-request="if(event.detail.successful) setTimeout(function() { window.location.reload(); }, 1500)">
       <div class="grid-2">
         <!-- File Access Policy -->
         <div>

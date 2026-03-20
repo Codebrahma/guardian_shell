@@ -119,7 +119,7 @@ pub fn router(state: Arc<DashboardState>) -> Router {
         // htmx API endpoints
         .route("/api/agents/{name}/stop", post(routes::api::stop_agent))
         .route("/api/agents/{name}/grant", post(routes::api::grant_access))
-        .route("/api/policy/{agent_name}", put(routes::api::update_policy))
+        .route("/api/policy/{agent_name}", put(routes::api::update_policy).post(routes::api::update_policy))
         .route("/api/alerts", put(routes::api::update_alerts))
         .route("/api/config/reload", post(routes::api::reload_config))
         .route("/api/status", get(routes::api::status_summary))

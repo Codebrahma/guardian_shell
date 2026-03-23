@@ -16,7 +16,7 @@
 
 [package]
 name = "guardian-common"
-version = "0.1.0"
+version = "0.11.0"
 edition = "2021"
 description = "Shared types between Guardian Shell eBPF and userspace components"
 

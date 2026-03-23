@@ -10,7 +10,7 @@
 
 [package]
 name = "guardian-ctl"
-version = "0.1.0"
+version = "0.11.0"
 edition = "2021"
 description = "CLI tool for managing Guardian Shell agents"
 

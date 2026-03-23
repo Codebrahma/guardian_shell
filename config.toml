@@ -1,3 +1,15 @@
+# Guardian Shell — Example Configuration
+#
+# Copy this file and edit paths for your environment:
+#   cp config.toml my-config.toml
+#   sudo guardian --config my-config.toml
+#
+# For preset configs, see configs/ directory:
+#   configs/minimal.toml       — Monitor-only, bare minimum
+#   configs/recommended.toml   — Production defaults
+#   configs/strict.toml        — Maximum security
+#   configs/development.toml   — Verbose debugging
+
 [global]
 log_level = "info"
 mode = "enforce"
@@ -32,9 +44,9 @@ watch_children = true
 [agents.file_access]
 default = "deny"
 allow = [
-    "/home/suren/codebrahma/llm_allowed/**",
-    "/home/suren/codebrahma/guardian_shell/**",
-    "/home/suren/**",
+    "/home/user/projects/allowed/**",
+    "/home/user/projects/myproject/**",
+    "/home/user/**",
     "/home/**",
     "/tmp/**",
     "/proc/**",
@@ -55,12 +67,12 @@ allow = [
     "/var/**",
 ]
 deny = [
-    "/home/suren/codebrahma/llm_not_allowed/**",
+    "/home/user/projects/restricted/**",
     "/etc/shadow",
     "/etc/gshadow",
-    "/home/suren/.ssh/**",
-    "/home/suren/.gnupg/**",
-    "/home/suren/.aws/**",
+    "/home/user/.ssh/**",
+    "/home/user/.gnupg/**",
+    "/home/user/.aws/**",
 ]
 
 [agents.exec_policy]
@@ -88,13 +100,13 @@ watch_children = true
 default = "deny"
 allow = [
     # Project workspace
-    "/home/suren/codebrahma/**",
+    "/home/user/projects/**",
 
     # Home directory (Claude needs dotfiles, configs, cache)
-    "/home/suren/**",
+    "/home/user/**",
 
     # Claude binary + node (installed via mise)
-    "/home/suren/.local/**",
+    "/home/user/.local/**",
 
     # Temp and runtime
     "/tmp/**",
@@ -121,12 +133,12 @@ allow = [
     "/var/**",
 ]
 deny = [
-    "/home/suren/codebrahma/.env",
+    "/home/user/projects/.env",
     "/etc/shadow",
     "/etc/gshadow",
-    "/home/suren/.ssh/**",
-    "/home/suren/.aws/**",
-    "/home/suren/.gnupg/**",
+    "/home/user/.ssh/**",
+    "/home/user/.aws/**",
+    "/home/user/.gnupg/**",
 ]
 
 [agents.exec_policy]
@@ -144,4 +156,3 @@ deny = [
 [agents.network_policy]
 default = "allow"
 deny_ports = [8000]
-

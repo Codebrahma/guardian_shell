@@ -18,7 +18,7 @@
 
 [package]
 name = "guardian"
-version = "0.1.0"
+version = "0.11.0"
 edition = "2021"
 description = "Userspace daemon for Guardian Shell - monitors LLM agent file access"
 

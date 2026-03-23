@@ -998,3 +998,86 @@ identity foundation from Phases 2 and 3.
 | **perf buffer** | Memory-mapped ring buffer used by the kernel's perf subsystem. Events written by eBPF, read by userspace. |
 | **JIT** | Just-In-Time compilation. The kernel JIT-compiles BPF bytecode to native machine code for performance. |
 | **`AT_FDCWD`** | Special file descriptor value (-100) meaning "relative to current working directory". Used with `openat()`. |
+
+---
+
+## Phase 11: Security Hardening Architecture
+
+### PENDING Map Fail-Closed Design
+
+The tracepoint→PENDING_DENY→LSM enforcement pattern relies on a HashMap to pass
+deny decisions from the tracepoint (which reads syscall args) to the LSM hook
+(which can block operations). Phase 11 adds a fail-closed overflow mechanism:
+
+```
+Tracepoint fires → evaluate_policy() → DENY decision
+  ├─ Try: PENDING_DENY.insert(pid_tgid, 1)
+  │   └─ Success: normal path (LSM reads HashMap)
+  └─ Fail (map full): PENDING_DENY_OVERFLOW[cpu].write(pid_tgid)
+                       PENDING_INSERT_FAILURES[cpu]++
+
+LSM hook fires → pending_check_and_consume(pid_tgid)
+  ├─ Check: PENDING_DENY.get(pid_tgid)
+  │   └─ Found: remove entry, return -EACCES (DENY)
+  └─ Check: PENDING_DENY_OVERFLOW[cpu] == pid_tgid
+      └─ Found: clear entry, return -EACCES (DENY)
+      └─ Not found: return 0 (ALLOW)
+```
+
+Per-CPU arrays are race-free because the tracepoint and LSM hook execute on the
+same CPU within the same syscall context. The overflow path is never the common
+case — it only activates when HashMap capacity (16,384 entries) is exhausted.
+
+### Privilege Dropping Flow
+
+```
+guardian-launch (root)
+  │
+  ├── Create cgroup          ← requires root
+  ├── Register with daemon   ← requires root (socket access)
+  ├── Move to cgroup          ← requires root
+  ├── PR_SET_NO_NEW_PRIVS     ← while still root
+  │
+  ├── setresgid(SUDO_GID)    ← drop group FIRST (can't after setuid)
+  ├── setresuid(SUDO_UID)    ← drop user (irreversible)
+  ├── Fix environment          ← HOME, USER, LOGNAME, SHELL
+  │
+  ├── Landlock restrict_self() ← works non-root (NNP satisfies requirement)
+  ├── Seccomp filter           ← works non-root
+  └── execve(agent)            ← runs as original user, fully sandboxed
+```
+
+On SELinux systems: privilege dropping is mandatory. Landlock restrict_self() +
+execve() returns EACCES when running as root due to kernel-level interaction
+between Landlock credential modification and SELinux exec checks.
+
+### CSRF Protection Architecture
+
+```
+Browser request → axum router
+  │
+  ├── Auth middleware (if token configured)
+  │     └─ Validates Bearer token or ?token= query param
+  │
+  └── CSRF middleware (always active)
+        ├─ GET/HEAD/OPTIONS → pass through
+        ├─ HX-Request: true → pass through (htmx same-origin proof)
+        ├─ Valid Bearer token → pass through (authenticated API client)
+        └─ Otherwise → 403 Forbidden
+```
+
+htmx automatically sends `HX-Request: true` on all requests. Browsers prevent
+cross-origin JavaScript from setting custom headers (CORS preflight would block
+it), so the header's presence proves same-origin.
+
+### Agent Lookup Cache
+
+```
+Config load / SIGHUP reload
+  └─ build_comm_cache()
+       └─ HashMap<comm_name, agent_index>
+
+Event processing (per-event):
+  Before: O(N) — config.agents.iter().find(|a| a.effective_process_name() == comm)
+  After:  O(1) — config.comm_cache.get(comm) → Some(index) → config.agents[index]
+```

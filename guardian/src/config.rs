@@ -21,6 +21,23 @@ pub struct Config {
     /// Phase 7c: Permission request hardening.
     #[serde(default)]
     pub permissions: Option<PermissionsConfig>,
+    /// Cached mapping from comm name → agent index for O(1) lookup in event processing.
+    /// Built after config load and rebuilt on SIGHUP reload. Skipped during deserialization.
+    #[serde(skip)]
+    pub comm_cache: HashMap<String, usize>,
+}
+
+impl Config {
+    /// Build the comm_cache HashMap from the agents list.
+    /// Maps each comm-based agent's effective_process_name to its index in the agents vec.
+    pub fn build_comm_cache(&mut self) {
+        self.comm_cache.clear();
+        for (i, agent) in self.agents.iter().enumerate() {
+            if agent.effective_identity() == "comm" {
+                self.comm_cache.insert(agent.effective_process_name().to_string(), i);
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -325,10 +342,13 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-    let config: Config = toml::from_str(&content)
+    let mut config: Config = toml::from_str(&content)
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
     validate_config(&config)?;
+
+    // Build the comm name → agent index cache for O(1) event lookups
+    config.build_comm_cache();
 
     Ok(config)
 }

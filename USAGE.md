@@ -549,6 +549,28 @@ sudo journalctl -u guardian-shell -f   # View logs
 
 After step 10, the agent IS the process in the cgroup with all four defense layers active. There is no wrapper overhead. Every child process the agent spawns (bash, git, curl, pip, etc.) automatically inherits the same cgroup, Landlock sandbox, seccomp filter, and NO_NEW_PRIVS flag. No process can escape any of these restrictions.
 
+### Privilege Dropping (Phase 11)
+
+After all root-required operations (cgroup creation, daemon registration, cgroup move),
+`guardian-launch` drops to the original user before applying Landlock and exec'ing:
+
+1. **Cgroup setup** (root) — create cgroup, set resource limits, register with daemon
+2. **PR_SET_NO_NEW_PRIVS** — prevents SUID escalation
+3. **Drop privileges** — `setresgid()` + `setresuid()` to SUDO_UID/SUDO_GID
+4. **Environment cleanup** — fixes HOME, USER, LOGNAME, SHELL (sudo leaves HOME=/root)
+5. **Landlock sandbox** — inode-level file access (works as non-root with NNP)
+6. **Seccomp filter** — blocks dangerous syscalls
+7. **Exec agent** — agent runs as original user, fully sandboxed
+
+On SELinux systems (Fedora/RHEL), privilege dropping is **mandatory** — Landlock
+`restrict_self()` + `execve()` returns EACCES when running as root due to a
+kernel-level interaction between Landlock credential modification and SELinux exec
+checks. See `docs/landlock-exec-investigation.md`.
+
+If no target user is available (not via sudo, no `--user` flag), the agent cannot
+use Landlock on SELinux and will exit with an error. On non-SELinux systems, the
+agent falls back to running as root with Landlock still active.
+
 ### Why You Need It
 
 Without `guardian-launch`, Guardian identifies agents by their process name (`/proc/PID/comm`). This has three problems:
@@ -580,6 +602,9 @@ sudo guardian-launch [OPTIONS] -- <COMMAND> [ARGS...]
 | `--socket <PATH>` | Guardian daemon socket path | `--socket /run/guardian.sock` |
 | `--no-landlock` | Disable Landlock sandbox (Phase 10, not recommended) | `--no-landlock` |
 | `--no-seccomp-hardened` | Disable expanded seccomp (Phase 10, not recommended) | `--no-seccomp-hardened` |
+| `--user <uid>` | Drop to this user before exec (default: SUDO_UID from environment). Required for Landlock on SELinux. | `--user 1000` |
+| `--group <gid>` | Drop to this group before exec (default: SUDO_GID from environment). | `--group 1000` |
+| `--no-drop-privs` | Keep running as root (not recommended). Disables Landlock on SELinux systems. | `--no-drop-privs` |
 
 **Examples:**
 
@@ -1285,6 +1310,21 @@ server {
 - The dashboard provides the same level of control as `guardian-ctl` + editing `config.toml`
 - Configure Prometheus scrapers to include `Authorization: Bearer <token>` header when `auth_token` is set
 
+### CSRF Protection (Phase 11)
+
+All state-changing dashboard requests (POST, PUT, DELETE) are protected against
+Cross-Site Request Forgery. The middleware validates that requests originate from
+legitimate sources:
+
+- **htmx requests**: The `HX-Request: true` header is automatically sent by htmx.
+  Browsers prevent cross-origin scripts from setting custom headers, so this header
+  proves same-origin.
+- **API clients**: Requests with a valid `Authorization: Bearer <token>` are allowed.
+- **Safe methods**: GET, HEAD, OPTIONS pass through without CSRF checks.
+
+Requests without either `HX-Request` header or valid auth token receive
+`403 Forbidden`. This protects the dashboard even when `auth_token` is not configured.
+
 ---
 
 ## Security Hardening (Phase 8)
@@ -1518,6 +1558,56 @@ sudo guardian-launch --name my-agent --no-seccomp-hardened -- python3 -m aider
 ```
 
 These flags are for debugging only. **Do not use them in production.**
+
+---
+
+## Security Hardening & Performance (Phase 11)
+
+Phase 11 addresses security vulnerabilities identified in a comprehensive code audit.
+
+### PENDING Map Fail-Closed
+
+The tracepoint→PENDING_DENY→LSM enforcement pattern had a critical vulnerability:
+when PENDING maps were full (previously 4096 entries), insert failures were silently
+dropped, causing the LSM hook to find no deny entry and **allow** the access.
+
+Phase 11 fixes this with three layers:
+1. **4x larger maps** (16,384 entries) — reduces overflow likelihood
+2. **Per-CPU overflow arrays** — when HashMap insert fails, the pid_tgid is written
+   to a per-CPU array. Since tracepoint and LSM hook execute on the same CPU within
+   the same syscall, this is race-free.
+3. **Insert failure counter** — userspace can monitor map pressure via
+   `PENDING_INSERT_FAILURES` per-CPU counter
+
+### Grant Accumulation Enforcement
+
+Grant accumulation limits are now enforced **before** sending the decision to the
+agent. Previously, the limit was checked after the grant was already communicated
+via oneshot channel (a documented "future enhancement"). Agents that exceed the
+24-hour cumulative grant limit now receive a denial.
+
+### Performance: O(1) Agent Lookup
+
+Event processing previously iterated all agents linearly for each eBPF event.
+Phase 11 adds a `comm_cache` HashMap that maps process comm names to agent config
+indices. The cache is rebuilt on config load and SIGHUP reload.
+
+### Memory Leak Prevention
+
+Two unbounded HashMap structures now have periodic cleanup:
+- **Rate limiter** (`recently_denied_resources`): entries older than 1 hour removed
+  on each rate limit check
+- **Grant accumulator**: entries older than 24 hours removed hourly by the anomaly
+  detection background task
+
+### Default Cgroup Agent Config
+
+New cgroup agents that register via `guardian-launch` without a pre-existing config
+entry now receive a sensible default config automatically:
+- `file_access.default = "deny"` with broad system path allows
+- Deny rules for `/etc/shadow`, `/etc/gshadow`, `~/.ssh/**`, `~/.aws/**`, `~/.gnupg/**`
+- Covers both Fedora/RHEL and Debian/Ubuntu system paths
+- Config is persisted to `config.toml` automatically
 
 ---
 

@@ -620,7 +620,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Step 11b: Phase 8 — Spawn hourly anomaly detection task
+    // Step 11b: Phase 8 — Spawn hourly anomaly detection + memory cleanup task
     if config.dashboard.as_ref().map(|d| d.enabled).unwrap_or(false) {
         let anomaly_state = ipc_state.clone();
         tokio::spawn(async move {
@@ -628,7 +628,8 @@ async fn main() -> Result<()> {
             let detector = permissions::AnomalyDetector::new();
             loop {
                 interval.tick().await;
-                let s = anomaly_state.lock().await;
+                let mut s = anomaly_state.lock().await;
+                // Anomaly detection
                 if let Some(ref db) = s.event_db {
                     let findings = detector.detect_anomalies(db);
                     for finding in &findings {
@@ -638,6 +639,8 @@ async fn main() -> Result<()> {
                         info!("Anomaly detection: {} finding(s)", findings.len());
                     }
                 }
+                // Phase 11: Periodic cleanup of expired grant accumulator entries
+                s.grant_accumulator.cleanup_expired();
             }
         });
     }
@@ -1328,11 +1331,9 @@ fn setup_net_event_readers(
 // =============================================================================
 
 fn find_agent_for_event<'a>(config: &'a Config, comm: &str) -> Option<&'a config::AgentConfig> {
-    // Try exact comm match first (for comm-based agents)
-    if let Some(agent) = config.agents.iter().find(|a| {
-        a.effective_identity() == "comm" && a.effective_process_name() == comm
-    }) {
-        return Some(agent);
+    // O(1) lookup via pre-built comm_cache HashMap (built in load_config, rebuilt on SIGHUP)
+    if let Some(&idx) = config.comm_cache.get(comm) {
+        return config.agents.get(idx);
     }
     // For cgroup-based agents or worker threads, use first matching agent
     // (cgroup identification is done in kernel, userspace just needs a policy)

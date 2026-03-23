@@ -187,6 +187,15 @@ pub const MAP_DYNAMIC_LINKERS: &str = "DYNAMIC_LINKERS";
 // Phase 8: Fail-closed mode per cgroup
 pub const MAP_FAIL_CLOSED_CGROUPS: &str = "FAIL_CLOSED_CGROUPS";
 
+// Pending map overflow protection (fail-closed on map full)
+pub const MAP_PENDING_DENY_OVERFLOW: &str = "PENDING_DENY_OVERFLOW";
+pub const MAP_PENDING_EXEC_DENY_OVERFLOW: &str = "PENDING_EXEC_DENY_OVERFLOW";
+pub const MAP_PENDING_NET_DENY_OVERFLOW: &str = "PENDING_NET_DENY_OVERFLOW";
+pub const MAP_PENDING_RENAME_DENY_OVERFLOW: &str = "PENDING_RENAME_DENY_OVERFLOW";
+pub const MAP_PENDING_UNLINK_DENY_OVERFLOW: &str = "PENDING_UNLINK_DENY_OVERFLOW";
+pub const MAP_PENDING_LINK_DENY_OVERFLOW: &str = "PENDING_LINK_DENY_OVERFLOW";
+pub const MAP_PENDING_INSERT_FAILURES: &str = "PENDING_INSERT_FAILURES";
+
 // =============================================================================
 // Aya Pod Implementations (userspace only)
 // =============================================================================

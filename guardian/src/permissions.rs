@@ -100,9 +100,10 @@ impl AgentRateLimit {
             }
         }
 
-        // Clean up old denied resources (older than 5 minutes)
-        self.recently_denied_resources
-            .retain(|_, t| now.duration_since(*t).as_secs() < 300);
+        // Clean up old denied resources: remove entries older than 1 hour
+        // to bound memory, while the 5-minute cooldown check above handles
+        // the active cooldown window.
+        self.cleanup_stale_entries();
 
         None
     }
@@ -124,6 +125,14 @@ impl AgentRateLimit {
     /// Record that a request was approved (resets consecutive denials).
     pub fn record_approval(&mut self) {
         self.consecutive_denials = 0;
+    }
+
+    /// Remove stale entries from `recently_denied_resources` older than 1 hour.
+    /// Called periodically to prevent unbounded memory growth.
+    pub fn cleanup_stale_entries(&mut self) {
+        let now = Instant::now();
+        self.recently_denied_resources
+            .retain(|_, t| now.duration_since(*t).as_secs() < 3600);
     }
 }
 
@@ -214,6 +223,15 @@ impl GrantAccumulator {
         entries.iter().map(|(_, d)| *d).sum()
     }
 
+    /// Remove all grant records older than 24 hours and drop empty keys.
+    /// Call periodically to bound memory usage.
+    pub fn cleanup_expired(&mut self) {
+        let now = Instant::now();
+        self.grants.retain(|_, entries| {
+            entries.retain(|(t, _)| now.duration_since(*t).as_secs() < 86400);
+            !entries.is_empty()
+        });
+    }
 }
 
 /// Critical resource patterns — HIGH/CRITICAL risk.

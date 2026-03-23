@@ -8,7 +8,7 @@ on this project on a Linux machine.
 Guardian Shell is a Linux security tool that uses eBPF to monitor and restrict
 LLM agent activities. It's built with Rust and the Aya eBPF framework.
 
-**Current state: Phase 10 - Hardened Cgroup Agents (compiled on Linux)**
+**Current state: Phase 11 - Security Hardening & Performance (compiled on Linux)**
 
 Phase 10 introduces **defense-in-depth for cgroup agents** — a creative architectural shift that solves all CRITICAL and HIGH security vulnerabilities by using the right enforcement tool for each layer:
 
@@ -20,6 +20,18 @@ Phase 10 introduces **defense-in-depth for cgroup agents** — a creative archit
 - **Landlock TCP network filtering** (kernel 6.7+): Port-based outbound TCP control as additional layer alongside eBPF LSM socket_connect.
 
 Key insight: eBPF tracepoints operate on path strings (vulnerable to symlinks, TOCTOU). Landlock operates on inodes (immune). Phase 10 makes Landlock the primary enforcement layer for cgroup agents, with eBPF as the audit/visibility layer.
+
+Phase 11 addresses critical security vulnerabilities from comprehensive code audit:
+
+- **PENDING map fail-closed**: Per-CPU overflow arrays prevent enforcement bypass when BPF HashMaps are full (16,384 entries, up from 4,096)
+- **Privilege dropping**: `guardian-launch` drops root to SUDO_UID/SUDO_GID before Landlock+exec. Fixes Landlock+exec EACCES on SELinux. New `--user`/`--group` flags.
+- **Grant accumulation enforced**: Limits checked before sending decision to agent (was checked after)
+- **CSRF protection**: Dashboard validates HX-Request header on POST/PUT/DELETE
+- **O(1) agent lookup**: HashMap cache for event processing (was O(N) linear scan)
+- **Default cgroup config**: Auto-created when new agent registers without config
+- **Memory cleanup**: Rate limiter (1h TTL) and grant accumulator (24h TTL) prevent unbounded growth
+- **IPC timeout**: 30-second read timeout prevents client stall attacks
+- **Debian/Ubuntu**: Dynamic linker multiarch paths, /sbin, /snap support
 
 Phase 9 adds kernel-level network enforcement, upgrading from Phase 7's log-only network monitoring to actual connection blocking:
 
@@ -306,9 +318,9 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | System read paths in Landlock | Common paths (/usr/lib, /etc/resolv.conf, /dev/null, etc.) get read+execute for dynamic linking. Without these, most binaries can't start. |
 | Two security tiers | Cgroup agents get 4-layer defense (Landlock+seccomp+eBPF+cgroup). Comm-based agents get eBPF only. Clear documentation prevents false sense of security. |
 
-## Known Limitations (Phase 10)
+## Known Limitations (Phase 11)
 
-1. **Symlinks bypass eBPF enforcement**: eBPF tracepoints see raw path strings, not resolved inodes. **Mitigated for cgroup agents by Landlock** (inode-level, symlink-immune). Comm-based agents remain vulnerable.
+1. **Symlinks bypass eBPF enforcement**: eBPF tracepoints see raw path strings, not resolved inodes. **Mitigated for cgroup agents by Landlock** (inode-level, symlink-immune) **and privilege dropping** (agent runs as non-root user). Comm-based agents remain vulnerable.
 2. **openat2 tracepoint requires kernel 5.6+**: Gracefully skipped on older kernels
 3. **x86_64 offsets hardcoded**: Tracepoint field offsets may differ on aarch64/arm
 4. **BPF LSM enforcement optional for cgroup agents**: Landlock provides primary enforcement. BPF LSM (`CONFIG_BPF_LSM=y`) adds a second enforcement layer but is no longer required for security.
@@ -327,6 +339,8 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 17. **Seccomp filter is x86_64 only**: Syscall numbers hardcoded for x86_64 in guardian-launch
 18. **UDP not enforced by Landlock**: Only TCP connect is filtered. UDP `sendto()` without prior `connect()` bypasses both Landlock and eBPF.
 19. **DNS unmonitored**: DNS resolution happens before `connect()`. No domain-based policy possible.
+20. **Privilege drop requires SUDO_UID or --user**: Direct root login without sudo can't auto-detect target user
+21. **CSRF protection requires HX-Request header**: Non-htmx browser forms without auth token will be rejected
 
 ## Build Notes
 
@@ -452,6 +466,32 @@ Creative architectural shift: use Landlock LSM as primary enforcement, eBPF as a
 - **IPC SandboxConfig**: Daemon sends agent policy in registration Ack response. Launcher builds Landlock + seccomp from it.
 - **Two security tiers**: Cgroup = hardened (Landlock+seccomp+eBPF+cgroup), Comm = limited (eBPF only)
 - Every CRITICAL and HIGH vulnerability (symlinks, TOCTOU, io_uring, rename/hardlink) is mitigated for cgroup agents
+
+### Phase 11: Security Hardening & Performance ✅ DONE
+Based on comprehensive code audit (`docs/security/comprehensive-code-analysis.md`):
+
+**11a: Critical Security Fixes:**
+- PENDING map overflow fail-closed (per-CPU overflow arrays + 4x map size)
+- Privilege dropping in guardian-launch (fixes Landlock+exec on SELinux)
+- Grant accumulation limit enforcement (check before oneshot send)
+
+**11b: High Security Fixes:**
+- Privilege drop mandatory on SELinux (bail instead of warn)
+- Landlock default-allow returns error (not silent Ok)
+- CSRF protection for dashboard (HX-Request header validation)
+
+**11c: Performance & Reliability:**
+- O(1) agent lookup via comm_cache HashMap (was O(N) per event)
+- IPC socket 30-second read timeout (prevents stall attacks)
+- Rate limiter TTL cleanup (1 hour, prevents unbounded memory)
+- Grant accumulator TTL cleanup (24 hours, hourly background task)
+- BPF grant removal logged at WARN (was DEBUG)
+
+**11d: Usability & Platform:**
+- Default cgroup agent config auto-created on registration
+- Debian/Ubuntu dynamic linker multiarch paths
+- Dashboard form defaults updated for Fedora + Debian system paths
+- Landlock system paths: /usr/libexec, /sbin, /snap, /var
 
 ## Dependency Versions
 

@@ -229,11 +229,19 @@ pub async fn start_ipc_server(socket_path: &str, state: SharedIpcState) -> Resul
     }
 }
 
+/// IPC read timeout: prevents a client from blocking a connection slot by sending
+/// the length prefix but never the body (or connecting and never sending anything).
+const IPC_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Handle a single IPC connection.
 async fn handle_connection(mut stream: UnixStream, state: SharedIpcState) -> Result<()> {
-    // Read length-prefixed message
+    // Read length-prefixed message with a timeout to prevent hanging on
+    // malicious or buggy clients that connect but never send data.
     let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
+    tokio::time::timeout(IPC_READ_TIMEOUT, stream.read_exact(&mut len_buf))
+        .await
+        .context("IPC read timed out waiting for message length")?
+        .context("Failed to read IPC message length")?;
     let len = u32::from_be_bytes(len_buf) as usize;
 
     if len > guardian_common::MAX_IPC_MESSAGE_LEN {
@@ -243,7 +251,10 @@ async fn handle_connection(mut stream: UnixStream, state: SharedIpcState) -> Res
     }
 
     let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf).await?;
+    tokio::time::timeout(IPC_READ_TIMEOUT, stream.read_exact(&mut buf))
+        .await
+        .context("IPC read timed out waiting for message body")?
+        .context("Failed to read IPC message body")?;
 
     let request: IpcRequest = serde_json::from_slice(&buf)
         .context("Failed to parse IPC request")?;
@@ -1129,6 +1140,34 @@ pub async fn resolve_permission(
 
     let mut pending = s.pending_permissions.remove(pos);
 
+    // Phase 10 fix: Check grant accumulation limits BEFORE sending the decision.
+    // If the limit is exceeded, override the approval to a denial.
+    let (approved, reason, grant_duration_secs) = if approved {
+        if let Some(duration) = grant_duration_secs {
+            let max_total = s.config.permissions.as_ref()
+                .map(|p| p.max_grant_total_secs)
+                .unwrap_or(3600);
+            let accumulated = s.grant_accumulator.record_and_check(
+                &pending.agent_name,
+                &pending.resource_path,
+                duration,
+            );
+            if accumulated > max_total {
+                warn!(
+                    "Permission #{} grant accumulation exceeded: agent='{}' resource='{}' total={}s > limit={}s — overriding to DENY",
+                    permission_id, pending.agent_name, pending.resource_path, accumulated, max_total
+                );
+                (false, "Grant accumulation limit exceeded".to_string(), None)
+            } else {
+                (approved, reason, grant_duration_secs)
+            }
+        } else {
+            (approved, reason, grant_duration_secs)
+        }
+    } else {
+        (approved, reason, grant_duration_secs)
+    };
+
     // Send decision to the waiting agent via oneshot
     if let Some(responder) = pending.responder.take() {
         let _ = responder.send(PermissionDecision {
@@ -1141,24 +1180,6 @@ pub async fn resolve_permission(
     // If approved, create a temporary grant
     if approved {
         if let Some(duration) = grant_duration_secs {
-            // Phase 8: Check grant accumulation limits
-            let max_total = s.config.permissions.as_ref()
-                .map(|p| p.max_grant_total_secs)
-                .unwrap_or(3600);
-            let accumulated = s.grant_accumulator.record_and_check(
-                &pending.agent_name,
-                &pending.resource_path,
-                duration,
-            );
-            if accumulated > max_total {
-                warn!(
-                    "Permission #{} grant accumulation exceeded: agent='{}' resource='{}' total={}s > limit={}s",
-                    permission_id, pending.agent_name, pending.resource_path, accumulated, max_total
-                );
-                // Note: We still allow it but log the warning. The grant was already
-                // communicated to the agent via oneshot. Future enhancement: block before
-                // sending the decision.
-            }
 
             let expires_at = Instant::now() + Duration::from_secs(duration);
             let is_prefix = pending.resource_path.ends_with("/**");
@@ -1397,12 +1418,12 @@ pub async fn cgroup_cleanup_task(state: SharedIpcState) {
                             let prefix = strip_glob_to_prefix(&grant.path);
                             let key = path_to_lpm_key(prefix.as_bytes());
                             if let Err(e) = policy_maps.allow_prefixes.remove(&key) {
-                                debug!("Failed to remove expired allow prefix for '{}': {}", grant.path, e);
+                                warn!("Failed to remove expired allow prefix for '{}': {}", grant.path, e);
                             }
                         } else {
                             let key = path_to_map_key(grant.path.as_bytes());
                             if let Err(e) = policy_maps.allow_exact.remove(&key) {
-                                debug!("Failed to remove expired allow exact for '{}': {}", grant.path, e);
+                                warn!("Failed to remove expired allow exact for '{}': {}", grant.path, e);
                             }
                         }
                     }

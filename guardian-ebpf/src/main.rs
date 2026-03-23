@@ -61,7 +61,7 @@ static EXEC_EVENTS: PerfEventArray<ExecEvent> = PerfEventArray::new(0);
 /// Pending deny decisions: key = pid_tgid, value = 1.
 /// Set by the tracepoint, read by the LSM hook to block access.
 #[map]
-static PENDING_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+static PENDING_DENY: HashMap<u64, u8> = HashMap::with_max_entries(16384, 0);
 
 /// Deny rules: LPM trie for prefix matching (/** patterns).
 /// Key data is the path prefix (with trailing '/'), prefix_len in bits.
@@ -135,7 +135,7 @@ static EXEC_CGROUP_DEFAULT_ACTION: HashMap<u64, u8> = HashMap::with_max_entries(
 /// Pending exec deny decisions: key = pid_tgid, value = 1.
 /// Set by the execve tracepoint, consumed by the bprm_check_security LSM hook.
 #[map]
-static PENDING_EXEC_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+static PENDING_EXEC_DENY: HashMap<u64, u8> = HashMap::with_max_entries(16384, 0);
 
 // =============================================================================
 // Network Monitoring + Enforcement Maps (Phase 7 monitoring, Phase 9 enforcement)
@@ -152,7 +152,7 @@ static NET_EVENTS: PerfEventArray<NetworkEvent> = PerfEventArray::new(0);
 /// Pending network deny decisions: key = pid_tgid, value = 1.
 /// Set by sys_enter_connect tracepoint, consumed by LSM socket_connect.
 #[map]
-static PENDING_NET_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+static PENDING_NET_DENY: HashMap<u64, u8> = HashMap::with_max_entries(16384, 0);
 
 /// Network deny rules: denied destination ports. key = port (u16 as u32), value = 1.
 #[map]
@@ -177,17 +177,17 @@ static NET_CGROUP_DEFAULT_ACTION: HashMap<u64, u8> = HashMap::with_max_entries(1
 /// Pending rename deny decisions: key = pid_tgid, value = 1.
 /// Set by sys_enter_renameat2, consumed by LSM inode_rename.
 #[map]
-static PENDING_RENAME_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+static PENDING_RENAME_DENY: HashMap<u64, u8> = HashMap::with_max_entries(16384, 0);
 
 /// Pending unlink deny decisions: key = pid_tgid, value = 1.
 /// Set by sys_enter_unlinkat, consumed by LSM inode_unlink.
 #[map]
-static PENDING_UNLINK_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+static PENDING_UNLINK_DENY: HashMap<u64, u8> = HashMap::with_max_entries(16384, 0);
 
 /// Pending hardlink deny decisions: key = pid_tgid, value = 1.
 /// Set by sys_enter_linkat, consumed by LSM inode_link.
 #[map]
-static PENDING_LINK_DENY: HashMap<u64, u8> = HashMap::with_max_entries(4096, 0);
+static PENDING_LINK_DENY: HashMap<u64, u8> = HashMap::with_max_entries(16384, 0);
 
 // =============================================================================
 // Phase 8 Maps: Dynamic Linker Detection
@@ -208,8 +208,105 @@ static DYNAMIC_LINKERS: HashMap<[u8; MAX_FILENAME_LEN], u8> =
 static FAIL_CLOSED_CGROUPS: HashMap<u64, u8> = HashMap::with_max_entries(1024, 0);
 
 // =============================================================================
+// Pending Map Overflow Protection (fail-closed on map full)
+// =============================================================================
+//
+// When a PENDING_*_DENY HashMap is full, insert() fails. Without overflow
+// protection, the LSM hook finds no entry and ALLOWS access — a security bypass.
+//
+// Fix: Per-CPU overflow arrays store the pid_tgid that couldn't be inserted.
+// Since tracepoint and LSM hook execute on the same CPU in the same syscall
+// path, this is race-free. LSM hooks check both the HashMap AND the overflow
+// array. A separate counter tracks total insert failures for observability.
+
+/// Per-CPU overflow for PENDING_DENY: stores pid_tgid when HashMap insert fails.
+/// Value of 0 means no overflow. Checked by file_open LSM hook.
+#[map]
+static PENDING_DENY_OVERFLOW: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
+
+/// Per-CPU overflow for PENDING_EXEC_DENY: stores pid_tgid when HashMap insert fails.
+/// Value of 0 means no overflow. Checked by bprm_check_security LSM hook.
+#[map]
+static PENDING_EXEC_DENY_OVERFLOW: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
+
+/// Per-CPU overflow for PENDING_NET_DENY: stores pid_tgid when HashMap insert fails.
+/// Value of 0 means no overflow. Checked by socket_connect LSM hook.
+#[map]
+static PENDING_NET_DENY_OVERFLOW: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
+
+/// Per-CPU overflow for PENDING_RENAME_DENY: stores pid_tgid when HashMap insert fails.
+/// Value of 0 means no overflow. Checked by inode_rename LSM hook.
+#[map]
+static PENDING_RENAME_DENY_OVERFLOW: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
+
+/// Per-CPU overflow for PENDING_UNLINK_DENY: stores pid_tgid when HashMap insert fails.
+/// Value of 0 means no overflow. Checked by inode_unlink LSM hook.
+#[map]
+static PENDING_UNLINK_DENY_OVERFLOW: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
+
+/// Per-CPU overflow for PENDING_LINK_DENY: stores pid_tgid when HashMap insert fails.
+/// Value of 0 means no overflow. Checked by inode_link LSM hook.
+#[map]
+static PENDING_LINK_DENY_OVERFLOW: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
+
+/// Per-CPU counter of PENDING map insert failures (all types combined).
+/// Userspace can read this for observability/alerting on map pressure.
+#[map]
+static PENDING_INSERT_FAILURES: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
+
+// =============================================================================
 // Helpers
 // =============================================================================
+
+/// Try to insert a deny entry into a PENDING HashMap. If the HashMap is full,
+/// fall back to the per-CPU overflow array and increment the failure counter.
+/// This ensures the LSM hook will still deny access even when the map is full.
+#[inline(always)]
+fn pending_insert_with_overflow(
+    map: &HashMap<u64, u8>,
+    overflow: &PerCpuArray<u64>,
+    pid_tgid: &u64,
+) {
+    if map.insert(pid_tgid, &1u8, 0).is_err() {
+        // HashMap full — use per-CPU overflow as fail-closed fallback.
+        // Safe because tracepoint + LSM hook run on same CPU for same syscall.
+        if let Some(ptr) = overflow.get_ptr_mut(0) {
+            unsafe { *ptr = *pid_tgid };
+        }
+        // Increment per-CPU failure counter for observability.
+        if let Some(ptr) = PENDING_INSERT_FAILURES.get_ptr_mut(0) {
+            unsafe { *ptr += 1 };
+        }
+    }
+}
+
+/// Check if a pid_tgid has a pending deny in either the HashMap or the
+/// per-CPU overflow array. If found, removes/clears the entry.
+/// Returns true if a deny was pending.
+#[inline(always)]
+fn pending_check_and_consume(
+    map: &HashMap<u64, u8>,
+    overflow: &PerCpuArray<u64>,
+    pid_tgid: u64,
+) -> bool {
+    // Check primary HashMap first (common path)
+    if unsafe { map.get(&pid_tgid) }.is_some() {
+        let _ = map.remove(&pid_tgid);
+        return true;
+    }
+
+    // Check per-CPU overflow array (rare path — only when HashMap was full)
+    if let Some(ptr) = overflow.get_ptr_mut(0) {
+        let stored = unsafe { *ptr };
+        if stored == pid_tgid {
+            // Clear the overflow slot
+            unsafe { *ptr = 0 };
+            return true;
+        }
+    }
+
+    false
+}
 
 /// Check if the current process is watched, using 3-tier identification:
 /// 1. Cgroup ID (Phase 3 — strongest, unspoofable)
@@ -413,11 +510,11 @@ fn try_guardian_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
     if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
         if event.status_flags & EVENT_FLAG_TRUNCATED != 0 {
             // Phase 8: Truncated path — deny for safety (can't match policy correctly)
-            let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+            pending_insert_with_overflow(&PENDING_DENY, &PENDING_DENY_OVERFLOW, &pid_tgid);
         } else {
             let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
             if !allowed {
-                let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+                pending_insert_with_overflow(&PENDING_DENY, &PENDING_DENY_OVERFLOW, &pid_tgid);
             }
         }
     }
@@ -500,11 +597,11 @@ fn try_guardian_file_openat2(ctx: &TracePointContext) -> Result<u32, i64> {
     // Kernel-side policy evaluation for enforcement
     if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
         if event.status_flags & EVENT_FLAG_TRUNCATED != 0 {
-            let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+            pending_insert_with_overflow(&PENDING_DENY, &PENDING_DENY_OVERFLOW, &pid_tgid);
         } else {
             let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
             if !allowed {
-                let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+                pending_insert_with_overflow(&PENDING_DENY, &PENDING_DENY_OVERFLOW, &pid_tgid);
             }
         }
     }
@@ -530,8 +627,8 @@ pub fn guardian_enforce_file_open(ctx: LsmContext) -> i32 {
 fn try_enforce_file_open(_ctx: &LsmContext) -> Result<i32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
 
-    if unsafe { PENDING_DENY.get(&pid_tgid) }.is_some() {
-        let _ = PENDING_DENY.remove(&pid_tgid);
+    // Check both primary HashMap and per-CPU overflow array (fail-closed on map full)
+    if pending_check_and_consume(&PENDING_DENY, &PENDING_DENY_OVERFLOW, pid_tgid) {
         return Ok(-13); // -EACCES
     }
 
@@ -610,7 +707,7 @@ fn try_guardian_exec_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
                                 event.filename_len = real_len as u32;
                                 let allowed = evaluate_exec_policy(&event.filename, real_len, &comm, cgroup_id);
                                 if !allowed {
-                                    let _ = PENDING_EXEC_DENY.insert(&pid_tgid, &1u8, 0);
+                                    pending_insert_with_overflow(&PENDING_EXEC_DENY, &PENDING_EXEC_DENY_OVERFLOW, &pid_tgid);
                                 }
                             }
                         }
@@ -620,7 +717,7 @@ fn try_guardian_exec_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
         } else {
             let allowed = evaluate_exec_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
             if !allowed {
-                let _ = PENDING_EXEC_DENY.insert(&pid_tgid, &1u8, 0);
+                pending_insert_with_overflow(&PENDING_EXEC_DENY, &PENDING_EXEC_DENY_OVERFLOW, &pid_tgid);
             }
         }
     }
@@ -673,7 +770,7 @@ fn try_guardian_execveat_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
         // This is an AT_EMPTY_PATH execveat — likely memfd execution.
         // For enforced agents, deny unconditionally (no filesystem path to evaluate).
         if is_process_enforcing(&comm, tgid, cgroup_id) {
-            let _ = PENDING_EXEC_DENY.insert(&pid_tgid, &1u8, 0);
+            pending_insert_with_overflow(&PENDING_EXEC_DENY, &PENDING_EXEC_DENY_OVERFLOW, &pid_tgid);
         }
         // Set a placeholder filename for the event
         let memfd_path = b"/memfd:anonymous";
@@ -705,7 +802,7 @@ fn try_guardian_execveat_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
         if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
             let allowed = evaluate_exec_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
             if !allowed {
-                let _ = PENDING_EXEC_DENY.insert(&pid_tgid, &1u8, 0);
+                pending_insert_with_overflow(&PENDING_EXEC_DENY, &PENDING_EXEC_DENY_OVERFLOW, &pid_tgid);
             }
         }
     }
@@ -779,8 +876,8 @@ pub fn guardian_enforce_exec(ctx: LsmContext) -> i32 {
 fn try_enforce_exec(_ctx: &LsmContext) -> Result<i32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
 
-    if unsafe { PENDING_EXEC_DENY.get(&pid_tgid) }.is_some() {
-        let _ = PENDING_EXEC_DENY.remove(&pid_tgid);
+    // Check both primary HashMap and per-CPU overflow array (fail-closed on map full)
+    if pending_check_and_consume(&PENDING_EXEC_DENY, &PENDING_EXEC_DENY_OVERFLOW, pid_tgid) {
         return Ok(-1); // -EPERM
     }
 
@@ -841,11 +938,11 @@ fn try_guardian_file_open_legacy(ctx: &TracePointContext) -> Result<u32, i64> {
 
     if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
         if event.status_flags & EVENT_FLAG_TRUNCATED != 0 {
-            let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+            pending_insert_with_overflow(&PENDING_DENY, &PENDING_DENY_OVERFLOW, &pid_tgid);
         } else {
             let allowed = evaluate_policy(&event.filename, event.filename_len as usize, &comm, cgroup_id);
             if !allowed {
-                let _ = PENDING_DENY.insert(&pid_tgid, &1u8, 0);
+                pending_insert_with_overflow(&PENDING_DENY, &PENDING_DENY_OVERFLOW, &pid_tgid);
             }
         }
     }
@@ -936,7 +1033,7 @@ fn try_guardian_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
     if is_process_enforcing(&comm, tgid, cgroup_id) && event.dest_port > 0 {
         let allowed = evaluate_net_policy(event.dest_port, &comm, cgroup_id);
         if !allowed {
-            let _ = PENDING_NET_DENY.insert(&pid_tgid, &1u8, 0);
+            pending_insert_with_overflow(&PENDING_NET_DENY, &PENDING_NET_DENY_OVERFLOW, &pid_tgid);
         }
     }
 
@@ -992,7 +1089,7 @@ fn try_guardian_rename_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
             if len > 0 {
                 let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
                 if !allowed {
-                    let _ = PENDING_RENAME_DENY.insert(&pid_tgid, &1u8, 0);
+                    pending_insert_with_overflow(&PENDING_RENAME_DENY, &PENDING_RENAME_DENY_OVERFLOW, &pid_tgid);
                     return Ok(0);
                 }
             }
@@ -1008,7 +1105,7 @@ fn try_guardian_rename_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
             if len > 0 {
                 let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
                 if !allowed {
-                    let _ = PENDING_RENAME_DENY.insert(&pid_tgid, &1u8, 0);
+                    pending_insert_with_overflow(&PENDING_RENAME_DENY, &PENDING_RENAME_DENY_OVERFLOW, &pid_tgid);
                 }
             }
         }
@@ -1032,8 +1129,8 @@ pub fn guardian_enforce_rename(ctx: LsmContext) -> i32 {
 fn try_enforce_rename(_ctx: &LsmContext) -> Result<i32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
 
-    if unsafe { PENDING_RENAME_DENY.get(&pid_tgid) }.is_some() {
-        let _ = PENDING_RENAME_DENY.remove(&pid_tgid);
+    // Check both primary HashMap and per-CPU overflow array (fail-closed on map full)
+    if pending_check_and_consume(&PENDING_RENAME_DENY, &PENDING_RENAME_DENY_OVERFLOW, pid_tgid) {
         return Ok(-13); // -EACCES
     }
 
@@ -1086,7 +1183,7 @@ fn try_guardian_unlink_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
         if len > 0 {
             let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
             if !allowed {
-                let _ = PENDING_UNLINK_DENY.insert(&pid_tgid, &1u8, 0);
+                pending_insert_with_overflow(&PENDING_UNLINK_DENY, &PENDING_UNLINK_DENY_OVERFLOW, &pid_tgid);
             }
         }
     }
@@ -1109,8 +1206,8 @@ pub fn guardian_enforce_unlink(ctx: LsmContext) -> i32 {
 fn try_enforce_unlink(_ctx: &LsmContext) -> Result<i32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
 
-    if unsafe { PENDING_UNLINK_DENY.get(&pid_tgid) }.is_some() {
-        let _ = PENDING_UNLINK_DENY.remove(&pid_tgid);
+    // Check both primary HashMap and per-CPU overflow array (fail-closed on map full)
+    if pending_check_and_consume(&PENDING_UNLINK_DENY, &PENDING_UNLINK_DENY_OVERFLOW, pid_tgid) {
         return Ok(-13); // -EACCES
     }
 
@@ -1164,7 +1261,7 @@ fn try_guardian_link_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
         if len > 0 {
             let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
             if !allowed {
-                let _ = PENDING_LINK_DENY.insert(&pid_tgid, &1u8, 0);
+                pending_insert_with_overflow(&PENDING_LINK_DENY, &PENDING_LINK_DENY_OVERFLOW, &pid_tgid);
             }
         }
     }
@@ -1187,8 +1284,8 @@ pub fn guardian_enforce_link(ctx: LsmContext) -> i32 {
 fn try_enforce_link(_ctx: &LsmContext) -> Result<i32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
 
-    if unsafe { PENDING_LINK_DENY.get(&pid_tgid) }.is_some() {
-        let _ = PENDING_LINK_DENY.remove(&pid_tgid);
+    // Check both primary HashMap and per-CPU overflow array (fail-closed on map full)
+    if pending_check_and_consume(&PENDING_LINK_DENY, &PENDING_LINK_DENY_OVERFLOW, pid_tgid) {
         return Ok(-13); // -EACCES
     }
 
@@ -1213,8 +1310,8 @@ pub fn guardian_enforce_net_connect(ctx: LsmContext) -> i32 {
 fn try_enforce_net_connect(_ctx: &LsmContext) -> Result<i32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
 
-    if unsafe { PENDING_NET_DENY.get(&pid_tgid) }.is_some() {
-        let _ = PENDING_NET_DENY.remove(&pid_tgid);
+    // Check both primary HashMap and per-CPU overflow array (fail-closed on map full)
+    if pending_check_and_consume(&PENDING_NET_DENY, &PENDING_NET_DENY_OVERFLOW, pid_tgid) {
         return Ok(-111); // -ECONNREFUSED: more informative than -EACCES for network
     }
 

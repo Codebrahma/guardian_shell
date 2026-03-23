@@ -146,13 +146,19 @@ fn main() -> Result<()> {
             Ok(false) => {
                 // No target user available (not via sudo, no --user flag)
                 if selinux_enforcing {
-                    warn!("Running as root on SELinux — no user to drop to. \
-                           Use --user <uid> or run via sudo for Landlock support. \
-                           Landlock will be skipped.");
+                    bail!("Running as root on SELinux with no user to drop to. \
+                           Landlock cannot work as root on SELinux. \
+                           Use --user <uid> or run via sudo.");
                 }
+                warn!("No target user for privilege drop (not via sudo, no --user flag). \
+                       Continuing as root — agents should not run as root.");
                 false
             }
             Err(e) => {
+                if selinux_enforcing {
+                    bail!("Failed to drop privileges on SELinux: {}. \
+                           Landlock cannot work as root on SELinux.", e);
+                }
                 warn!("Failed to drop privileges: {} (continuing as root)", e);
                 false
             }
@@ -469,13 +475,13 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
         RulesetAttr, RulesetCreatedAttr, RulesetStatus, ABI,
     };
 
-    // Require default-deny for Landlock (it's inherently default-deny)
+    // Require default-deny for Landlock (it's inherently default-deny).
+    // Return an error so the caller knows Landlock was NOT applied.
     if config.file_default != "deny" {
-        log::warn!(
-            "Landlock sandbox skipped: file_access.default='{}' (Landlock requires 'deny')",
+        bail!(
+            "Landlock sandbox not applied: file_access.default='{}' (Landlock requires 'deny')",
             config.file_default
         );
-        return Ok(());
     }
 
     // Detect best available ABI

@@ -6,6 +6,7 @@ pub use state::DashboardState;
 
 use axum::Router;
 use axum::extract::Request;
+use axum::http::Method;
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use log::{error, info};
@@ -102,6 +103,7 @@ pub fn router(state: Arc<DashboardState>) -> Router {
 
     let has_auth = state.auth_token.is_some();
     let auth_state = state.clone();
+    let csrf_state = state.clone();
 
     let app = Router::new()
         // Full pages
@@ -134,6 +136,14 @@ pub fn router(state: Arc<DashboardState>) -> Router {
         // Static files
         .route("/static/{*path}", get(static_handler))
         .with_state(state);
+
+    // CSRF middleware is applied first (outermost layer, runs after auth).
+    // Auth middleware is applied second (innermost layer, runs before CSRF).
+    // Execution order: auth_middleware -> csrf_middleware -> handler.
+    let app = app.layer(middleware::from_fn(move |req, next| {
+        let state = csrf_state.clone();
+        csrf_middleware(state, req, next)
+    }));
 
     // Add auth middleware if token is configured
     if has_auth {
@@ -205,6 +215,64 @@ async fn auth_middleware(
         req.method(), path
     );
     (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized: provide Bearer token or ?token= query parameter").into_response()
+}
+
+/// CSRF protection middleware: validates that state-changing requests (POST, PUT, DELETE)
+/// originate from legitimate sources. htmx automatically sends the `HX-Request: true` header
+/// on all requests, and browsers prevent cross-origin scripts from setting custom headers,
+/// so checking for this header provides CSRF protection.
+///
+/// Requests pass CSRF validation if ANY of these conditions are met:
+/// - The HTTP method is GET, HEAD, or OPTIONS (safe/read-only methods)
+/// - The request has the `HX-Request: true` header (htmx request from same origin)
+/// - The request has a valid Bearer auth token (authenticated API client)
+///
+/// This runs after auth middleware, so authenticated requests with a valid token
+/// are allowed as defense-in-depth (API clients may not send HX-Request).
+async fn csrf_middleware(
+    state: Arc<DashboardState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    // Safe methods don't need CSRF protection
+    let method = req.method().clone();
+    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+        return next.run(req).await;
+    }
+
+    // Check for htmx header — browsers prevent cross-origin custom headers,
+    // so presence of HX-Request proves same-origin.
+    if req.headers().get("hx-request")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "true")
+        .unwrap_or(false)
+    {
+        return next.run(req).await;
+    }
+
+    // Check for valid Bearer auth token — API clients authenticate explicitly,
+    // so a valid token proves the request is intentional (not a CSRF attack).
+    if let Some(ref expected) = state.auth_token {
+        if let Some(auth_header) = req.headers().get("authorization") {
+            if let Ok(val) = auth_header.to_str() {
+                if let Some(token) = val.strip_prefix("Bearer ") {
+                    if constant_time_eq(token.as_bytes(), expected.as_bytes()) {
+                        return next.run(req).await;
+                    }
+                }
+            }
+        }
+    }
+
+    // No CSRF token present — reject the request
+    log::warn!(
+        "CSRF validation failed: {} {} (no HX-Request header or valid auth token)",
+        method, req.uri().path()
+    );
+    (
+        axum::http::StatusCode::FORBIDDEN,
+        "Forbidden: CSRF validation failed. State-changing requests require HX-Request header or Bearer auth token.",
+    ).into_response()
 }
 
 async fn static_handler(

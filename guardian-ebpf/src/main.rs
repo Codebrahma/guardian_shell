@@ -84,6 +84,18 @@ static ALLOW_PREFIXES: LpmTrie<[u8; MAX_FILENAME_LEN], u8> =
 static ALLOW_EXACT: HashMap<[u8; MAX_FILENAME_LEN], u8> =
     HashMap::with_max_entries(1024, 0);
 
+/// Read-only path prefix matches: paths that can be read but not written/deleted/renamed.
+/// These are treated as "allowed" in evaluate_policy() (so reads succeed),
+/// but destructive ops (unlink, rename, link) check is_readonly() and deny.
+#[map]
+static READONLY_PREFIXES: LpmTrie<[u8; MAX_FILENAME_LEN], u8> =
+    LpmTrie::with_max_entries(1024, 0);
+
+/// Read-only path exact matches.
+#[map]
+static READONLY_EXACT: HashMap<[u8; MAX_FILENAME_LEN], u8> =
+    HashMap::with_max_entries(1024, 0);
+
 /// Default action per comm: key = comm, value: 0 = deny, 1 = allow.
 #[map]
 static DEFAULT_ACTION: HashMap<[u8; 16], u8> = HashMap::with_max_entries(1024, 0);
@@ -391,6 +403,15 @@ fn evaluate_policy(
         return false;
     }
 
+    // Step 2.5: Read-only paths are allowed for reads (file_open).
+    // Destructive operations (unlink, rename, link) check is_readonly() separately.
+    if unsafe { READONLY_EXACT.get(filename) }.is_some() {
+        return true;
+    }
+    if READONLY_PREFIXES.get(&lpm_key).is_some() {
+        return true;
+    }
+
     // Step 3: Check allow exact match
     if unsafe { ALLOW_EXACT.get(filename) }.is_some() {
         return true;
@@ -409,6 +430,18 @@ fn evaluate_policy(
         Some(&action) => action == 1,
         None => true, // fail-open if no default configured
     }
+}
+
+/// Check if a path is in the read-only list.
+/// Returns true if the path should be read-only (deny writes/deletes/renames).
+#[inline(always)]
+fn is_readonly(filename: &[u8; MAX_FILENAME_LEN], filename_len: usize) -> bool {
+    if unsafe { READONLY_EXACT.get(filename) }.is_some() {
+        return true;
+    }
+    let prefix_bits = (filename_len as u32) * 8;
+    let lpm_key = Key::new(prefix_bits, *filename);
+    READONLY_PREFIXES.get(&lpm_key).is_some()
 }
 
 /// Evaluate network deny/allow rules using port-based map lookups.
@@ -506,8 +539,15 @@ fn try_guardian_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
         }
     }
 
-    // Kernel-side policy evaluation for enforcement
-    if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
+    // Kernel-side policy evaluation for enforcement.
+    // CRITICAL: Skip O_PATH opens. O_PATH creates non-dereferenceable file descriptors
+    // and does NOT trigger the file_open LSM hook. If we insert PENDING_DENY for an
+    // O_PATH open, the entry is never consumed (no matching LSM hook fires), and it
+    // poisons the NEXT file_open — causing false EACCES on unrelated operations.
+    // This is triggered by Landlock's PathFd::new() which opens paths with O_PATH.
+    let is_o_path = (event.flags & 0x200000) != 0; // O_PATH = 0x200000 on x86_64
+
+    if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 && !is_o_path {
         if event.status_flags & EVENT_FLAG_TRUNCATED != 0 {
             // Phase 8: Truncated path — deny for safety (can't match policy correctly)
             pending_insert_with_overflow(&PENDING_DENY, &PENDING_DENY_OVERFLOW, &pid_tgid);
@@ -594,8 +634,10 @@ fn try_guardian_file_openat2(ctx: &TracePointContext) -> Result<u32, i64> {
         }
     }
 
-    // Kernel-side policy evaluation for enforcement
-    if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
+    // Skip O_PATH opens — see sys_enter_openat comment for rationale.
+    let is_o_path = (event.flags & 0x200000) != 0;
+
+    if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 && !is_o_path {
         if event.status_flags & EVENT_FLAG_TRUNCATED != 0 {
             pending_insert_with_overflow(&PENDING_DENY, &PENDING_DENY_OVERFLOW, &pid_tgid);
         } else {
@@ -936,7 +978,10 @@ fn try_guardian_file_open_legacy(ctx: &TracePointContext) -> Result<u32, i64> {
         }
     }
 
-    if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 {
+    // Skip O_PATH opens — see sys_enter_openat comment for rationale.
+    let is_o_path = (event.flags & 0x200000) != 0;
+
+    if is_process_enforcing(&comm, tgid, cgroup_id) && event.filename_len > 0 && !is_o_path {
         if event.status_flags & EVENT_FLAG_TRUNCATED != 0 {
             pending_insert_with_overflow(&PENDING_DENY, &PENDING_DENY_OVERFLOW, &pid_tgid);
         } else {
@@ -1080,13 +1125,18 @@ fn try_guardian_rename_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
         &mut *ptr
     };
 
-    // Check source path — if it's denied, block rename of protected files
+    // Check source path — if it's denied or read-only, block rename of protected files
     if oldname_ptr != 0 {
         if let Ok(name_bytes) = unsafe {
             bpf_probe_read_user_str_bytes(oldname_ptr as *const u8, &mut scratch.filename)
         } {
             let len = name_bytes.len();
             if len > 0 {
+                // Check read-only: deny rename of read-only paths
+                if is_readonly(&scratch.filename, len) {
+                    pending_insert_with_overflow(&PENDING_RENAME_DENY, &PENDING_RENAME_DENY_OVERFLOW, &pid_tgid);
+                    return Ok(0);
+                }
                 let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
                 if !allowed {
                     pending_insert_with_overflow(&PENDING_RENAME_DENY, &PENDING_RENAME_DENY_OVERFLOW, &pid_tgid);
@@ -1181,6 +1231,11 @@ fn try_guardian_unlink_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
     } {
         let len = name_bytes.len();
         if len > 0 {
+            // Check read-only: deny deletion of read-only paths
+            if is_readonly(&scratch.filename, len) {
+                pending_insert_with_overflow(&PENDING_UNLINK_DENY, &PENDING_UNLINK_DENY_OVERFLOW, &pid_tgid);
+                return Ok(0);
+            }
             let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
             if !allowed {
                 pending_insert_with_overflow(&PENDING_UNLINK_DENY, &PENDING_UNLINK_DENY_OVERFLOW, &pid_tgid);
@@ -1253,12 +1308,17 @@ fn try_guardian_link_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
         &mut *ptr
     };
 
-    // Check if the source file (being hardlinked) is in a deny list
+    // Check if the source file (being hardlinked) is in a deny or read-only list
     if let Ok(name_bytes) = unsafe {
         bpf_probe_read_user_str_bytes(oldname_ptr as *const u8, &mut scratch.filename)
     } {
         let len = name_bytes.len();
         if len > 0 {
+            // Check read-only: deny hardlink creation for read-only paths
+            if is_readonly(&scratch.filename, len) {
+                pending_insert_with_overflow(&PENDING_LINK_DENY, &PENDING_LINK_DENY_OVERFLOW, &pid_tgid);
+                return Ok(0);
+            }
             let allowed = evaluate_policy(&scratch.filename, len, &comm, cgroup_id);
             if !allowed {
                 pending_insert_with_overflow(&PENDING_LINK_DENY, &PENDING_LINK_DENY_OVERFLOW, &pid_tgid);

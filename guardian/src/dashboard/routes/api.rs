@@ -239,6 +239,7 @@ pub async fn create_agent(
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
             .collect(),
+        read_only: vec![],
     };
 
     // Build exec policy if enabled
@@ -415,6 +416,7 @@ pub struct PolicyUpdate {
     pub default_action: String,
     pub allow_rules: String,
     pub deny_rules: String,
+    pub read_only_rules: Option<String>,
     pub exec_default: Option<String>,
     pub exec_allow: Option<String>,
     pub exec_deny: Option<String>,
@@ -454,6 +456,13 @@ pub async fn update_policy(
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
+    if let Some(read_only_rules) = form.read_only_rules {
+        agent.file_access.read_only = read_only_rules
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+    }
 
     // Update exec policy if provided
     if let Some(exec_default) = form.exec_default {
@@ -1042,7 +1051,15 @@ pub fn write_config_toml(
         for rule in &agent.file_access.deny {
             out.push_str(&format!("    \"{}\",\n", rule));
         }
-        out.push_str("]\n\n");
+        out.push_str("]\n");
+        if !agent.file_access.read_only.is_empty() {
+            out.push_str("read_only = [\n");
+            for rule in &agent.file_access.read_only {
+                out.push_str(&format!("    \"{}\",\n", rule));
+            }
+            out.push_str("]\n");
+        }
+        out.push_str("\n");
 
         if let Some(ref exec) = agent.exec_policy {
             out.push_str("[agents.exec_policy]\n");

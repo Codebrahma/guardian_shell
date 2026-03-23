@@ -296,6 +296,11 @@ pub struct FileAccessPolicy {
     pub default: String,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
+    /// Paths that can be read but NOT written, deleted, renamed, or hardlinked.
+    /// Read-only paths are treated as allowed for read access (file_open),
+    /// but destructive operations (unlink, rename, link) are blocked in eBPF.
+    #[serde(default)]
+    pub read_only: Vec<String>,
 }
 
 /// Policy for command execution (execve monitoring).
@@ -420,6 +425,7 @@ fn validate_config(config: &Config) -> Result<()> {
             .allow
             .iter()
             .chain(agent.file_access.deny.iter())
+            .chain(agent.file_access.read_only.iter())
         {
             if !pattern.starts_with('/') {
                 log::warn!(
@@ -428,6 +434,14 @@ fn validate_config(config: &Config) -> Result<()> {
                     pattern
                 );
             }
+        }
+
+        if !agent.file_access.read_only.is_empty() {
+            log::info!(
+                "Agent '{}': {} read_only path(s) configured (reads allowed, writes/deletes/renames blocked)",
+                agent.name,
+                agent.file_access.read_only.len(),
+            );
         }
 
         // Validate exec policy if present
@@ -607,7 +621,30 @@ pub fn check_file_policy(policy: &FileAccessPolicy, path: &str) -> bool {
         }
     }
 
+    // Read-only paths are allowed for read access (evaluate_policy in eBPF also allows them).
+    // Destructive operations are blocked separately by is_readonly() checks in eBPF.
+    for pattern in &policy.read_only {
+        if path_matches(path, pattern) {
+            return true;
+        }
+    }
+
     policy.default == "allow"
+}
+
+/// Check whether a path is in the read_only list (userspace policy check).
+/// Used for userspace-side decision logging of destructive operations.
+#[allow(dead_code)]
+pub fn is_path_read_only(policy: &FileAccessPolicy, path: &str) -> bool {
+    let normalized = normalize_path(path);
+    let path = normalized.as_str();
+
+    for pattern in &policy.read_only {
+        if path_matches(path, pattern) {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn check_exec_policy(policy: &ExecPolicy, path: &str) -> bool {
@@ -726,6 +763,7 @@ mod tests {
             default: "allow".to_string(),
             allow: vec!["/home/user/**".to_string()],
             deny: vec!["/home/user/.ssh/**".to_string()],
+            read_only: vec![],
         };
 
         assert!(check_file_policy(&policy, "/home/user/code/main.rs"));
@@ -738,6 +776,7 @@ mod tests {
             default: "deny".to_string(),
             allow: vec!["/tmp/**".to_string()],
             deny: vec![],
+            read_only: vec![],
         };
 
         assert!(check_file_policy(&policy, "/tmp/file.txt"));
@@ -750,10 +789,57 @@ mod tests {
             default: "allow".to_string(),
             allow: vec![],
             deny: vec!["/etc/shadow".to_string()],
+            read_only: vec![],
         };
 
         assert!(check_file_policy(&policy, "/tmp/file.txt"));
         assert!(!check_file_policy(&policy, "/etc/shadow"));
+    }
+
+    #[test]
+    fn test_read_only_allows_reads() {
+        let policy = FileAccessPolicy {
+            default: "deny".to_string(),
+            allow: vec![],
+            deny: vec![],
+            read_only: vec!["/etc/passwd".to_string(), "/var/log/**".to_string()],
+        };
+
+        // read_only paths are allowed for reads
+        assert!(check_file_policy(&policy, "/etc/passwd"));
+        assert!(check_file_policy(&policy, "/var/log/syslog"));
+        // Non-read-only paths are still denied
+        assert!(!check_file_policy(&policy, "/etc/shadow"));
+    }
+
+    #[test]
+    fn test_read_only_deny_overrides() {
+        let policy = FileAccessPolicy {
+            default: "deny".to_string(),
+            allow: vec![],
+            deny: vec!["/etc/shadow".to_string()],
+            read_only: vec!["/etc/**".to_string()],
+        };
+
+        // Deny takes precedence over read_only
+        assert!(!check_file_policy(&policy, "/etc/shadow"));
+        // Other /etc paths are read_only (allowed for reads)
+        assert!(check_file_policy(&policy, "/etc/passwd"));
+    }
+
+    #[test]
+    fn test_is_path_read_only() {
+        let policy = FileAccessPolicy {
+            default: "deny".to_string(),
+            allow: vec!["/tmp/**".to_string()],
+            deny: vec![],
+            read_only: vec!["/etc/passwd".to_string(), "/var/log/**".to_string()],
+        };
+
+        assert!(is_path_read_only(&policy, "/etc/passwd"));
+        assert!(is_path_read_only(&policy, "/var/log/syslog"));
+        assert!(!is_path_read_only(&policy, "/tmp/file.txt"));
+        assert!(!is_path_read_only(&policy, "/etc/shadow"));
     }
 
     #[test]
@@ -812,6 +898,7 @@ mod tests {
             default: "allow".to_string(),
             allow: vec!["/tmp/**".to_string()],
             deny: vec!["/etc/shadow".to_string()],
+            read_only: vec![],
         };
         // These should all be denied after normalization
         assert!(!check_file_policy(&policy, "/proc/self/root/etc/shadow"));
@@ -829,6 +916,7 @@ mod tests {
                 default: "deny".to_string(),
                 allow: vec![],
                 deny: vec![],
+                read_only: vec![],
             },
             exec_policy: None,
             network_policy: None,
@@ -850,6 +938,7 @@ mod tests {
                 default: "deny".to_string(),
                 allow: vec![],
                 deny: vec![],
+                read_only: vec![],
             },
             exec_policy: None,
             network_policy: None,

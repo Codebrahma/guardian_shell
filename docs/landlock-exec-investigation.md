@@ -288,6 +288,24 @@ It tests:
 4. Disables dontaudit rules to find hidden SELinux denials
 5. Tests guardian-launch directly
 
+### O_PATH Stale PENDING_DENY Bug (Found 2026-03-23)
+
+A second Landlock+exec failure was discovered after the privilege dropping fix.
+Even `/usr/bin/bash` failed with EACCES after Landlock `restrict_self()`.
+
+**Root cause:** Landlock's `PathFd::new()` opens paths with `O_PATH` flag. This
+triggers the eBPF `sys_enter_openat` tracepoint (which inserts PENDING_DENY for
+denied paths) but does NOT trigger the `file_open` LSM hook (kernel skips security
+checks for O_PATH). The stale PENDING_DENY entry is consumed by the next real
+`file_open` — which is the exec binary open — causing false EACCES.
+
+**Trigger:** Adding `/sbin` to Landlock `system_read_paths` caused `PathFd::new("/sbin")`
+which was denied by eBPF (wrong agent match, `/sbin` not in allow list).
+
+**Fix:** Check `O_PATH` flag (`0x200000`) in all openat tracepoints. Skip
+PENDING_DENY insertion for O_PATH opens. O_PATH file descriptors are harmless
+(non-dereferenceable, only used for path operations like `fstatat`, `openat`).
+
 ---
 
 ## Remaining Investigation Paths

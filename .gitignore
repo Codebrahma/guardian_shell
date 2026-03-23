@@ -13,6 +13,9 @@
 .DS_Store
 Thumbs.db
 
+# User config (contains real paths/credentials) — use config.toml.example as template
+config.toml
+
 # Environment and secrets - NEVER commit these
 .env
 *.pem

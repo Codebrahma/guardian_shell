@@ -176,6 +176,10 @@ pub const MAP_NET_ALLOW_PORTS: &str = "NET_ALLOW_PORTS";
 pub const MAP_NET_DEFAULT_ACTION: &str = "NET_DEFAULT_ACTION";
 pub const MAP_NET_CGROUP_DEFAULT_ACTION: &str = "NET_CGROUP_DEFAULT_ACTION";
 
+// Read-only enforcement maps
+pub const MAP_READONLY_PREFIXES: &str = "READONLY_PREFIXES";
+pub const MAP_READONLY_EXACT: &str = "READONLY_EXACT";
+
 // Phase 8: Inode enforcement maps (rename/unlink/hardlink)
 pub const MAP_PENDING_RENAME_DENY: &str = "PENDING_RENAME_DENY";
 pub const MAP_PENDING_UNLINK_DENY: &str = "PENDING_UNLINK_DENY";
@@ -295,6 +299,9 @@ pub mod ipc {
         /// Allowed file access path patterns (e.g., "/tmp/**", "/proc/self/**").
         #[serde(default)]
         pub file_allow: Vec<String>,
+        /// Read-only file access path patterns (read allowed, write/delete/rename denied).
+        #[serde(default)]
+        pub file_read_only: Vec<String>,
         /// Exec policy default action: "allow" or "deny".
         #[serde(default = "default_allow")]
         pub exec_default: String,

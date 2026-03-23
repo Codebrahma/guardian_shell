@@ -120,6 +120,11 @@
             <textarea name="deny_rules" rows="6" class="font-mono" placeholder="/etc/shadow&#10;~/.ssh/**">{% for rule in agent.deny_rules %}{{ rule }}
 {% endfor %}</textarea>
           </div>
+          <div class="form-group">
+            <label>Read-Only Rules <span class="help-hint" title="Paths that can be read but NOT written, deleted, or renamed. Deny still overrides.">?</span></label>
+            <textarea name="read_only_rules" rows="4" class="font-mono" placeholder="/etc/passwd&#10;/var/log/**">{% for rule in agent.read_only_rules %}{{ rule }}
+{% endfor %}</textarea>
+          </div>
         </div>
 
         <!-- Exec Policy -->

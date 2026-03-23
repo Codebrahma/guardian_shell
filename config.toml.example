@@ -1,8 +1,9 @@
 # Guardian Shell — Example Configuration
 #
-# Copy this file and edit paths for your environment:
-#   cp config.toml my-config.toml
-#   sudo guardian --config my-config.toml
+# To get started, copy this file and replace /home/user with your actual home:
+#   cp config.toml.example config.toml
+#   sed -i 's|/home/user|/home/YOUR_USERNAME|g' config.toml
+#   sudo target/release/guardian --config config.toml
 #
 # For preset configs, see configs/ directory:
 #   configs/minimal.toml       — Monitor-only, bare minimum

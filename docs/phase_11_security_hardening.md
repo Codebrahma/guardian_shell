@@ -18,6 +18,26 @@ includes the Landlock+exec fix from Phase 10 debugging on Fedora/SELinux.
 
 ---
 
+## Critical Bug Fix: O_PATH Stale PENDING_DENY
+
+**Files:** `guardian-ebpf/src/main.rs` (all three openat tracepoints)
+
+`O_PATH` opens (used by Landlock's `PathFd::new()`) trigger the `sys_enter_openat`
+tracepoint but do **NOT** trigger the `file_open` LSM hook (kernel optimization —
+O_PATH doesn't actually open the file for I/O). This creates stale PENDING_DENY
+entries that poison the next real `file_open`, causing false EACCES on exec.
+
+**Attack surface:** Adding `/sbin` to Landlock system_read_paths triggered
+`PathFd::new("/sbin")` → `openat("/sbin", O_PATH)` → eBPF tracepoint inserts
+PENDING_DENY (because eBPF matched wrong agent without `/sbin` in allow list) →
+LSM never fires → stale entry → next `file_open` (bash exec) consumed it → EACCES.
+
+**Fix:** Check `O_PATH` flag (`0x200000`) in all three openat tracepoints. Skip
+PENDING_DENY insertion for O_PATH opens. Applied to `sys_enter_openat`,
+`sys_enter_openat2`, and `sys_enter_open` (legacy).
+
+---
+
 ## Changes
 
 ### 1. Landlock + exec Fix: Privilege Dropping (CRITICAL)

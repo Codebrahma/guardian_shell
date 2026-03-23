@@ -564,6 +564,19 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
         }
     }
 
+    // Add read-only paths: only ReadFile + ReadDir rights (no write/delete/rename).
+    // This enforces read-only at the Landlock (inode) level — symlink-immune.
+    for pattern in &config.file_read_only {
+        let base_path = strip_glob(pattern);
+        if !Path::new(&base_path).exists() {
+            debug!("Landlock: skipping non-existent read_only path '{}'", base_path);
+            continue;
+        }
+        if let Ok(fd) = PathFd::new(&base_path) {
+            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_rights))?;
+        }
+    }
+
     // Add exec-allowed paths
     for pattern in &config.exec_allow {
         let base_path = strip_glob(pattern);

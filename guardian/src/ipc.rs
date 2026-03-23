@@ -436,8 +436,21 @@ fn default_cgroup_config(name: &str) -> crate::config::AgentConfig {
         file_access: crate::config::FileAccessPolicy {
             default: "deny".to_string(),
             allow: vec![
-                // User home
-                format!("{}/**", user_home),
+                // NOTE: Intentionally does NOT allow user_home/** — too permissive.
+                // Users should add specific project directories to the allow list.
+                // Working directories — user should customize these
+                format!("{}/projects/**", user_home),
+                format!("{}/.local/**", user_home),
+                format!("{}/.cache/**", user_home),
+                format!("{}/.config/**", user_home),
+                format!("{}/.npm/**", user_home),
+                format!("{}/.cargo/**", user_home),
+                // Shell config (needed for bash/zsh init)
+                format!("{}/.bashrc", user_home),
+                format!("{}/.bash_profile", user_home),
+                format!("{}/.profile", user_home),
+                format!("{}/.zshrc", user_home),
+                format!("{}/.inputrc", user_home),
                 // Temp and runtime
                 "/tmp/**".to_string(),
                 "/proc/**".to_string(),
@@ -469,7 +482,10 @@ fn default_cgroup_config(name: &str) -> crate::config::AgentConfig {
                 format!("{}/.aws/**", user_home),
                 format!("{}/.gnupg/**", user_home),
                 format!("{}/.config/gcloud/**", user_home),
+                format!("{}/.docker/**", user_home),
+                format!("{}/.kube/**", user_home),
             ],
+            read_only: vec![],
         },
         exec_policy: Some(crate::config::ExecPolicy {
             default: "allow".to_string(),
@@ -513,8 +529,9 @@ async fn handle_register(
         None => {
             // Auto-create default config for unregistered cgroup agents
             let default = default_cgroup_config(&agent_name);
-            info!(
-                "Auto-created default config for new cgroup agent '{}' (deny-all with system paths)",
+            warn!(
+                "Auto-created default config for '{}'. Review and customize deny rules \
+                 in config.toml — default does NOT protect project-specific sensitive directories.",
                 agent_name
             );
             state.config.agents.push(default.clone());
@@ -581,6 +598,7 @@ async fn handle_register(
     // This allows the launcher to set up Landlock + seccomp before exec.
     let sandbox = {
         let file_allow: Vec<String> = agent_config.file_access.allow.clone();
+        let file_read_only: Vec<String> = agent_config.file_access.read_only.clone();
         let exec_allow: Vec<String> = agent_config
             .exec_policy
             .as_ref()
@@ -604,6 +622,7 @@ async fn handle_register(
             no_new_privs: true,
             file_default: agent_config.file_access.default.clone(),
             file_allow,
+            file_read_only,
             exec_default,
             exec_allow,
             net_allow_ports,

@@ -118,12 +118,13 @@ async fn main() -> Result<()> {
     );
     for agent in &config.agents {
         info!(
-            "  Agent '{}': identity={}, default={}, allow={}, deny={}, children={}",
+            "  Agent '{}': identity={}, default={}, allow={}, deny={}, read_only={}, children={}",
             agent.name,
             agent.effective_identity(),
             agent.file_access.default,
             agent.file_access.allow.len(),
             agent.file_access.deny.len(),
+            agent.file_access.read_only.len(),
             agent.watch_children,
         );
         if let Some(exec) = &agent.exec_policy {
@@ -812,8 +813,15 @@ fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<PolicyBp
     let mut allow_exact: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> =
         HashMap::try_from(bpf.take_map("ALLOW_EXACT").context("ALLOW_EXACT map not found")?)?;
 
+    let mut readonly_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        LpmTrie::try_from(bpf.take_map("READONLY_PREFIXES").context("READONLY_PREFIXES map not found")?)?;
+
+    let mut readonly_exact: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        HashMap::try_from(bpf.take_map("READONLY_EXACT").context("READONLY_EXACT map not found")?)?;
+
     let mut deny_count = 0u32;
     let mut allow_count = 0u32;
+    let mut readonly_count = 0u32;
 
     for agent in &config.agents {
         // Set up comm-based enforcement for comm agents
@@ -859,11 +867,26 @@ fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<PolicyBp
             }
             allow_count += 1;
         }
+
+        // Insert read-only rules: allowed for reads, blocked for destructive ops
+        for pattern in &agent.file_access.read_only {
+            if pattern.ends_with("/**") {
+                let prefix = format!("{}/", &pattern[..pattern.len() - 3]);
+                let key = path_to_lpm_key(prefix.as_bytes());
+                readonly_prefixes.insert(&key, 1, 0)?;
+                let exact = path_to_map_key(pattern[..pattern.len() - 3].as_bytes());
+                let _ = readonly_exact.insert(exact, 1, 0);
+            } else {
+                let key = path_to_map_key(pattern.as_bytes());
+                readonly_exact.insert(key, 1, 0)?;
+            }
+            readonly_count += 1;
+        }
     }
 
     info!(
-        "Loaded {} deny rules, {} allow rules into BPF",
-        deny_count, allow_count
+        "Loaded {} deny rules, {} allow rules, {} read_only rules into BPF",
+        deny_count, allow_count, readonly_count
     );
 
     // Return map handles for dynamic updates (temporary grants)

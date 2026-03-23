@@ -42,23 +42,17 @@ allow = [
     "/dev/**",
     "/usr/lib/**",
     "/usr/lib64/**",
+    "/usr/libexec/**",
     "/usr/share/**",
     "/usr/local/**",
     "/usr/bin/**",
+    "/usr/sbin/**",
     "/lib/**",
     "/lib64/**",
     "/bin/**",
-    "/etc/ld.so.cache",
-    "/etc/ssl/**",
-    "/etc/resolv.conf",
-    "/etc/hosts",
-    "/etc/hostname",
-    "/etc/passwd",
-    "/etc/nsswitch.conf",
-    "/etc/localtime",
-    "/etc/claude-code/**",
+    "/etc/**",
     "/run/**",
-    "/var/tmp/**",
+    "/var/**",
 ]
 deny = [
     "/home/suren/codebrahma/llm_not_allowed/**",
@@ -73,6 +67,7 @@ deny = [
 default = "allow"
 allow = [
     "/usr/bin/**",
+    "/usr/libexec/**",
     "/usr/local/bin/**",
     "/bin/**",
 ]
@@ -109,29 +104,21 @@ allow = [
     "/run/**",
     "/var/tmp/**",
 
-    # Shared libraries (dynamic linker)
+    # Shared libraries and system binaries
     "/usr/lib/**",
     "/usr/lib64/**",
+    "/usr/libexec/**",
     "/usr/share/**",
     "/usr/local/**",
     "/usr/bin/**",
+    "/usr/sbin/**",
     "/lib/**",
     "/lib64/**",
     "/bin/**",
 
-    # System config
-    "/etc/ld.so.cache",
-    "/etc/ssl/**",
-    "/etc/resolv.conf",
-    "/etc/hosts",
-    "/etc/hostname",
-    "/etc/passwd",
-    "/etc/nsswitch.conf",
-    "/etc/localtime",
-    "/etc/claude-code/**",
-    "/etc/pki/**",
-    "/etc/crypto-policies/**",
-    "/etc/alternatives/**",
+    # System config (deny rules protect /etc/shadow, /etc/gshadow)
+    "/etc/**",
+    "/var/**",
 ]
 deny = [
     "/home/suren/codebrahma/.env",
@@ -146,6 +133,7 @@ deny = [
 default = "allow"
 allow = [
     "/usr/bin/**",
+    "/usr/libexec/**",
     "/usr/local/bin/**",
     "/bin/**",
 ]

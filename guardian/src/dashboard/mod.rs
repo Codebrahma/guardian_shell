@@ -1,5 +1,5 @@
 pub mod db;
-mod routes;
+pub mod routes;
 mod state;
 
 pub use state::DashboardState;

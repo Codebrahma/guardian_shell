@@ -455,6 +455,7 @@ async fn main() -> Result<()> {
         cgroup_maps,
         policy_maps,
         config: config.clone(),
+        config_path: args.config.clone(),
         enforce_mode,
         pending_permissions: Vec::new(),
         resolved_permissions: collections::VecDeque::new(),
@@ -1033,12 +1034,18 @@ fn populate_dynamic_linkers(bpf: &mut Ebpf) -> Result<()> {
     )?;
 
     let known_linkers = [
+        // Fedora/RHEL multilib
         "/lib64/ld-linux-x86-64.so.2",
         "/lib/ld-linux.so.2",
         "/lib/ld-linux-aarch64.so.1",
         "/usr/lib64/ld-linux-x86-64.so.2",
         "/usr/lib/ld-linux.so.2",
         "/usr/lib/ld-linux-aarch64.so.1",
+        // Debian/Ubuntu multiarch
+        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
+        "/lib/i386-linux-gnu/ld-linux.so.2",
+        // musl libc (Alpine, Void)
         "/lib/ld-musl-x86_64.so.1",
         "/lib/ld-musl-aarch64.so.1",
     ];

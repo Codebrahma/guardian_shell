@@ -7,7 +7,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use guardian_common::ipc::{self, IpcRequest, IpcResponse, SandboxConfig};
-use log::{debug, info};
+use log::{debug, info, warn};
 
 // =============================================================================
 // Command-Line Arguments
@@ -47,6 +47,20 @@ struct Args {
     /// Disable expanded seccomp hardening (not recommended).
     #[arg(long)]
     no_seccomp_hardened: bool,
+
+    /// Drop to this user before exec (default: SUDO_UID from environment).
+    /// Dropping root is required for Landlock on SELinux systems.
+    #[arg(long)]
+    user: Option<u32>,
+
+    /// Drop to this group before exec (default: SUDO_GID from environment).
+    #[arg(long)]
+    group: Option<u32>,
+
+    /// Keep running as root (skip privilege dropping). Not recommended —
+    /// agents should not run as root. Disables Landlock on SELinux systems.
+    #[arg(long)]
+    no_drop_privs: bool,
 
     /// The command to launch (everything after --)
     #[arg(trailing_var_arg = true, required = true)]
@@ -106,53 +120,87 @@ fn main() -> Result<()> {
         if ret == 0 {
             info!("PR_SET_NO_NEW_PRIVS set: SUID escalation blocked");
         } else {
-            log::warn!("Failed to set PR_SET_NO_NEW_PRIVS (non-fatal)");
+            warn!("Failed to set PR_SET_NO_NEW_PRIVS (non-fatal)");
         }
     }
 
-    // Step 7: Apply Landlock sandbox (inode-level, symlink-immune enforcement)
-    // Landlock restrict_self() is fundamentally incompatible with execve() on
-    // Fedora/RHEL kernels (tested on 6.19.8-200.fc43). Any Landlock domain —
-    // even ReadFile|ReadDir on "/" — causes exec EACCES. No SELinux AVC denial
-    // is logged, suggesting a kernel-level interaction between Landlock's
-    // credential modification and the exec path. See docs/landlock-exec-investigation.md.
-    // On these systems, eBPF provides equivalent file access enforcement.
+    // Step 7: Drop root privileges before sandboxing.
+    //
+    // Landlock restrict_self() + execve() returns EACCES on Fedora/RHEL kernels
+    // when running as root with SELinux enforcing (see docs/landlock-exec-investigation.md).
+    // The issue is a kernel-level interaction between Landlock's credential modification
+    // and the exec path — Landlock+exec works fine for non-root users on the same kernel.
+    //
+    // Solution: Drop to the original user (SUDO_UID/SUDO_GID) before applying Landlock.
+    // This also improves security — agents should never run as root.
     let selinux_enforcing = std::fs::read_to_string("/sys/fs/selinux/enforce")
         .map(|s| s.trim() == "1")
         .unwrap_or(false);
+    let is_root = unsafe { libc::getuid() } == 0;
+    let dropped_privs = if is_root && !args.no_drop_privs {
+        match drop_privileges(&args) {
+            Ok(true) => {
+                info!("Dropped root privileges: agent runs as non-root");
+                true
+            }
+            Ok(false) => {
+                // No target user available (not via sudo, no --user flag)
+                if selinux_enforcing {
+                    warn!("Running as root on SELinux — no user to drop to. \
+                           Use --user <uid> or run via sudo for Landlock support. \
+                           Landlock will be skipped.");
+                }
+                false
+            }
+            Err(e) => {
+                warn!("Failed to drop privileges: {} (continuing as root)", e);
+                false
+            }
+        }
+    } else {
+        if args.no_drop_privs && is_root {
+            info!("Privilege dropping disabled (--no-drop-privs)");
+        }
+        !is_root // non-root user already has non-root privs
+    };
+
+    // Step 8: Apply Landlock sandbox (inode-level, symlink-immune enforcement)
+    // Landlock works on all systems when running as non-root. On SELinux systems
+    // running as root, restrict_self() + exec causes EACCES — privilege dropping
+    // (Step 7) resolves this. If privs couldn't be dropped on SELinux, skip Landlock.
     let should_landlock = !args.no_landlock
-        && !selinux_enforcing
-        && sandbox_config.as_ref().map(|c| c.landlock).unwrap_or(true);
-    if selinux_enforcing && !args.no_landlock {
-        info!("Landlock skipped: incompatible with exec on SELinux-enforcing kernels. \
+        && sandbox_config.as_ref().map(|c| c.landlock).unwrap_or(true)
+        && (dropped_privs || !selinux_enforcing);
+    if !should_landlock && !args.no_landlock && selinux_enforcing && !dropped_privs {
+        info!("Landlock skipped: requires non-root on SELinux (use --user or sudo). \
                Security: PR_SET_NO_NEW_PRIVS + seccomp + eBPF + cgroup active.");
     }
     if should_landlock {
         if let Some(ref cfg) = sandbox_config {
             match apply_landlock_sandbox(cfg) {
                 Ok(()) => info!("Landlock sandbox applied: inode-level enforcement active"),
-                Err(e) => log::warn!("Failed to apply Landlock sandbox (non-fatal): {}", e),
+                Err(e) => warn!("Failed to apply Landlock sandbox (non-fatal): {}", e),
             }
         }
-    } else {
-        info!("Landlock sandbox disabled");
+    } else if args.no_landlock {
+        info!("Landlock sandbox disabled (--no-landlock)");
     }
 
-    // Step 8: Apply seccomp filter (blocks io_uring + memfd_create + expanded hardening)
+    // Step 9: Apply seccomp filter (blocks io_uring + memfd_create + expanded hardening)
     let should_seccomp_hardened = !args.no_seccomp_hardened
         && sandbox_config
             .as_ref()
             .map(|c| c.seccomp_hardened)
             .unwrap_or(true);
     if let Err(e) = apply_seccomp_filter(should_seccomp_hardened) {
-        log::warn!("Failed to apply seccomp filter (non-fatal): {}", e);
+        warn!("Failed to apply seccomp filter (non-fatal): {}", e);
     } else if should_seccomp_hardened {
         info!("Seccomp filter applied: io_uring, memfd, mount, namespace, chroot blocked");
     } else {
         info!("Seccomp filter applied: io_uring and memfd_create blocked");
     }
 
-    // Step 9: exec the agent command (replaces this process)
+    // Step 10: exec the agent command (replaces this process)
     info!("Launching: {:?}", args.command);
     let err = Command::new(&args.command[0])
         .args(&args.command[1..])
@@ -272,6 +320,101 @@ fn cleanup_cgroup(cgroup_path: &str) {
 }
 
 // =============================================================================
+// Privilege Dropping
+// =============================================================================
+
+/// Drop root privileges to the original user before sandboxing.
+///
+/// Resolves the Landlock + exec EACCES issue on SELinux systems:
+/// `restrict_self()` + `execve()` fails as root on Fedora/RHEL kernels due to
+/// a kernel-level interaction between Landlock credential modification and
+/// SELinux exec checks. Running as non-root avoids this entirely.
+///
+/// Also good security practice: agents should never run as root.
+///
+/// Returns Ok(true) if privileges were dropped, Ok(false) if no target user found.
+fn drop_privileges(args: &Args) -> Result<bool> {
+    // Determine target UID and GID
+    let target_uid = args.user
+        .or_else(|| std::env::var("SUDO_UID").ok().and_then(|s| s.parse().ok()));
+    let target_gid = args.group
+        .or_else(|| std::env::var("SUDO_GID").ok().and_then(|s| s.parse().ok()));
+
+    let uid = match target_uid {
+        Some(u) => u,
+        None => return Ok(false), // No target user, can't drop
+    };
+    let gid = target_gid.unwrap_or(uid); // Default group = same as uid
+
+    // Look up the target user's passwd entry for initgroups() and HOME
+    let pw = unsafe { libc::getpwuid(uid) };
+
+    // Set supplementary groups for the target user (before dropping root)
+    if !pw.is_null() {
+        let username = unsafe { (*pw).pw_name };
+        let ret = unsafe { libc::initgroups(username, gid) };
+        if ret != 0 {
+            debug!("initgroups failed (non-fatal): {}", std::io::Error::last_os_error());
+        }
+    }
+
+    // Drop group first (must happen before setuid — can't change groups after losing root)
+    let ret = unsafe { libc::setresgid(gid, gid, gid) };
+    if ret != 0 {
+        bail!("setresgid({}) failed: {}", gid, std::io::Error::last_os_error());
+    }
+
+    // Drop user
+    let ret = unsafe { libc::setresuid(uid, uid, uid) };
+    if ret != 0 {
+        bail!("setresuid({}) failed: {}", uid, std::io::Error::last_os_error());
+    }
+
+    // Verify the drop (paranoia — setresuid should be irreversible)
+    let current_uid = unsafe { libc::getuid() };
+    let current_euid = unsafe { libc::geteuid() };
+    if current_uid != uid || current_euid != uid {
+        bail!(
+            "Privilege drop verification failed: expected uid={}, got uid={} euid={}",
+            uid, current_uid, current_euid
+        );
+    }
+
+    // Fix environment: sudo leaves HOME=/root, LOGNAME=root, etc.
+    // The agent's shell (bash, zsh) reads $HOME/.bashrc — must point to the real user's home.
+    if !pw.is_null() {
+        let home = unsafe { std::ffi::CStr::from_ptr((*pw).pw_dir) };
+        if let Ok(home_str) = home.to_str() {
+            std::env::set_var("HOME", home_str);
+        }
+        let name = unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) };
+        if let Ok(name_str) = name.to_str() {
+            std::env::set_var("USER", name_str);
+            std::env::set_var("LOGNAME", name_str);
+        }
+        let shell = unsafe { std::ffi::CStr::from_ptr((*pw).pw_shell) };
+        if let Ok(shell_str) = shell.to_str() {
+            std::env::set_var("SHELL", shell_str);
+        }
+    } else if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+        // Fallback: use SUDO_USER if getpwuid didn't work
+        let home = format!("/home/{}", sudo_user);
+        std::env::set_var("HOME", &home);
+        std::env::set_var("USER", &sudo_user);
+        std::env::set_var("LOGNAME", &sudo_user);
+    }
+
+    // Clean up sudo-specific env vars (no longer relevant after dropping)
+    std::env::remove_var("SUDO_UID");
+    std::env::remove_var("SUDO_GID");
+    std::env::remove_var("SUDO_USER");
+    std::env::remove_var("SUDO_COMMAND");
+
+    debug!("Privileges dropped: uid={} gid={}", uid, gid);
+    Ok(true)
+}
+
+// =============================================================================
 // IPC with Guardian Daemon
 // =============================================================================
 
@@ -361,12 +504,23 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
 
     // Common system paths that most processes need for basic operation.
     // These get read + execute (for dynamic linking) but not write.
+    // System paths needed for dynamic linking, shell init, and basic operation.
+    // /etc is allowed broadly (read-only) because shell startup sources many
+    // config files (bashrc, profile, profile.d/*, nsswitch.conf, ld.so.conf, ...).
+    // Sensitive files under /etc are protected by the agent's deny rules in eBPF.
+    // Covers both Fedora/RHEL and Debian/Ubuntu:
+    // - /usr/lib64, /lib64: Fedora multilib (doesn't exist on Debian, skipped)
+    // - /usr/libexec: Fedora helper binaries (Debian uses /usr/lib/<pkg>/)
+    // - /sbin: separate from /usr/sbin on older Debian (symlink on modern)
+    // - /snap: Ubuntu snap packages (doesn't exist on Fedora, skipped)
+    // - Debian multiarch (/usr/lib/x86_64-linux-gnu/) is under /usr/lib
     let system_read_paths = [
-        "/usr/lib", "/usr/lib64", "/lib", "/lib64",
-        "/usr/share", "/etc/ld.so.cache", "/etc/ld.so.conf",
-        "/etc/ld.so.conf.d", "/etc/localtime", "/etc/resolv.conf",
-        "/etc/nsswitch.conf", "/etc/hosts", "/etc/passwd", "/etc/group",
+        "/usr/lib", "/usr/lib64", "/usr/libexec", "/lib", "/lib64",
+        "/usr/share", "/usr/bin", "/usr/sbin", "/sbin", "/usr/local",
+        "/etc",
         "/dev/null", "/dev/zero", "/dev/urandom", "/dev/random",
+        "/dev/pts", "/dev/tty",
+        "/var", "/snap",
     ];
 
     let read_rights = AccessFs::ReadFile | AccessFs::ReadDir;

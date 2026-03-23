@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-20
 **System:** Fedora 43, Linux 6.19.8-200.fc43.x86_64, SELinux enforcing
-**Status:** Unresolved — Landlock skipped on SELinux-enforcing systems, eBPF provides enforcement
+**Status:** Resolved — Drop root privileges before Landlock (non-root exec works on SELinux)
 
 ---
 
@@ -15,9 +15,11 @@ On Fedora 43 (kernel 6.19.8), calling `landlock_restrict_self()` causes **any** 
 - Whether `PR_SET_NO_NEW_PRIVS` is set
 - Whether all filesystem rights are granted on `/` (root)
 
-No SELinux AVC denial is logged in the audit system. The issue appears to be a kernel-level interaction between Landlock's credential modification (`commit_creds()` inside `restrict_self()`) and the exec path on Fedora kernels.
+No SELinux AVC denial is logged in the audit system. The issue is a kernel-level interaction between Landlock's credential modification (`commit_creds()` inside `restrict_self()`) and the exec path — **specific to running as root** on Fedora kernels.
 
-**Workaround:** Auto-detect SELinux enforcing mode and skip Landlock. The agent still gets 4 security layers: PR_SET_NO_NEW_PRIVS + seccomp + eBPF + cgroup. On non-SELinux systems (Ubuntu, Debian, Arch), Landlock works normally.
+**Solution:** Drop root privileges (via `setresuid()` to `SUDO_UID`) before calling `restrict_self()` + `execve()`. Landlock+exec works fine for non-root users on the same kernel. This also improves security since agents should never run as root.
+
+**Additional fix:** Landlock system read paths and eBPF allow rules must include all paths needed for shell initialization. On Fedora, this means `/etc/**`, `/usr/libexec/**`, `/usr/sbin/**`, `/dev/pts`, `/dev/tty`, and `/var/**` in addition to the standard `/usr/lib/**` etc.
 
 ---
 
@@ -157,52 +159,143 @@ This could be:
 
 ---
 
-## Working Solution
+## Solution: Drop Root Privileges Before Landlock
 
-Auto-detect SELinux enforcing mode and skip Landlock:
+**Date:** 2026-03-23
+**Status:** Implemented
 
-```rust
-let selinux_enforcing = std::fs::read_to_string("/sys/fs/selinux/enforce")
-    .map(|s| s.trim() == "1")
-    .unwrap_or(false);
+### Key Insight
 
-let should_landlock = !args.no_landlock
-    && !selinux_enforcing
-    && sandbox_config.as_ref().map(|c| c.landlock).unwrap_or(true);
+A simple C test doing `landlock_restrict_self()` + `execve()` works fine as a
+**non-root user** on the same Fedora kernel. The issue is specific to running as
+root (via `sudo`). The kernel's exec security checks behave differently for root
+after Landlock credential modification.
+
+### Fix
+
+Drop root privileges to the original user (via `SUDO_UID`/`SUDO_GID`) **after**
+all root-required operations (cgroup creation, daemon registration, cgroup move)
+but **before** applying Landlock and exec'ing:
+
+```
+guardian-launch (root):
+  1. Create cgroup           ← needs root
+  2. Register with daemon    ← needs root (socket access)
+  3. Move to cgroup          ← needs root
+  4. Set PR_SET_NO_NEW_PRIVS
+  5. Drop to original user   ← setresgid() + setresuid()
+  6. Apply Landlock           ← works as non-root (NNP satisfies requirement)
+  7. Apply seccomp
+  8. Exec agent              ← runs as non-root, in Landlock domain
 ```
 
-### Security on SELinux systems (Fedora/RHEL)
+```rust
+// New CLI flags: --user <uid>, --group <gid>, --no-drop-privs
+// Auto-detects SUDO_UID/SUDO_GID from environment
+fn drop_privileges(args: &Args) -> Result<bool> {
+    let uid = args.user.or_else(|| env::var("SUDO_UID")...);
+    let gid = args.group.or_else(|| env::var("SUDO_GID")...);
+    initgroups(username, gid);  // supplementary groups
+    setresgid(gid, gid, gid);  // group first (can't after setuid)
+    setresuid(uid, uid, uid);   // then user (irreversible)
+}
+```
+
+### Security Benefits
+
+This fix is a double win:
+
+1. **Enables Landlock on SELinux systems** — Landlock+exec works for non-root users
+2. **Better security practice** — agents should never run as root
+
+### Security on ALL systems (after fix)
 
 | Layer | Status | Enforcement |
 |-------|--------|-------------|
 | PR_SET_NO_NEW_PRIVS | Active | Blocks SUID escalation |
-| Seccomp filter | Active | Blocks io_uring, memfd, mount, namespace, chroot |
-| eBPF LSM | Active | File access + exec + network enforcement |
-| Cgroup isolation | Active | Resource limits, unspoofable identity |
-| SELinux | Active | Mandatory access control (system-wide) |
-| **Landlock** | **Skipped** | **Replaced by SELinux MAC + eBPF** |
-
-### Security on non-SELinux systems (Ubuntu, Debian, Arch)
-
-| Layer | Status | Enforcement |
-|-------|--------|-------------|
-| PR_SET_NO_NEW_PRIVS | Active | Blocks SUID escalation |
+| Privilege dropping | Active | Agent runs as original user, not root |
 | Seccomp filter | Active | Blocks io_uring, memfd, mount, namespace, chroot |
 | eBPF LSM | Active | File access + exec + network enforcement |
 | Cgroup isolation | Active | Resource limits, unspoofable identity |
 | **Landlock** | **Active** | **Inode-level file access (symlink-immune)** |
+| SELinux (if present) | Active | Mandatory access control (system-wide) |
+
+### Fallback
+
+If privilege dropping fails (no `SUDO_UID`, no `--user` flag, direct root login):
+- On non-SELinux: Landlock is applied as root (works fine)
+- On SELinux: Landlock is skipped with a warning. Use `--user <uid>` to enable.
+
+### Required System Paths
+
+Both Landlock (in `guardian-launch`) and eBPF (in agent config) must allow these
+paths for shell initialization. Discovered through iterative testing on Fedora 43:
+
+**Landlock system_read_paths** (in `guardian-launch/src/main.rs`):
+```
+/usr/lib, /usr/lib64, /usr/libexec, /lib, /lib64
+/usr/share, /usr/bin, /usr/sbin, /usr/local
+/etc
+/dev/null, /dev/zero, /dev/urandom, /dev/random, /dev/pts, /dev/tty
+/var
+```
+
+**eBPF agent config allow rules** (in `config.toml`):
+```
+/usr/lib/**, /usr/lib64/**, /usr/libexec/**, /usr/share/**
+/usr/local/**, /usr/bin/**, /usr/sbin/**
+/lib/**, /lib64/**, /bin/**
+/etc/**             ← broad read, deny rules protect /etc/shadow etc.
+/dev/**, /proc/**, /sys/**, /run/**, /var/**, /tmp/**
+```
+
+Key Fedora-specific paths that caused failures:
+- `/etc/bashrc` — sourced by `~/.bashrc` (Fedora uses `/etc/bashrc`, not `/etc/bash.bashrc`)
+- `/etc/profile.d/**` — shell profile scripts with symlinks to `/usr/lib/systemd/`
+- `/usr/libexec/grepconf.sh` — called by `/etc/profile.d/colorgrep.sh`
+- `/etc/inputrc` — readline configuration
+- `/etc/os-release` — read by `mise` and other tools
+- `/dev/pts`, `/dev/tty` — terminal device access
+
+### Auto-Created Default Config
+
+When a cgroup agent registers via `guardian-launch --name <agent>` without a
+pre-existing config entry, the daemon now auto-creates a default config with
+all required system paths, persists it to `config.toml`, and proceeds with
+registration. This eliminates the need to manually configure every new agent.
 
 ---
 
-## Future Investigation Paths
+## Previous Workaround (superseded)
 
-1. **Check Fedora dontaudit rules:** `sesearch --dontaudit | grep landlock` — if a dontaudit rule exists, it silently denies without AVC logging
-2. **Test on stock kernel:** Build upstream 6.19 without Fedora patches and test if Landlock+exec works
+The original workaround auto-detected SELinux and skipped Landlock entirely.
+This has been replaced by privilege dropping, which enables Landlock on all systems.
+
+---
+
+## Diagnostic Script
+
+`scripts/diagnose-landlock.sh` can be used to confirm the root cause:
+
+```bash
+sudo bash scripts/diagnose-landlock.sh
+```
+
+It tests:
+1. Landlock + exec as root with SELinux enforcing
+2. Landlock + exec without NNP
+3. Landlock + exec with SELinux permissive (setenforce 0)
+4. Disables dontaudit rules to find hidden SELinux denials
+5. Tests guardian-launch directly
+
+---
+
+## Remaining Investigation Paths
+
+1. **Confirm root-specific**: Verify the C test fails as root but works as non-root
+2. **Check Fedora dontaudit rules:** `sesearch --dontaudit | grep landlock` — if a dontaudit rule exists, it silently denies without AVC logging
 3. **strace the exec:** `strace -f -e trace=execve,openat,prctl` to see exact syscall sequence and where EACCES originates
-4. **ftrace/bpftrace:** Trace `security_file_open` and `security_bprm_check` hooks to see which LSM returns the denial
-5. **Test on Fedora with SELinux permissive:** `sudo setenforce 0` then test — if Landlock works, the issue IS SELinux (just not audited)
-6. **File upstream bug:** Report to kernel.org Landlock maintainers with reproduction steps
-7. **Test landrun tool:** The [landrun](https://github.com/Zouuup/landrun) Landlock sandbox tool may have solved this — check their Fedora compatibility
+4. **File upstream bug:** Report to Landlock maintainers with reproduction steps (root-specific)
 
 ---
 

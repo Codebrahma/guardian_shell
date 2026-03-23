@@ -884,7 +884,7 @@ pub async fn query_events(
 // Config Serialization (write back to TOML)
 // =============================================================================
 
-fn write_config_toml(
+pub fn write_config_toml(
     path: &std::path::Path,
     config: &config::Config,
 ) -> Result<(), String> {

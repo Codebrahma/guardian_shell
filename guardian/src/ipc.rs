@@ -134,6 +134,7 @@ pub struct IpcState {
     pub cgroup_maps: CgroupBpfMaps,
     pub policy_maps: Option<PolicyBpfMaps>,
     pub config: Config,
+    pub config_path: std::path::PathBuf,
     pub enforce_mode: bool,
     // Permission request state
     pub pending_permissions: Vec<PendingPermission>,
@@ -400,6 +401,90 @@ async fn process_request(request: IpcRequest, state: &SharedIpcState) -> IpcResp
 }
 
 // =============================================================================
+// Default Cgroup Agent Config
+// =============================================================================
+
+/// Create a default config for a new cgroup agent that registers without
+/// a pre-existing config entry. Provides sensible system path defaults
+/// learned from real-world testing on Fedora/RHEL and Debian/Ubuntu.
+///
+/// The default is deny-all with broad system read paths allowed and
+/// sensitive files denied. The agent's home directory is inferred from
+/// SUDO_USER or defaults to /home.
+fn default_cgroup_config(name: &str) -> crate::config::AgentConfig {
+    // Infer user home from environment
+    let user_home = std::env::var("SUDO_USER")
+        .map(|u| format!("/home/{}", u))
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| "/home".to_string());
+
+    crate::config::AgentConfig {
+        name: name.to_string(),
+        identity: Some("cgroup".to_string()),
+        process_name: None,
+        file_access: crate::config::FileAccessPolicy {
+            default: "deny".to_string(),
+            allow: vec![
+                // User home
+                format!("{}/**", user_home),
+                // Temp and runtime
+                "/tmp/**".to_string(),
+                "/proc/**".to_string(),
+                "/sys/**".to_string(),
+                "/dev/**".to_string(),
+                "/run/**".to_string(),
+                "/var/**".to_string(),
+                // System libraries and binaries (covers both Fedora and Debian/Ubuntu)
+                // Debian multiarch (/usr/lib/x86_64-linux-gnu/) is under /usr/lib/**
+                "/usr/lib/**".to_string(),
+                "/usr/lib64/**".to_string(),   // Fedora multilib
+                "/usr/libexec/**".to_string(), // Fedora helpers (Debian uses /usr/lib/<pkg>/)
+                "/usr/share/**".to_string(),
+                "/usr/local/**".to_string(),
+                "/usr/bin/**".to_string(),
+                "/usr/sbin/**".to_string(),
+                "/sbin/**".to_string(),        // Separate on older Debian
+                "/lib/**".to_string(),         // Includes Debian /lib/x86_64-linux-gnu/
+                "/lib64/**".to_string(),       // Fedora multilib
+                "/bin/**".to_string(),
+                "/snap/**".to_string(),        // Ubuntu snap packages
+                // System config (deny rules protect sensitive files)
+                "/etc/**".to_string(),
+            ],
+            deny: vec![
+                "/etc/shadow".to_string(),
+                "/etc/gshadow".to_string(),
+                format!("{}/.ssh/**", user_home),
+                format!("{}/.aws/**", user_home),
+                format!("{}/.gnupg/**", user_home),
+                format!("{}/.config/gcloud/**", user_home),
+            ],
+        },
+        exec_policy: Some(crate::config::ExecPolicy {
+            default: "allow".to_string(),
+            allow: vec![
+                "/usr/bin/**".to_string(),
+                "/usr/sbin/**".to_string(),
+                "/sbin/**".to_string(),        // Separate on older Debian
+                "/usr/libexec/**".to_string(), // Fedora helpers
+                "/usr/local/bin/**".to_string(),
+                "/bin/**".to_string(),
+                "/snap/bin/**".to_string(),    // Ubuntu snap
+            ],
+            deny: vec![],
+        }),
+        network_policy: Some(crate::config::NetworkPolicy {
+            default: "allow".to_string(),
+            allow_ports: vec![],
+            deny_ports: vec![],
+        }),
+        watch_children: true,
+        resources: None,
+        fail_closed: None,
+    }
+}
+
+// =============================================================================
 // Request Handlers
 // =============================================================================
 
@@ -411,16 +496,25 @@ async fn handle_register(
 ) -> IpcResponse {
     let mut state = state.lock().await;
 
-    // Find matching agent config
+    // Find matching agent config, or create a default for new cgroup agents
     let agent_config = match state.config.agents.iter().find(|a| a.name == agent_name) {
         Some(cfg) => cfg.clone(),
         None => {
-            return IpcResponse::Error {
-                message: format!(
-                    "No agent config found for '{}'. Add it to config.toml.",
-                    agent_name
-                ),
-            };
+            // Auto-create default config for unregistered cgroup agents
+            let default = default_cgroup_config(&agent_name);
+            info!(
+                "Auto-created default config for new cgroup agent '{}' (deny-all with system paths)",
+                agent_name
+            );
+            state.config.agents.push(default.clone());
+
+            // Persist to disk so the config survives daemon restarts
+            let config_path = state.config_path.clone();
+            if let Err(e) = crate::dashboard::routes::api::write_config_toml(&config_path, &state.config) {
+                warn!("Failed to persist auto-created config for '{}': {} (in-memory only)", agent_name, e);
+            }
+
+            default
         }
     };
 

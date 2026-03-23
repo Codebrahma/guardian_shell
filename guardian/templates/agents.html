@@ -66,12 +66,12 @@
           <div class="form-group">
             <label>Allow Rules (one per line)</label>
             <textarea name="allow_rules" rows="16" class="font-mono"
-                      :value="(homePath ? homePath.replace(/\/$/, '') + '/**\n' : '') + '{{ user_home }}/**\n/tmp/**\n/proc/**\n/sys/**\n/dev/**\n/run/**\n/var/tmp/**\n/usr/lib/**\n/usr/lib64/**\n/usr/share/**\n/usr/local/**\n/usr/bin/**\n/lib/**\n/lib64/**\n/bin/**\n/etc/ld.so.cache\n/etc/ssl/**\n/etc/resolv.conf\n/etc/hosts\n/etc/hostname\n/etc/passwd\n/etc/nsswitch.conf\n/etc/localtime'"></textarea>
+                      :value="(homePath ? homePath.replace(/\/$/, '') + '/**\n' : '') + '{{ user_home }}/**\n/tmp/**\n/proc/**\n/sys/**\n/dev/**\n/run/**\n/var/**\n/usr/lib/**\n/usr/lib64/**\n/usr/libexec/**\n/usr/share/**\n/usr/local/**\n/usr/bin/**\n/usr/sbin/**\n/lib/**\n/lib64/**\n/bin/**\n/etc/**'"></textarea>
           </div>
           <div class="form-group">
             <label>Deny Rules (one per line)</label>
-            <textarea name="deny_rules" rows="5" class="font-mono"
-                      :value="(homePath ? homePath.replace(/\/$/, '') + '/.env\n' : '') + '/etc/shadow\n/etc/gshadow\n{{ user_home }}/.ssh/**\n{{ user_home }}/.aws/**\n{{ user_home }}/.gnupg/**'"></textarea>
+            <textarea name="deny_rules" rows="6" class="font-mono"
+                      :value="(homePath ? homePath.replace(/\/$/, '') + '/.env\n' : '') + '/etc/shadow\n/etc/gshadow\n{{ user_home }}/.ssh/**\n{{ user_home }}/.aws/**\n{{ user_home }}/.gnupg/**\n{{ user_home }}/.config/gcloud/**'"></textarea>
           </div>
         </div>
       </div>
@@ -95,7 +95,8 @@
           </div>
           <div class="form-group">
             <label>Exec Allow (one per line)</label>
-            <textarea name="exec_allow" rows="4" class="font-mono">/usr/bin/**
+            <textarea name="exec_allow" rows="5" class="font-mono">/usr/bin/**
+/usr/libexec/**
 /usr/local/bin/**
 /bin/**</textarea>
           </div>

@@ -524,6 +524,10 @@ fn try_guardian_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
     let flags: u64 = unsafe { ctx.read_at(32)? };
     event.flags = flags as u32;
 
+    // Zero stale data — PerCpuArray persists between calls, stale suffixes
+    // cause DENY_EXACT HashMap lookups to fail (all 256 bytes compared).
+    event.filename = [0u8; MAX_FILENAME_LEN];
+
     match unsafe {
         bpf_probe_read_user_str_bytes(filename_ptr as *const u8, &mut event.filename)
     } {
@@ -620,6 +624,8 @@ fn try_guardian_file_openat2(ctx: &TracePointContext) -> Result<u32, i64> {
         event.flags = 0;
     }
 
+    event.filename = [0u8; MAX_FILENAME_LEN]; // Zero stale data from previous call
+
     match unsafe {
         bpf_probe_read_user_str_bytes(filename_ptr as *const u8, &mut event.filename)
     } {
@@ -711,6 +717,11 @@ fn try_guardian_exec_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
 
     // sys_enter_execve: filename pointer at offset 16 (x86_64)
     let filename_ptr: u64 = unsafe { ctx.read_at(16)? };
+
+    // CRITICAL: Zero the filename buffer before reading. The EXEC_BUF PerCpuArray
+    // persists between calls — stale data from longer filenames causes EXEC_DENY_EXACT
+    // HashMap lookups to fail (compares all 256 bytes, stale suffix != zero padding).
+    event.filename = [0u8; MAX_FILENAME_LEN];
 
     match unsafe {
         bpf_probe_read_user_str_bytes(filename_ptr as *const u8, &mut event.filename)
@@ -829,6 +840,8 @@ fn try_guardian_execveat_monitor(ctx: &TracePointContext) -> Result<u32, i64> {
     } else {
         // Normal execveat with a pathname — read and evaluate like execve
         let filename_ptr: u64 = unsafe { ctx.read_at(24)? };
+
+        event.filename = [0u8; MAX_FILENAME_LEN]; // Zero stale data
 
         match unsafe {
             bpf_probe_read_user_str_bytes(filename_ptr as *const u8, &mut event.filename)
@@ -963,6 +976,8 @@ fn try_guardian_file_open_legacy(ctx: &TracePointContext) -> Result<u32, i64> {
     let filename_ptr: u64 = unsafe { ctx.read_at(16)? };
     let flags: u64 = unsafe { ctx.read_at(24)? };
     event.flags = flags as u32;
+
+    event.filename = [0u8; MAX_FILENAME_LEN]; // Zero stale data from previous call
 
     match unsafe {
         bpf_probe_read_user_str_bytes(filename_ptr as *const u8, &mut event.filename)

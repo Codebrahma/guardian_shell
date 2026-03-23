@@ -271,7 +271,7 @@ async fn csrf_middleware(
     );
     (
         axum::http::StatusCode::FORBIDDEN,
-        "Forbidden: CSRF validation failed. State-changing requests require HX-Request header or Bearer auth token.",
+        axum::response::Html(r#"<div class="toast-error">CSRF validation failed. Ensure JavaScript is enabled and reload the page.</div>"#),
     ).into_response()
 }
 

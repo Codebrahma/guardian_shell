@@ -6,6 +6,16 @@
   <title>Guardian Shell — {% block title %}Dashboard{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js"></script>
+  <script>
+    // htmx 2.0 doesn't swap 4xx/5xx responses by default.
+    // Force swap so error toasts (CSRF 403, validation errors) are visible.
+    document.addEventListener('htmx:beforeSwap', function(evt) {
+      if (evt.detail.xhr.status >= 400) {
+        evt.detail.shouldSwap = true;
+        evt.detail.isError = false;
+      }
+    });
+  </script>
   <script defer src="/static/alpine.min.js"></script>
 </head>
 <body x-data="{ sidebarOpen: false }">

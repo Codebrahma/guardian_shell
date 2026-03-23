@@ -568,10 +568,159 @@ but there's no automatic blocking of "allowed-to-allowed" copies.
 
 | Technique | Why It Works | Priority to Fix |
 |-----------|-------------|-----------------|
+| Use bundled tools instead of system binaries | Agent ships its own `rg`, `node`, etc. in allowed dirs | HIGH — see Section 6.4 |
 | UDP `sendto()` without prior `connect()` | No eBPF hook for `sendto` | HIGH — needs sendto/sendmsg tracepoint |
 | DNS queries encoding exfiltrated data | DNS is unmonitored UDP | HIGH — needs DNS interception |
 | Read allowed file + send via allowed HTTPS | Both operations individually allowed | MEDIUM — needs content/DLP analysis |
 | `openat(O_WRONLY)` on read_only path (comm agent) | eBPF can't distinguish read/write mode | LOW — Landlock blocks for cgroup agents |
+
+### 6.4 Bundled Tools Bypass Exec Deny (Real-World Finding)
+
+**Discovered during live testing with Claude Code on Fedora 43.**
+
+Claude Code bundles its own `rg` (ripgrep) binary inside its npm package:
+
+```
+~/.local/share/mise/installs/node/24.1.0/lib/node_modules/
+  @anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg
+```
+
+When `/usr/bin/grep` is in the exec deny list, the system `grep` IS blocked —
+but Claude never calls it. Instead, it uses its bundled `rg` which lives under
+`~/.local/**` (an allowed path). The exec deny rule is completely bypassed.
+
+**Why this matters:**
+- Modern AI agents are self-contained — they bundle their own tools
+- Exec deny rules only work for system binaries the agent actually calls
+- If the agent's allowed directory contains executables, those are always available
+- This is NOT a bug in Guardian Shell — it's a fundamental limitation of
+  path-based exec policy when the agent controls its own tool directory
+
+**Mitigations:**
+1. **Deny the vendor directory**: Add the agent's bundled binary paths to deny
+   ```toml
+   deny = [
+       "/home/user/.local/share/mise/installs/node/*/lib/node_modules/@anthropic-ai/claude-code/vendor/**",
+   ]
+   ```
+   But this breaks the agent — it needs its tools to function.
+
+2. **Use `read_only` for the vendor directory**: Allow reading but prevent
+   the agent from replacing bundled tools with malicious versions
+   ```toml
+   read_only = [
+       "/home/user/.local/share/mise/installs/node/*/lib/node_modules/@anthropic-ai/claude-code/vendor/**",
+   ]
+   ```
+
+3. **Accept the limitation**: If the agent needs search capability to function,
+   blocking `grep`/`rg` defeats its purpose. Focus deny rules on truly dangerous
+   binaries (`ssh`, `curl`, `wget`, `nc`, `docker`, `kubectl`).
+
+4. **Use network policy as the real control**: Even if the agent can run any tool,
+   it can't exfiltrate data if outbound connections are blocked on dangerous ports.
+
+---
+
+## 6.5 Issues Discovered During Real-World Testing
+
+These issues were found during hands-on testing with Claude Code on Fedora 43
+and are now fixed or documented:
+
+### 6.5.1 O_PATH Opens Create Stale PENDING_DENY (Fixed in Phase 11)
+
+Landlock's `PathFd::new()` opens paths with `O_PATH` flag. The eBPF
+`sys_enter_openat` tracepoint fires for these opens and may insert a
+PENDING_DENY entry. But `O_PATH` opens do NOT trigger the `file_open` LSM
+hook (kernel optimization). The stale PENDING_DENY entry is consumed by the
+NEXT real `file_open` — which could be the exec binary — causing false EACCES.
+
+**Impact:** Landlock + exec completely broken. Every exec after `restrict_self()`
+failed with "Permission denied".
+
+**Fix:** Check `O_PATH` flag (`0x200000`) in all openat tracepoints. Skip
+PENDING_DENY insertion for O_PATH opens.
+
+### 6.5.2 Stale eBPF Scratch Buffer Breaks Exact Match (Fixed in Phase 11)
+
+PerCpuArray scratch buffers (`EVENT_BUF`, `EXEC_BUF`) persist between eBPF
+calls. When `bpf_probe_read_user_str_bytes` writes a shorter filename (e.g.,
+`/usr/bin/grep\0`), stale bytes from a previous longer filename remain after the
+null terminator. BPF HashMap EXACT lookups compare all 256 bytes — the stale
+suffix causes the lookup to fail.
+
+**Impact:** Exec deny rules for specific binaries (like `/usr/bin/grep`) were
+never matched. The deny was in the map but the lookup key didn't match due to
+stale trailing bytes.
+
+**Fix:** Zero the `event.filename` buffer before every
+`bpf_probe_read_user_str_bytes` call across all 5 tracepoints.
+
+### 6.5.3 Binary Path Symlinks on Merged-usr Systems (Fixed in Phase 11)
+
+On Fedora/Arch (merged-usr), `/bin` → `/usr/bin`, `/sbin` → `/usr/sbin`.
+Additionally, `/usr/bin` and `/usr/sbin` may both contain the same binary.
+A deny rule for `/usr/bin/grep` does NOT block `/bin/grep`, `/usr/sbin/grep`,
+or `/sbin/grep` — because eBPF sees the raw syscall path string.
+
+**Impact:** Deny rules ineffective when shell uses a different PATH entry.
+User denies `/usr/bin/grep` but shell runs `/usr/sbin/grep`.
+
+**Fix:** `symlink_alternates()` function auto-generates deny entries for all
+`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, `/usr/local/bin` variants. Deny
+rule for `/usr/bin/grep` now also denies `/bin/grep`, `/usr/sbin/grep`, `/sbin/grep`.
+
+### 6.5.4 Landlock + exec Fails as Root on SELinux (Fixed in Phase 11)
+
+`landlock_restrict_self()` + `execve()` returns EACCES when running as root
+on Fedora kernels with SELinux enforcing. No SELinux AVC denial logged.
+Works fine as non-root.
+
+**Fix:** Drop root privileges to `SUDO_UID`/`SUDO_GID` after cgroup setup
+but before Landlock + exec. See `docs/landlock-exec-investigation.md`.
+
+### 6.5.5 Config Changes Require Daemon Restart (Known Limitation)
+
+Editing deny/allow rules in `config.toml` or via the dashboard does NOT update
+BPF enforcement maps. Maps are populated once at daemon startup. SIGHUP reloads
+the in-memory config (for new agent registrations) but does NOT re-populate
+existing BPF maps.
+
+**Impact:** User adds deny rule, agent is still allowed. False sense of security.
+
+**Mitigation:** Dashboard policy update toast now warns "Restart the daemon for
+deny/allow changes to take effect." Future work: hot-reload BPF maps on SIGHUP.
+
+### 6.5.6 config.toml with Placeholder Paths (Usability)
+
+The example `config.toml` had `/home/user` placeholder paths. Users who copy
+this without replacing with their actual username get non-existent paths.
+Landlock silently skips rules for non-existent paths (DEBUG log only), leaving
+the agent with almost no Landlock enforcement.
+
+**Fix:** `config.toml` is now gitignored. `config.toml.example` has placeholders
+with a one-liner sed command. Auto-created default configs use `SUDO_USER` to
+infer the real home directory.
+
+### 6.5.7 Shell Init Requires Broad /etc Access (Design Tradeoff)
+
+Fedora bash startup sources many files: `/etc/bashrc`, `/etc/profile`,
+`/etc/profile.d/**`, `/etc/inputrc`, `/usr/libexec/grepconf.sh`, etc. Each
+distro has different files. Enumerating them individually is fragile.
+
+**Tradeoff:** Landlock allows `/etc` read access broadly. eBPF deny rules
+protect sensitive files (`/etc/shadow`, `/etc/gshadow`). This means Landlock
+alone doesn't deny `/etc/shadow` — the eBPF layer is required.
+
+### 6.5.8 htmx 2.0 Doesn't Swap Error Responses (Fixed in Phase 11)
+
+htmx 2.0 changed default behavior: 4xx/5xx responses are NOT swapped into the
+target element. Dashboard notifications (toast messages) were silently
+discarded for errors, CSRF rejections, and validation failures.
+
+**Fix:** Added `htmx:beforeSwap` event listener in `base.html` that forces
+swap for all response codes. CSRF middleware now returns HTML toast div instead
+of plain text, so errors display correctly in the toast area.
 
 ---
 
@@ -696,9 +845,12 @@ open http://127.0.0.1:8080
 | **SUID escalation** | FULL | Very High | PR_SET_NO_NEW_PRIVS irremovable |
 | **Symlink / TOCTOU attacks** | FULL (cgroup) | High | Landlock inode-level. Comm agents still vulnerable |
 | **Read-only file write via openat** | FULL (cgroup) | High | Landlock blocks. Comm agents: eBPF gap |
+| **Exec deny for system binaries** | FULL | High | Auto-covers /usr/bin, /bin, /usr/sbin, /sbin variants |
+| **Exec deny for bundled agent tools** | NONE | N/A | Agent ships own `rg`/tools in allowed dirs — see 6.4 |
 | **Data exfil via HTTPS** | PARTIAL | Low | Logged but not blocked if port 443 allowed |
 | **Allowed-file secrets** (.env) | PARTIAL | Medium | Depends on deny list completeness |
 | **Code backdoor injection** | PARTIAL | Low | Logged, but content not analyzed |
+| **Config changes without restart** | NONE | N/A | BPF maps loaded at startup only — see 6.5.5 |
 | **DNS data exfiltration** | NONE | N/A | UDP unmonitored |
 | **Timing side channels** | NONE | N/A | Out of scope |
 | **Social engineering via output** | NONE | N/A | Out of scope |
@@ -715,6 +867,21 @@ open http://127.0.0.1:8080
 | **Privilege drop** | Root actions, Landlock+SELinux fix | Agent still has user-level access |
 | **Rate limiting** | Permission flooding, approval fatigue | Allowed operations |
 | **Risk classification** | Reflexive approval of high-risk requests | Low-risk but dangerous operations |
+
+---
+
+## 9. Bugs Found & Fixed During Live Testing
+
+| Bug | Severity | Impact | Fix | Section |
+|-----|----------|--------|-----|---------|
+| O_PATH stale PENDING_DENY | CRITICAL | ALL exec fails after Landlock restrict_self() | Skip O_PATH in tracepoints | 6.5.1 |
+| Stale eBPF scratch buffer | CRITICAL | Exec deny exact match never works | Zero buffer before read | 6.5.2 |
+| Landlock+exec EACCES as root | CRITICAL | Landlock unusable on Fedora/SELinux | Drop privileges before Landlock | 6.5.4 |
+| Binary symlink paths | HIGH | Deny /usr/bin/grep doesn't block /bin/grep | symlink_alternates() covers all dirs | 6.5.3 |
+| htmx 2.0 silent error | MEDIUM | Dashboard shows no notification on error | Force swap for 4xx/5xx responses | 6.5.8 |
+| config.toml placeholder paths | MEDIUM | Landlock silently skips non-existent paths | .gitignore + config.toml.example | 6.5.6 |
+| BPF maps not reloaded on config change | LOW | Deny rules don't take effect until restart | Dashboard warns to restart | 6.5.5 |
+| Bundled tools bypass exec deny | DESIGN | Agent's own rg/tools always accessible | Document limitation + mitigations | 6.4 |
 
 ---
 

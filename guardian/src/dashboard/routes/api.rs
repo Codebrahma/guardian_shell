@@ -539,7 +539,7 @@ pub async fn update_policy(
     drop(ipc);
 
     Html(format!(
-        r#"<div class="toast-success">Policy for '{}' saved and applied.</div>"#,
+        r#"<div class="toast-success">Policy for '{}' saved. Restart the daemon for deny/allow changes to take effect in kernel enforcement (BPF maps are loaded at startup).</div>"#,
         agent_name
     ))
 }

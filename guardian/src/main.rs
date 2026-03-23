@@ -838,17 +838,33 @@ fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<PolicyBp
             default_action.insert(comm_key, default_val, 0)?;
         }
 
-        // Insert deny rules (shared across all agents)
+        // Insert deny rules (shared across all agents).
+        // Also insert symlink alternates (/usr/bin/x → /bin/x) because eBPF sees
+        // the raw syscall path which may use either form on merged-usr systems.
         for pattern in &agent.file_access.deny {
-            if pattern.ends_with("/**") {
-                let prefix = format!("{}/", &pattern[..pattern.len() - 3]);
-                let key = path_to_lpm_key(prefix.as_bytes());
-                deny_prefixes.insert(&key, 1, 0)?;
-                let exact = path_to_map_key(pattern[..pattern.len() - 3].as_bytes());
-                let _ = deny_exact.insert(exact, 1, 0);
-            } else {
-                let key = path_to_map_key(pattern.as_bytes());
-                deny_exact.insert(key, 1, 0)?;
+            let patterns_to_insert: Vec<String> = {
+                let mut v = vec![pattern.clone()];
+                let base = pattern.trim_end_matches("/**");
+                for alt in symlink_alternates(base) {
+                    if pattern.ends_with("/**") {
+                        v.push(format!("{}/**", alt.trim_end_matches('/')));
+                    } else {
+                        v.push(alt);
+                    }
+                }
+                v
+            };
+            for p in &patterns_to_insert {
+                if p.ends_with("/**") {
+                    let prefix = format!("{}/", &p[..p.len() - 3]);
+                    let key = path_to_lpm_key(prefix.as_bytes());
+                    let _ = deny_prefixes.insert(&key, 1, 0);
+                    let exact = path_to_map_key(p[..p.len() - 3].as_bytes());
+                    let _ = deny_exact.insert(exact, 1, 0);
+                } else {
+                    let key = path_to_map_key(p.as_bytes());
+                    let _ = deny_exact.insert(key, 1, 0);
+                }
             }
             deny_count += 1;
         }
@@ -936,16 +952,31 @@ fn populate_exec_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()>
             exec_default_action.insert(comm_key, default_val, 0)?;
         }
 
+        // Insert exec deny rules + symlink alternates (/usr/bin/x → /bin/x, /usr/sbin/x, /sbin/x)
         for pattern in &exec_policy.deny {
-            if pattern.ends_with("/**") {
-                let prefix = format!("{}/", &pattern[..pattern.len() - 3]);
-                let key = path_to_lpm_key(prefix.as_bytes());
-                exec_deny_prefixes.insert(&key, 1, 0)?;
-                let exact = path_to_map_key(pattern[..pattern.len() - 3].as_bytes());
-                let _ = exec_deny_exact.insert(exact, 1, 0);
-            } else {
-                let key = path_to_map_key(pattern.as_bytes());
-                exec_deny_exact.insert(key, 1, 0)?;
+            let patterns_to_insert: Vec<String> = {
+                let mut v = vec![pattern.clone()];
+                let base = pattern.trim_end_matches("/**");
+                for alt in symlink_alternates(base) {
+                    if pattern.ends_with("/**") {
+                        v.push(format!("{}/**", alt.trim_end_matches('/')));
+                    } else {
+                        v.push(alt);
+                    }
+                }
+                v
+            };
+            for p in &patterns_to_insert {
+                if p.ends_with("/**") {
+                    let prefix = format!("{}/", &p[..p.len() - 3]);
+                    let key = path_to_lpm_key(prefix.as_bytes());
+                    let _ = exec_deny_prefixes.insert(&key, 1, 0);
+                    let exact = path_to_map_key(p[..p.len() - 3].as_bytes());
+                    let _ = exec_deny_exact.insert(exact, 1, 0);
+                } else {
+                    let key = path_to_map_key(p.as_bytes());
+                    let _ = exec_deny_exact.insert(key, 1, 0);
+                }
             }
             deny_count += 1;
         }
@@ -1124,6 +1155,57 @@ fn path_to_map_key(path: &[u8]) -> [u8; MAX_FILENAME_LEN] {
     let len = core::cmp::min(path.len(), MAX_FILENAME_LEN);
     key[..len].copy_from_slice(&path[..len]);
     key
+}
+
+/// Generate ALL symlink-equivalent paths for merged-usr systems.
+/// On Fedora/Arch, /bin → /usr/bin, /sbin → /usr/sbin, /lib → /usr/lib, /lib64 → /usr/lib64.
+/// Additionally, /usr/bin and /usr/sbin may overlap (some distros put binaries in both).
+/// eBPF sees the raw syscall path — we must deny ALL possible paths for a binary.
+/// Returns all alternate paths that exist on this system.
+fn symlink_alternates(path: &str) -> Vec<String> {
+    let mut results = Vec::new();
+
+    // Extract the binary name from the path
+    let binary_name = match path.rsplit_once('/') {
+        Some((_, name)) => name,
+        None => return results,
+    };
+
+    // All possible bin/sbin directories on merged-usr systems
+    let bin_dirs = ["/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/"];
+    let lib_dirs = ["/usr/lib/", "/lib/", "/usr/lib64/", "/lib64/"];
+
+    // Check if this is a binary path (under a bin directory)
+    let is_bin = bin_dirs.iter().any(|d| path.starts_with(d));
+    let is_lib = lib_dirs.iter().any(|d| path.starts_with(d));
+
+    if is_bin {
+        // For binaries: check all bin/sbin directories for the same binary name
+        for dir in &bin_dirs {
+            let candidate = format!("{}{}", dir, binary_name);
+            if candidate != path && std::path::Path::new(&candidate).exists() {
+                results.push(candidate);
+            }
+        }
+    } else if is_lib {
+        // For libraries: standard /usr/lib ↔ /lib mapping
+        let mappings: &[(&str, &str)] = &[
+            ("/usr/lib/", "/lib/"),
+            ("/usr/lib64/", "/lib64/"),
+            ("/lib/", "/usr/lib/"),
+            ("/lib64/", "/usr/lib64/"),
+        ];
+        for (from, to) in mappings {
+            if let Some(rest) = path.strip_prefix(from) {
+                let alt = format!("{}{}", to, rest);
+                if alt != path && std::path::Path::new(to).exists() {
+                    results.push(alt);
+                }
+            }
+        }
+    }
+
+    results
 }
 
 // =============================================================================

@@ -38,6 +38,21 @@
 /home/user/.ssh/**
 /home/user/.aws/**
 /home/user/.gnupg/**</pre>
+        <div class="help-label" style="color: var(--warning);">Symlink bypass warning</div>
+        <p class="help-text">If a parent folder is in <strong>allow</strong> and a subfolder is in <strong>deny</strong>, an agent can bypass the deny by creating a symlink from an allowed path (like /tmp/) to the denied folder. eBPF sees the raw path, not the resolved target.</p>
+        <p class="help-text"><strong>Mitigation:</strong> Don't allow broad parent directories that contain denied subfolders. Instead, allow only the specific subdirectories you need. For cgroup agents, Landlock provides inode-level protection but only for allow rules (not deny).</p>
+        <div class="help-label" style="color: var(--warning);">Safe pattern for denying subfolders:</div>
+        <pre class="help-examples"># WRONG (symlink bypass possible):
+allow = ["/home/user/**"]
+deny  = ["/home/user/secret/**"]
+
+# RIGHT (allow only what's needed):
+allow = [
+  "/home/user/projects/app1/**",
+  "/home/user/projects/app2/**",
+  "/home/user/.config/**",
+]
+# secret/ is not in allow list — blocked by default</pre>
       </div>
       <div class="help-section">
         <h4 class="help-title">Exec Policy</h4>
@@ -104,7 +119,7 @@
 
   <div x-show="open" x-cloak class="accordion-body">
     <form hx-put="/api/policy/{{ agent.name }}" hx-target="#toast" hx-swap="innerHTML"
-          hx-on::after-request="if(event.detail.successful) setTimeout(function() { window.location.reload(); }, 1500)">
+          hx-on::after-request="if(!event.detail.successful) return; var toast = document.getElementById('toast'); toast.scrollIntoView({behavior: 'smooth'}); setTimeout(function() { toast.innerHTML = ''; }, 8000)">
       <div class="grid-2">
         <!-- File Access Policy -->
         <div>

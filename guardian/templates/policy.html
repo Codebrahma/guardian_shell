@@ -98,6 +98,145 @@ allow = [
 # Block SSH, SMTP, database ports</pre>
       </div>
     </div>
+
+    <!-- AI Agent Configuration Guide -->
+    <div class="help-section-full mt-md" style="border-top: 1px solid var(--border); padding-top: 12px;">
+      <h4 class="help-title">Configuring Policies for AI Coding Agents (Claude Code, Cursor, etc.)</h4>
+      <p class="help-text">AI coding agents access far more files than a typical script. They need their own runtime, config files, shell init, caches, and your project directory. With <code class="inline">default: deny</code>, you must explicitly allow every path the agent touches — including files you might not expect.</p>
+
+      <div class="grid-2 mt-sm">
+        <div>
+          <div class="help-label">Typical allow list for Claude Code (cgroup agent):</div>
+          <pre class="help-examples"># Project directory (read + write)
+/home/user/projects/myapp/**
+
+# Claude Code data and auth
+/home/user/.claude/**
+/home/user/.claude.json
+
+# Node.js runtime (Claude Code runs on Node)
+/home/user/.local/**
+
+# Package manager caches
+/home/user/.npm/**
+/home/user/.cache/**
+
+# Config files (git, mise, editors, etc.)
+/home/user/.config/**
+
+# Rust toolchain (if using Rust tools)
+/home/user/.cargo/**
+/home/user/.rustup/**
+
+# System paths (dynamic linking, shell, etc.)
+/tmp/**
+/proc/**
+/sys/**
+/dev/**
+/run/**
+/usr/lib/**    /usr/lib64/**
+/usr/libexec/** /usr/share/**
+/usr/local/**   /usr/bin/**
+/usr/sbin/**    /sbin/**
+/lib/**         /lib64/**
+/bin/**         /etc/**
+/var/**</pre>
+        </div>
+        <div>
+          <div class="help-label">Read-only paths (shell init files):</div>
+          <pre class="help-examples"># Shell startup files — needed when the
+# agent spawns bash subprocesses
+/home/user/.bashrc
+/home/user/.bash_profile
+/home/user/.bash_logout
+/home/user/.profile</pre>
+
+          <div class="help-label mt-sm">Deny list (sensitive files):</div>
+          <pre class="help-examples">/etc/shadow
+/etc/gshadow
+/home/user/.ssh/**
+/home/user/.aws/**
+/home/user/.gnupg/**</pre>
+
+          <div class="help-label mt-sm" style="color: var(--warning);">Common gotchas:</div>
+          <ul class="help-text" style="padding-left: 16px; margin: 4px 0;">
+            <li><code class="inline">.claude.json</code> lives at the home root, not inside <code class="inline">.claude/</code> — must be allowed separately</li>
+            <li><code class="inline">.config/**</code> is needed broadly (git, editor configs) — don't restrict to just one subdir</li>
+            <li>If the agent runs from a <strong>watched parent session</strong> (e.g. Claude Code running inside another Claude Code), the parent agent's policy also applies to <code class="inline">guardian-launch</code></li>
+            <li>Landlock blocks silently — there is no log when it denies access. Use strace (below) to debug</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Troubleshooting: Finding Missing Paths -->
+    <div class="help-section-full mt-md" style="border-top: 1px solid var(--border); padding-top: 12px;">
+      <h4 class="help-title">Troubleshooting: Agent Won't Launch</h4>
+      <p class="help-text">When a cgroup agent fails to start with <code class="inline">default: deny</code>, it's usually because Landlock is blocking a file the agent needs. Landlock denials are <strong>silent</strong> — they don't appear in Guardian's logs. Use <code class="inline">strace</code> to find which files are being denied.</p>
+
+      <div class="grid-2 mt-sm">
+        <div>
+          <div class="help-label">Step 1: Install strace</div>
+          <pre class="help-examples"># Fedora / RHEL
+sudo dnf install strace
+
+# Debian / Ubuntu
+sudo apt install strace</pre>
+
+          <div class="help-label mt-sm">Step 2: Trace the agent without Guardian</div>
+          <pre class="help-examples"># Run your agent under strace and log
+# all file access syscalls:
+strace -f -e trace=openat,open,access,stat \
+  -o /tmp/agent_trace.log \
+  /path/to/your/agent
+
+# Example for Claude Code:
+strace -f -e trace=openat,open,access,stat \
+  -o /tmp/claude_trace.log \
+  /home/user/.local/share/mise/installs\
+/node/24.1.0/bin/claude --help</pre>
+
+          <div class="help-label mt-sm">Step 3: Extract accessed paths</div>
+          <pre class="help-examples"># Find all unique paths under /home/:
+grep -oP '"/home/[^"]*"' /tmp/agent_trace.log \
+  | sort -u
+
+# Find all paths that got EACCES errors
+# (these are the ones being blocked):
+grep 'EACCES' /tmp/agent_trace.log \
+  | grep -oP '"[^"]*"' | sort -u</pre>
+        </div>
+        <div>
+          <div class="help-label">Step 4: Add missing paths to allow list</div>
+          <p class="help-text">Group the discovered paths by directory and add them as glob patterns:</p>
+          <pre class="help-examples"># If strace shows access to:
+#   /home/user/.config/git/config
+#   /home/user/.config/mise/config.toml
+# Add the parent directory:
+/home/user/.config/**
+
+# If strace shows a specific file:
+#   /home/user/.claude.json
+# Add the exact file path:
+/home/user/.claude.json</pre>
+
+          <div class="help-label mt-sm">Alternative: Use audit framework</div>
+          <pre class="help-examples"># If strace is unavailable, Linux audit
+# can capture Landlock denials:
+sudo auditctl -a always,exit \
+  -F arch=b64 -S openat \
+  -F exit=-13 -k landlock
+
+# Launch your agent, then search:
+sudo ausearch -k landlock --raw \
+  | aureport -f</pre>
+
+          <div class="help-label mt-sm" style="color: var(--info);">Tip:</div>
+          <p class="help-text">Start with a broad allow (e.g. <code class="inline">/home/user/**</code>), confirm the agent works, then use strace to find the <em>actual</em> paths it needs and narrow the allow list down. This is safer than guessing.</p>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 

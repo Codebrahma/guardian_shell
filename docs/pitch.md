@@ -142,6 +142,8 @@ A web UI (embedded in the binary, no separate install) shows live events, agent 
 ### Interactive Permission Requests
 Agents can request access to protected resources. You see the request in your browser with a **risk score**, **justification analysis**, and **mandatory wait timer** (higher risk = longer wait). Approve or deny with one click.
 
+**Important caveat:** Dynamic grants update eBPF maps in real-time (no restart). But for hardened cgroup agents, Landlock rules are set at launch and immutable — granting access to a path outside Landlock's initial scope requires relaunching the agent with an updated config. This is a deliberate security tradeoff: Landlock's immutability is what makes it immune to runtime bypass attacks.
+
 ### Risk-Based Approval Friction
 Not all requests are equal. Guardian Shell scores every request:
 
@@ -186,7 +188,13 @@ Every permission decision (approve, deny, auto-approve, auto-deny, timeout) is r
 
 **Without Guardian Shell:** Agent either has access to everything (risky) or nothing outside its sandbox (broken workflow).
 
-**With Guardian Shell:** Agent requests permission via `guardian-ctl request-permission`. Developer sees the request in dashboard with risk score, approves for 5 minutes. Access automatically revoked after expiry.
+**With Guardian Shell (two approaches depending on security tier):**
+
+- **Comm-based agents (Tier 2):** Agent requests permission via `guardian-ctl request-permission`. Developer sees the request in dashboard with risk score, approves for 5 minutes. The daemon hot-updates the eBPF allow maps — access works immediately, no restart needed. Automatically revoked after expiry.
+
+- **Cgroup agents (Tier 1 — hardened):** Landlock rules are set at launch and are immutable (this is a kernel security property — not a bug). The agent must be relaunched with an updated policy to access new paths. This is the tradeoff: Landlock's immutability is exactly what makes it immune to symlinks and TOCTOU attacks. You can't dynamically poke holes in it, and that's the point.
+
+> **Design philosophy:** For hardened agents, we chose security over convenience. If an agent frequently needs access escalation, the right fix is a broader initial policy — not punching runtime holes in the sandbox.
 
 ---
 
@@ -211,6 +219,7 @@ Transparency matters. Here's what Guardian Shell does **not** do:
 - **Not cross-platform** — Linux only (5.13+ recommended). macOS and Windows are not supported.
 - **Not a network firewall** — it controls outbound TCP by port, but doesn't inspect DNS, UDP, or packet contents.
 - **Not zero-config** — you write a TOML policy (though presets are provided for common setups).
+- **Not dynamically re-sandboxable** — hardened (cgroup) agents use Landlock, which is immutable after launch. Changing what the agent can access requires relaunching it. This is a security feature, not a limitation — but it means you should design policies upfront rather than granting access ad-hoc.
 
 ---
 

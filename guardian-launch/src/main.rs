@@ -531,11 +531,18 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
 
     let read_rights = AccessFs::ReadFile | AccessFs::ReadDir;
 
+    // Track paths added to ruleset for summary logging
+    let mut system_paths_added: Vec<&str> = Vec::new();
+    let mut config_paths_added: Vec<String> = Vec::new();
+    let mut readonly_paths_added: Vec<String> = Vec::new();
+    let mut config_paths_skipped: Vec<String> = Vec::new();
+
     // Add system read paths (needed for dynamic linking and basic operation)
     for path in &system_read_paths {
         if Path::new(path).exists() {
             if let Ok(fd) = PathFd::new(path) {
                 ruleset = ruleset.add_rule(PathBeneath::new(fd, read_rights))?;
+                system_paths_added.push(path);
             }
         }
     }
@@ -544,6 +551,7 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
     if Path::new("/proc/self").exists() {
         if let Ok(fd) = PathFd::new("/proc/self") {
             ruleset = ruleset.add_rule(PathBeneath::new(fd, read_rights))?;
+            system_paths_added.push("/proc/self");
         }
     }
     if Path::new("/proc/self/fd").exists() {
@@ -556,11 +564,12 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
     for pattern in &config.file_allow {
         let base_path = strip_glob(pattern);
         if !Path::new(&base_path).exists() {
-            debug!("Landlock: skipping non-existent path '{}'", base_path);
+            config_paths_skipped.push(format!("{} (not found)", pattern));
             continue;
         }
         if let Ok(fd) = PathFd::new(&base_path) {
             ruleset = ruleset.add_rule(PathBeneath::new(fd, fs_access))?;
+            config_paths_added.push(format!("{} (read+write)", pattern));
         }
     }
 
@@ -569,11 +578,12 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
     for pattern in &config.file_read_only {
         let base_path = strip_glob(pattern);
         if !Path::new(&base_path).exists() {
-            debug!("Landlock: skipping non-existent read_only path '{}'", base_path);
+            config_paths_skipped.push(format!("{} (not found)", pattern));
             continue;
         }
         if let Ok(fd) = PathFd::new(&base_path) {
             ruleset = ruleset.add_rule(PathBeneath::new(fd, read_rights))?;
+            readonly_paths_added.push(pattern.clone());
         }
     }
 
@@ -602,6 +612,25 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
             ruleset = ruleset.add_rule(NetPort::new(port, AccessNet::ConnectTcp))?;
         }
     }
+
+    // Log the complete Landlock ruleset so users can see exactly what's allowed.
+    // This is critical for debugging because Landlock denials are SILENT —
+    // they don't appear in Guardian daemon logs or dmesg.
+    info!("Landlock ruleset summary:");
+    info!("  System read paths ({}): {}", system_paths_added.len(),
+        system_paths_added.join(", "));
+    for p in &config_paths_added {
+        info!("  Allow: {}", p);
+    }
+    for p in &readonly_paths_added {
+        info!("  Read-only: {}", p);
+    }
+    if !config_paths_skipped.is_empty() {
+        log::warn!("  Skipped (non-existent): {}", config_paths_skipped.join(", "));
+    }
+    info!("  Everything NOT listed above will be SILENTLY DENIED by Landlock.");
+    info!("  If the agent fails to start, compare this list against the files it needs.");
+    info!("  Use 'strace -f -e trace=openat <cmd>' to find which files are accessed.");
 
     // Enforce the ruleset — this is irreversible
     let status = ruleset.restrict_self()?;

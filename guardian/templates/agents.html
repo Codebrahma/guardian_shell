@@ -217,6 +217,65 @@
 <!-- Active Cgroup Agents -->
 <div class="mb-lg">
   <h3 class="section-subtitle">Active Cgroup Agents</h3>
+
+  <!-- Landlock enforcement info -->
+  <div class="card mb-sm" x-data="{ show: false }" style="border-left: 3px solid var(--info); padding: 10px 14px; background: color-mix(in srgb, var(--info) 6%, var(--bg-card));">
+    <div style="display: flex; gap: 8px; align-items: flex-start; cursor: pointer;" @click="show = !show">
+      <svg style="width:18px; height:18px; flex-shrink:0; margin-top:2px; color: var(--info);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <div style="flex: 1;">
+        <strong style="color: var(--info);">Cgroup agents have 6-layer security — Landlock is the primary enforcer</strong>
+        <span class="text-xs text-muted" x-text="show ? '(click to collapse)' : '(click for details)'"></span>
+      </div>
+    </div>
+    <div x-show="show" x-cloak style="margin-top: 8px; padding-left: 26px;">
+      <table style="font-size: 12px; border-collapse: collapse; width: 100%;">
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;"><strong>Layer</strong></td>
+          <td style="padding: 4px 8px;"><strong>Enforcement</strong></td>
+          <td style="padding: 4px 8px;"><strong>Visible in Events?</strong></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;">Landlock LSM</td>
+          <td style="padding: 4px 8px;">Inode-level file access (symlink-immune)</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-critical" style="font-size: 10px;">No — silent</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;">Seccomp BPF</td>
+          <td style="padding: 4px 8px;">Blocks io_uring, mount, namespace escape</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-critical" style="font-size: 10px;">No — silent</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;">eBPF LSM hooks</td>
+          <td style="padding: 4px 8px;">file_open, bprm_check, socket_connect</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-success" style="font-size: 10px;">Yes</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;">eBPF tracepoints</td>
+          <td style="padding: 4px 8px;">openat, execve, connect monitoring</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-success" style="font-size: 10px;">Yes</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;">Cgroup isolation</td>
+          <td style="padding: 4px 8px;">Resource limits, unspoofable identity</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-gray" style="font-size: 10px;">N/A</span></td>
+        </tr>
+        <tr>
+          <td style="padding: 4px 8px;">PR_SET_NO_NEW_PRIVS</td>
+          <td style="padding: 4px 8px;">Prevents SUID escalation</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-gray" style="font-size: 10px;">N/A</span></td>
+        </tr>
+      </table>
+      <p class="text-sm text-muted" style="margin: 8px 0 0 0;">
+        <strong>Landlock and seccomp block silently</strong> — denials don't appear in the Events page or daemon logs.
+        If an agent gets "Permission denied" but no BLOCKED event appears, the access was denied by Landlock (missing path in allow list) or seccomp (blocked syscall).
+        Run <code class="inline">guardian-launch</code> with <code class="inline">RUST_LOG=info</code> to see the full Landlock ruleset at startup.
+        Use <code class="inline">strace -f -e trace=openat &lt;cmd&gt;</code> to find which file access is failing, then add it to the allow list on the <a href="/policy" style="color: var(--accent);">Policy page</a>.
+      </p>
+    </div>
+  </div>
+
   <div class="card">
     <div class="table-wrap">
       <table>

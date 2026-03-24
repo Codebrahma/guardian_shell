@@ -132,6 +132,7 @@ impl EventDb {
     }
 
     /// Insert an AlertEvent into the database.
+    #[allow(dead_code)]
     pub fn insert_event(&self, event: &AlertEvent) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock poisoned: {}", e))?;
         conn.execute(
@@ -153,6 +154,40 @@ impl EventDb {
         )
         .map_err(|e| format!("DB insert failed: {}", e))?;
         Ok(())
+    }
+
+    /// Batch-insert multiple events in a single transaction.
+    /// Much faster than individual inserts (one fsync instead of N).
+    pub fn batch_insert_events(&self, events: &[AlertEvent]) -> Result<usize, String> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().map_err(|e| format!("DB lock poisoned: {}", e))?;
+        conn.execute_batch("BEGIN").map_err(|e| format!("BEGIN failed: {}", e))?;
+        let mut count = 0;
+        for event in events {
+            if conn.execute(
+                "INSERT INTO events (timestamp, severity, event_type, action, agent_name, pid, comm, path, access_mode, identity_method, policy_mode)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    event.timestamp.to_rfc3339(),
+                    event.severity.to_string(),
+                    event.event_type.to_string(),
+                    event.action.to_string(),
+                    event.agent_name,
+                    event.pid,
+                    event.comm,
+                    event.path,
+                    event.access_mode,
+                    event.identity_method,
+                    event.policy_mode,
+                ],
+            ).is_ok() {
+                count += 1;
+            }
+        }
+        conn.execute_batch("COMMIT").map_err(|e| format!("COMMIT failed: {}", e))?;
+        Ok(count)
     }
 
     /// Query events with optional filters, pagination via limit/offset.

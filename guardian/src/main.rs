@@ -428,7 +428,7 @@ async fn main() -> Result<()> {
     }
 
     // Step 6: Initialize Alerting Subsystem (Phase 4)
-    let (event_bus_tx, _event_bus_rx) = broadcast::channel::<AlertEvent>(1024);
+    let (event_bus_tx, _event_bus_rx) = broadcast::channel::<AlertEvent>(8192);
     let alert_tx = if let Some(ref alerting_config) = config.alerting {
         info!("Starting alerting subsystem...");
         alerting::start(alerting_config.clone()).await
@@ -498,21 +498,64 @@ async fn main() -> Result<()> {
             }
         };
 
-        // Spawn background DB writer: subscribes to broadcast and persists events
+        // Spawn background DB writer: subscribes to broadcast, filters by severity,
+        // and batch-inserts events every 500ms for efficiency.
         let db_writer = db.clone();
         let mut db_rx = event_bus_tx.subscribe();
+        let db_min_severity = config
+            .dashboard
+            .as_ref()
+            .map(|d| d.db_min_severity.clone())
+            .unwrap_or_else(|| "warning".to_string());
+        let db_severity_threshold = Severity::from_str(&db_min_severity);
+        info!(
+            "DB writer: persisting events with severity >= {} (configure with dashboard.db_min_severity)",
+            db_min_severity
+        );
         tokio::spawn(async move {
+            let mut batch: Vec<AlertEvent> = Vec::with_capacity(256);
+            let mut flush_interval = time::interval(Duration::from_millis(500));
+            let mut total_lagged: u64 = 0;
+            let mut last_lag_log = std::time::Instant::now();
+
             loop {
-                match db_rx.recv().await {
-                    Ok(event) => {
-                        if let Err(e) = db_writer.insert_event(&event) {
-                            warn!("Failed to write event to DB: {}", e);
+                tokio::select! {
+                    result = db_rx.recv() => {
+                        match result {
+                            Ok(event) => {
+                                // Filter: only persist events at or above the configured severity
+                                if event.severity >= db_severity_threshold {
+                                    batch.push(event);
+                                    // Flush immediately if batch is large
+                                    if batch.len() >= 200 {
+                                        let events = std::mem::replace(&mut batch, Vec::with_capacity(256));
+                                        if let Err(e) = db_writer.batch_insert_events(&events) {
+                                            warn!("Failed to batch-write {} events to DB: {}", events.len(), e);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                total_lagged += n;
+                                // Rate-limit lag warnings to once per 30 seconds
+                                if last_lag_log.elapsed() >= Duration::from_secs(30) {
+                                    warn!("DB writer lagged, missed {} events total since last report", total_lagged);
+                                    total_lagged = 0;
+                                    last_lag_log = std::time::Instant::now();
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Closed) => break,
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!("DB writer lagged, missed {} events", n);
+                    _ = flush_interval.tick() => {
+                        // Periodic flush: batch-insert accumulated events
+                        if !batch.is_empty() {
+                            let events = std::mem::replace(&mut batch, Vec::with_capacity(256));
+                            if let Err(e) = db_writer.batch_insert_events(&events) {
+                                warn!("Failed to batch-write {} events to DB: {}", events.len(), e);
+                            }
+                        }
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         });

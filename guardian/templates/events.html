@@ -3,6 +3,25 @@
 {% block nav_events %}nav-active{% endblock %}
 
 {% block content %}
+<!-- Landlock blind spot notice -->
+<div class="card mb-md" style="border-left: 3px solid var(--warning); padding: 10px 14px; background: color-mix(in srgb, var(--warning) 6%, var(--bg-card));">
+  <div style="display: flex; gap: 8px; align-items: flex-start;">
+    <svg style="width:18px; height:18px; flex-shrink:0; margin-top:2px; color: var(--warning);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+    </svg>
+    <div>
+      <strong style="color: var(--warning);">Landlock denials are invisible here</strong>
+      <p class="text-sm text-muted" style="margin: 4px 0 0 0;">
+        Cgroup agents (Tier 1) use Landlock as the primary enforcement layer. When Landlock blocks a file access, the kernel returns EACCES silently — <strong>no event appears in this log</strong>.
+        The eBPF layer may even show the same access as <span class="badge badge-success" style="font-size: 10px;">allow</span> because eBPF and Landlock evaluate independently.
+        If an agent gets "Permission denied" errors but no BLOCKED events appear here, the cause is almost certainly a missing path in the Landlock allow list.
+        Check <code class="inline">guardian-launch</code> startup logs for the Landlock ruleset summary, or use <code class="inline">strace</code> to identify which file access is being denied.
+        See the <a href="/policy" style="color: var(--accent);">Policy page</a> help section for troubleshooting steps.
+      </p>
+    </div>
+  </div>
+</div>
+
 <div x-data="eventFilter()">
   <div class="page-header">
     <div class="page-header-left">

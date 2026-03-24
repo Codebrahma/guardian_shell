@@ -146,6 +146,17 @@ pub struct DashboardConfig {
     /// Phase 8: Optional authentication token for dashboard access.
     /// When set, all dashboard requests must include this token.
     pub auth_token: Option<String>,
+    /// Minimum severity for events persisted to the database.
+    /// Options: "info", "warning", "critical". Default: "warning".
+    /// "info" persists everything (including ALLOW events — high volume).
+    /// "warning" persists only DENY/BLOCKED events (recommended).
+    /// "critical" persists only BLOCKED events in enforce mode.
+    #[serde(default = "default_db_min_severity")]
+    pub db_min_severity: String,
+}
+
+fn default_db_min_severity() -> String {
+    "warning".to_string()
 }
 
 // =============================================================================

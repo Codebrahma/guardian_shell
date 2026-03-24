@@ -132,6 +132,23 @@ Guardian Shell doesn't rely on a single mechanism. For cgroup-based agents, it s
 
 If any single layer is bypassed, the others still hold. This is the same defense-in-depth philosophy used in high-security production environments.
 
+### What if the Guardian daemon crashes or is killed?
+
+This is where defense-in-depth proves its value. eBPF programs are tied to the daemon process — when it exits, the kernel unloads them. But the other layers are applied directly to the agent process and **survive independently**:
+
+| Layer | Survives daemon exit? |
+|-------|-----------------------|
+| Landlock (file enforcement) | **Yes** — attached to process credentials, kernel-enforced |
+| Seccomp (syscall filter) | **Yes** — attached to thread, kernel-enforced |
+| NO_NEW_PRIVS (anti-SUID) | **Yes** — process flag, kernel-enforced |
+| Cgroup resource limits | **Yes** — kernel cgroup controllers, daemon-independent |
+| eBPF LSM hooks | No — daemon held the fd |
+| eBPF tracepoints | No — loses monitoring/audit trail |
+
+**Cgroup agents keep 4 of 6 layers.** The primary enforcement (Landlock) keeps working — the agent still can't touch files outside its policy, can't call blocked syscalls, and can't escalate privileges. You lose visibility (audit trail, dashboard events) but not protection.
+
+**Comm-based agents lose everything.** All their protection was eBPF-based. Another reason to use cgroup agents for anything that matters.
+
 ---
 
 ## Key Capabilities

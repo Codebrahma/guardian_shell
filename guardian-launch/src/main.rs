@@ -1,7 +1,7 @@
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -632,18 +632,104 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
     info!("  If the agent fails to start, compare this list against the files it needs.");
     info!("  Use 'strace -f -e trace=openat <cmd>' to find which files are accessed.");
 
-    // Enforce the ruleset — this is irreversible
+    // Enforce the primary ruleset — this is irreversible
     let status = ruleset.restrict_self()?;
 
     match status.ruleset {
         RulesetStatus::FullyEnforced => {
-            info!("Landlock: fully enforced (all requested rights controlled)");
+            info!("Landlock layer 1: fully enforced (all requested rights controlled)");
         }
         RulesetStatus::PartiallyEnforced => {
-            info!("Landlock: partially enforced (some rights not available on this kernel)");
+            info!("Landlock layer 1: partially enforced (some rights not available on this kernel)");
         }
         RulesetStatus::NotEnforced => {
-            log::warn!("Landlock: not enforced (kernel may not support Landlock)");
+            log::warn!("Landlock layer 1: not enforced (kernel may not support Landlock)");
+        }
+    }
+
+    // Layer 2: Enforce read-only paths via a second Landlock ruleset.
+    //
+    // Landlock UNIONS rights within a single layer — a read-only rule on a
+    // child is overridden by its parent's read+write rule. Multi-layer
+    // enforcement fixes this: rights are INTERSECTED across layers.
+    //
+    // Layer 2 handles only write operations. For allow paths that contain
+    // read_only descendants, we enumerate directory entries at each level
+    // and grant write to siblings but NOT to the read_only branch.
+    //
+    // Result:
+    //   - allow paths (no ro children): layer1=rw, layer2=write → rw ✓
+    //   - allow paths (with ro children): siblings get write, ro file doesn't
+    //   - read_only paths: layer1=rw (parent), layer2=no write → read only ✓
+    //   - system paths: layer1=read, layer2 doesn't handle read → read ✓
+    if !config.file_read_only.is_empty() {
+        let write_access = AccessFs::WriteFile | AccessFs::MakeReg | AccessFs::RemoveFile
+            | AccessFs::MakeDir | AccessFs::RemoveDir
+            | AccessFs::MakeSym | AccessFs::Truncate;
+
+        let mut write_ruleset = Ruleset::default()
+            .handle_access(write_access)?
+            .create()?;
+
+        // Resolve read_only base paths for overlap detection
+        let ro_bases: Vec<PathBuf> = config.file_read_only.iter()
+            .map(|p| PathBuf::from(strip_glob(p)))
+            .collect();
+
+        for pattern in &config.file_allow {
+            let base_path = strip_glob(pattern);
+            if !Path::new(&base_path).exists() {
+                continue;
+            }
+
+            // Find read_only paths that are descendants of this allow path
+            let ro_descendants: Vec<PathBuf> = ro_bases.iter()
+                .filter_map(|ro| {
+                    ro.strip_prefix(&base_path).ok()
+                        .map(|rel| rel.to_path_buf())
+                })
+                .collect();
+
+            if ro_descendants.is_empty() {
+                // No read_only children — add the whole tree with write access
+                if let Ok(fd) = PathFd::new(&base_path) {
+                    write_ruleset = write_ruleset.add_rule(
+                        PathBeneath::new(fd, write_access)
+                    )?;
+                }
+            } else {
+                // Has read_only descendants — enumerate entries to exclude them.
+                // This walks the directory tree level by level, granting write to
+                // siblings at each level but skipping the branch toward the
+                // read_only file/directory.
+                let write_paths = collect_write_paths(
+                    Path::new(&base_path),
+                    &ro_descendants,
+                );
+                for path in &write_paths {
+                    if let Ok(fd) = PathFd::new(path) {
+                        write_ruleset = write_ruleset.add_rule(
+                            PathBeneath::new(fd, write_access)
+                        )?;
+                    }
+                }
+                info!("  Landlock layer 2: split '{}' into {} write rules, excluding read-only paths",
+                    pattern, write_paths.len());
+            }
+        }
+
+        let status2 = write_ruleset.restrict_self()?;
+        match status2.ruleset {
+            RulesetStatus::FullyEnforced => {
+                info!("Landlock layer 2: write restriction enforced for {} read-only path(s)",
+                    config.file_read_only.len());
+            }
+            RulesetStatus::PartiallyEnforced => {
+                info!("Landlock layer 2: partially enforced (read-only paths may not be fully protected)");
+            }
+            RulesetStatus::NotEnforced => {
+                log::warn!("Landlock layer 2: NOT enforced — read-only paths are NOT write-protected!");
+            }
         }
     }
 
@@ -655,6 +741,64 @@ fn apply_landlock_sandbox(config: &SandboxConfig) -> Result<()> {
 fn strip_glob(pattern: &str) -> String {
     let s = pattern.trim_end_matches("/**").trim_end_matches("/*");
     s.to_string()
+}
+
+/// Walk a directory tree and collect all paths that should get write access,
+/// EXCLUDING the branches that lead to read_only files/directories.
+///
+/// For example, with base_dir="/home/user/project" and exclude=[Path("secret/file.txt")]:
+///   /home/user/project/
+///     src/          → added (not on exclusion path)
+///     .git/         → added
+///     secret/       → NOT added, recurse into it:
+///       file.txt    → NOT added (this is the read_only target)
+///       other.txt   → added (sibling of excluded file)
+fn collect_write_paths(base_dir: &Path, exclude_relatives: &[PathBuf]) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+
+    // Group exclusions by their first path component at this level.
+    // E.g., ["secret/file.txt", "secret/other_secret.txt"] groups to:
+    //   "secret" → ["file.txt", "other_secret.txt"]
+    let mut skip_children: std::collections::HashMap<std::ffi::OsString, Vec<PathBuf>>
+        = std::collections::HashMap::new();
+
+    for rel in exclude_relatives {
+        let mut components = rel.components();
+        if let Some(first) = components.next() {
+            let rest: PathBuf = components.collect();
+            skip_children.entry(first.as_os_str().to_owned())
+                .or_default()
+                .push(rest);
+        }
+        // If rel has no components, base_dir itself is read_only — skip entirely
+    }
+
+    let entries = match std::fs::read_dir(base_dir) {
+        Ok(entries) => entries,
+        Err(_) => return result,
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if let Some(sub_excludes) = skip_children.get(&name) {
+            // This child is on the path to an excluded file
+            let is_target = sub_excludes.iter().any(|p| p.as_os_str().is_empty());
+            if is_target {
+                // This entry IS a read_only target — don't grant write access
+                info!("  Landlock layer 2: '{}' excluded from write (read-only)",
+                    entry.path().display());
+            } else {
+                // Need to go deeper — recurse into this subdirectory
+                let sub_paths = collect_write_paths(&entry.path(), sub_excludes);
+                result.extend(sub_paths);
+            }
+        } else {
+            // Not on any exclusion path — grant write access to entire subtree
+            result.push(entry.path());
+        }
+    }
+
+    result
 }
 
 // =============================================================================

@@ -96,6 +96,19 @@ allow = [
         <div class="help-label">Example (default: allow, block specific):</div>
         <pre class="help-examples">Deny: 22, 25, 3306, 5432
 # Block SSH, SMTP, database ports</pre>
+        <div class="help-label mt-sm" style="color: var(--critical);">Enforcement layers (kernel 6.7+):</div>
+        <ul class="help-text" style="padding-left: 16px; margin: 4px 0;">
+          <li><strong>Landlock TCP connect</strong> (kernel 6.7+) — blocks outbound TCP at the kernel VFS layer. Inode-level, no bypass. This is the primary enforcement for cgroup agents.</li>
+          <li><strong>eBPF <code class="inline">socket_connect</code> LSM</strong> (kernel 5.7+) — second layer. Logs and blocks independently. Returns <code class="inline">-ECONNREFUSED</code>.</li>
+        </ul>
+        <div class="help-label mt-sm" style="color: var(--warning);">UDP gap — known limitation:</div>
+        <p class="help-text">Landlock and eBPF only filter <strong>TCP <code class="inline">connect()</code></strong>. UDP <code class="inline">sendto()</code> without a prior <code class="inline">connect()</code> is <strong>not filtered by either layer</strong>. This means:</p>
+        <ul class="help-text" style="padding-left: 16px; margin: 4px 0;">
+          <li>DNS over UDP (port 53) works — but so does UDP-based data exfiltration</li>
+          <li>An attacker could use <code class="inline">sendto()</code> to exfil data over raw UDP to any port</li>
+          <li>DNS tunneling (encoding data in DNS queries) is undetectable by Guardian Shell</li>
+          <li><strong>Mitigation:</strong> Use network namespace isolation (OpenShell/container) for full UDP control, or restrict DNS to a local resolver</li>
+        </ul>
       </div>
     </div>
 
@@ -169,6 +182,105 @@ allow = [
       </div>
     </div>
 
+
+    <!-- OpenClaw Agent Configuration Guide -->
+    <div class="help-section-full mt-md" style="border-top: 1px solid var(--border); padding-top: 12px;">
+      <h4 class="help-title">Configuring Policies for OpenClaw (Telegram / Multi-Channel AI Agent)</h4>
+      <p class="help-text">OpenClaw is a general-purpose AI agent with shell exec, file access, and network capabilities. It connects to 20+ messaging channels (Telegram, Slack, WhatsApp). With <strong>60+ known CVEs</strong> and default-open posture, kernel-level enforcement is critical. The Landlock <strong>allow list is the security boundary</strong> — deny lists are bypassable via symlinks.</p>
+
+      <div class="grid-2 mt-sm">
+        <div>
+          <div class="help-label">File access allow list (cgroup agent, default: deny):</div>
+          <pre class="help-examples"># OpenClaw project + config directories
+/home/user/codebrahma/openclaw/**
+/home/user/.openclaw-dev/**
+/home/user/openclaw-data/**
+
+# Node.js runtime + pnpm toolchain
+/home/user/.local/share/mise/**
+/home/user/.local/share/pnpm/**
+/home/user/.local/bin/**
+/home/user/.npm/**
+/home/user/.cache/**
+
+# System paths (dynamic linking)
+/tmp/**
+/proc/**
+/sys/**
+/dev/**
+/run/**
+/usr/lib/**    /usr/lib64/**
+/usr/libexec/** /usr/share/**
+/usr/local/**   /usr/bin/**
+/usr/sbin/**    /sbin/**
+/lib/**         /lib64/**
+/bin/**</pre>
+
+          <div class="help-label mt-sm">Read-only paths:</div>
+          <pre class="help-examples">/etc/resolv.conf
+/etc/hosts
+/etc/hostname
+/etc/localtime
+/etc/ld.so.cache
+/etc/passwd
+/etc/group
+/etc/nsswitch.conf
+/etc/ssl/**
+/etc/pki/**</pre>
+        </div>
+        <div>
+          <div class="help-label">Exec policy (default: deny):</div>
+          <pre class="help-examples"># Node.js / pnpm (required)
+/home/user/.local/share/mise/**/node
+/home/user/.local/share/mise/**/pnpm
+/home/user/.local/share/pnpm/**/pnpm
+
+# Safe utilities only
+/usr/bin/ls    /usr/bin/cat
+/usr/bin/grep  /usr/bin/sed
+/usr/bin/find  /usr/bin/git
+/usr/bin/bash  /bin/bash
+/usr/bin/sh    /bin/sh
+/usr/bin/env   /usr/bin/mkdir
+/usr/bin/cp    /usr/bin/mv
+/usr/bin/rm    /usr/bin/touch</pre>
+
+          <div class="help-label mt-sm" style="color: var(--critical);">Blocked executables (50+):</div>
+          <pre class="help-examples"># Exfiltration: curl, wget, scp, rsync
+# Reverse shell: ssh, nc, ncat, socat
+# Privilege: sudo, su, chmod, chown
+# Interpreters: python, perl, ruby, gcc
+# Containers: docker, podman, nsenter
+# Recon: ss, netstat, lsof, nmap, ip
+# Encoding: base64, xxd, openssl
+# Debug: gdb, strace, ltrace
+# Persistence: crontab, at</pre>
+
+          <div class="help-label mt-sm">Network policy (default: deny, allow only needed):</div>
+          <pre class="help-examples">
+# Allow only what OpenClaw needs:
+443 (HTTPS — Telegram API, LLM APIs)
+53  (DNS resolution)
+
+# Everything else blocked by default.
+# Deny list as extra layer:
+22, 25, 587, 465,
+3306, 5432, 6379, 27017,
+2375, 2376, 6443, 10250,
+20, 21, 23, 389, 636
+</pre>
+
+          <div class="help-label mt-sm" style="color: var(--warning);">OpenClaw-specific gotchas:</div>
+          <ul class="help-text" style="padding-left: 16px; margin: 4px 0;">
+            <li><code class="inline">~/.openclaw-dev/</code> is needed for <code class="inline">--dev</code> mode, <code class="inline">~/.openclaw/</code> for production — allow only the one you use</li>
+            <li><code class="inline">pnpm</code> downloads tools to <code class="inline">~/.local/share/pnpm/.tools/</code> — must be in allow list</li>
+            <li>Launch from the OpenClaw directory (<code class="inline">cd ~/codebrahma/openclaw</code>) — pnpm scans the CWD</li>
+            <li>Telegram API uses port 443 — do NOT add 443 to deny_ports</li>
+            <li>OpenClaw's <code class="inline">system.run</code> tool inherits all cgroup restrictions — this is the primary attack surface</li>
+          </ul>
+        </div>
+      </div>
+    </div>
     <!-- Troubleshooting: Finding Missing Paths -->
     <div class="help-section-full mt-md" style="border-top: 1px solid var(--border); padding-top: 12px;">
       <h4 class="help-title">Troubleshooting: Agent Won't Launch</h4>

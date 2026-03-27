@@ -1,0 +1,475 @@
+{% extends "base.html" %}
+{% block title %}Policy{% endblock %}
+{% block nav_policy %}nav-active{% endblock %}
+
+{% block content %}
+<h2 class="section-title">Policy Editor</h2>
+<p class="section-desc">Edit file access, exec, and network policies per agent. Changes are saved to the config file on disk.</p>
+
+<!-- Help Panel -->
+<div class="card mb-lg" x-data="{ open: false }">
+  <button @click="open = !open" class="accordion-header">
+    <div class="accordion-agent-info">
+      <span class="accordion-agent-name">
+        <svg style="width:16px;height:16px;vertical-align:middle;margin-right:4px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        How Policies Work
+      </span>
+    </div>
+    <svg class="accordion-chevron" :class="open && 'open'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </button>
+  <div x-show="open" x-cloak class="accordion-body">
+    <div class="grid-3">
+      <div class="help-section">
+        <h4 class="help-title">File Access Policy</h4>
+        <p class="help-text">Controls which files the agent can read/write. Deny rules always override allow rules.</p>
+        <div class="help-label">Pattern syntax:</div>
+        <pre class="help-examples">/tmp/**          # Everything under /tmp/
+/etc/hosts       # Exact file match
+/home/user/*.log # Single-level wildcard</pre>
+        <div class="help-label">Example allow list (default: deny):</div>
+        <pre class="help-examples">/tmp/**
+/proc/**
+/usr/lib/**
+/home/user/project/**</pre>
+        <div class="help-label">Example deny list:</div>
+        <pre class="help-examples">/etc/shadow
+/home/user/.ssh/**
+/home/user/.aws/**
+/home/user/.gnupg/**</pre>
+        <div class="help-label" style="color: var(--warning);">Symlink bypass warning</div>
+        <p class="help-text">If a parent folder is in <strong>allow</strong> and a subfolder is in <strong>deny</strong>, an agent can bypass the deny by creating a symlink from an allowed path (like /tmp/) to the denied folder. eBPF sees the raw path, not the resolved target.</p>
+        <p class="help-text"><strong>Mitigation:</strong> Don't allow broad parent directories that contain denied subfolders. Instead, allow only the specific subdirectories you need. For cgroup agents, Landlock provides inode-level protection but only for allow rules (not deny).</p>
+        <div class="help-label" style="color: var(--warning);">Safe pattern for denying subfolders:</div>
+        <pre class="help-examples"># WRONG (symlink bypass possible):
+allow = ["/home/user/**"]
+deny  = ["/home/user/secret/**"]
+
+# RIGHT (allow only what's needed):
+allow = [
+  "/home/user/projects/app1/**",
+  "/home/user/projects/app2/**",
+  "/home/user/.config/**",
+]
+# secret/ is not in allow list — blocked by default</pre>
+      </div>
+      <div class="help-section">
+        <h4 class="help-title">Exec Policy</h4>
+        <p class="help-text">Controls which commands the agent can execute. Uses the same pattern syntax as file access.</p>
+        <div class="help-label" style="color: var(--warning);">Important: Binaries may exist at multiple paths!</div>
+        <p class="help-text">On merged-usr systems (Fedora, Arch), <code>/bin</code>, <code>/sbin</code>, <code>/usr/bin</code>, <code>/usr/sbin</code> may all contain the same binary. When denying a command, list ALL known paths. Use <code>which -a &lt;cmd&gt;</code> to find them.</p>
+        <pre class="help-examples"># Example: deny grep at ALL known paths
+/usr/bin/grep
+/bin/grep
+/usr/sbin/grep</pre>
+        <div class="help-label">Allowlist approach (default: deny):</div>
+        <pre class="help-examples"># Only allow specific tools
+/usr/bin/git
+/usr/bin/node
+/usr/bin/python3
+/bin/bash</pre>
+        <div class="help-label">Blocklist approach (default: allow):</div>
+        <pre class="help-examples"># Block dangerous commands
+/usr/bin/curl
+/usr/bin/wget
+/usr/bin/rm
+/usr/bin/ssh
+/usr/bin/scp</pre>
+        <div class="help-label">Tip:</div>
+        <p class="help-text">With <code class="inline">default: deny</code>, allow the agent's own binary, a shell, and all needed tools.</p>
+      </div>
+      <div class="help-section">
+        <h4 class="help-title">Network Policy</h4>
+        <p class="help-text">Controls outbound TCP connections by port number. Enforced by eBPF LSM <code class="inline">socket_connect</code> hook + Landlock (kernel 6.7+).</p>
+        <div class="help-label">Common ports:</div>
+        <pre class="help-examples">80    # HTTP
+443   # HTTPS
+22    # SSH
+5432  # PostgreSQL
+3306  # MySQL
+6379  # Redis
+8080  # Dev server</pre>
+        <div class="help-label">Example (default: deny, allow specific):</div>
+        <pre class="help-examples">Allow: 80, 443
+# Agent can only make HTTP/HTTPS requests</pre>
+        <div class="help-label">Example (default: allow, block specific):</div>
+        <pre class="help-examples">Deny: 22, 25, 3306, 5432
+# Block SSH, SMTP, database ports</pre>
+        <div class="help-label mt-sm" style="color: var(--critical);">Enforcement layers (kernel 6.7+):</div>
+        <ul class="help-text" style="padding-left: 16px; margin: 4px 0;">
+          <li><strong>Landlock TCP connect</strong> (kernel 6.7+) — blocks outbound TCP at the kernel VFS layer. Inode-level, no bypass. This is the primary enforcement for cgroup agents.</li>
+          <li><strong>eBPF <code class="inline">socket_connect</code> LSM</strong> (kernel 5.7+) — second layer. Logs and blocks independently. Returns <code class="inline">-ECONNREFUSED</code>.</li>
+        </ul>
+        <div class="help-label mt-sm" style="color: var(--warning);">UDP gap — known limitation:</div>
+        <p class="help-text">Landlock and eBPF only filter <strong>TCP <code class="inline">connect()</code></strong>. UDP <code class="inline">sendto()</code> without a prior <code class="inline">connect()</code> is <strong>not filtered by either layer</strong>. This means:</p>
+        <ul class="help-text" style="padding-left: 16px; margin: 4px 0;">
+          <li>DNS over UDP (port 53) works — but so does UDP-based data exfiltration</li>
+          <li>An attacker could use <code class="inline">sendto()</code> to exfil data over raw UDP to any port</li>
+          <li>DNS tunneling (encoding data in DNS queries) is undetectable by Guardian Shell</li>
+          <li><strong>Mitigation:</strong> Use network namespace isolation (OpenShell/container) for full UDP control, or restrict DNS to a local resolver</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- AI Agent Configuration Guide -->
+    <div class="help-section-full mt-md" style="border-top: 1px solid var(--border); padding-top: 12px;">
+      <h4 class="help-title">Configuring Policies for AI Coding Agents (Claude Code, Cursor, etc.)</h4>
+      <p class="help-text">AI coding agents access far more files than a typical script. They need their own runtime, config files, shell init, caches, and your project directory. With <code class="inline">default: deny</code>, you must explicitly allow every path the agent touches — including files you might not expect.</p>
+
+      <div class="grid-2 mt-sm">
+        <div>
+          <div class="help-label">Typical allow list for Claude Code (cgroup agent):</div>
+          <pre class="help-examples"># Project directory (read + write)
+/home/user/projects/myapp/**
+
+# Claude Code data and auth
+/home/user/.claude/**
+/home/user/.claude.json
+
+# Node.js runtime (Claude Code runs on Node)
+/home/user/.local/**
+
+# Package manager caches
+/home/user/.npm/**
+/home/user/.cache/**
+
+# Config files (git, mise, editors, etc.)
+/home/user/.config/**
+
+# Rust toolchain (if using Rust tools)
+/home/user/.cargo/**
+/home/user/.rustup/**
+
+# System paths (dynamic linking, shell, etc.)
+/tmp/**
+/proc/**
+/sys/**
+/dev/**
+/run/**
+/usr/lib/**    /usr/lib64/**
+/usr/libexec/** /usr/share/**
+/usr/local/**   /usr/bin/**
+/usr/sbin/**    /sbin/**
+/lib/**         /lib64/**
+/bin/**         /etc/**
+/var/**</pre>
+        </div>
+        <div>
+          <div class="help-label">Read-only paths (shell init files):</div>
+          <pre class="help-examples"># Shell startup files — needed when the
+# agent spawns bash subprocesses
+/home/user/.bashrc
+/home/user/.bash_profile
+/home/user/.bash_logout
+/home/user/.profile</pre>
+
+          <div class="help-label mt-sm">Deny list (sensitive files):</div>
+          <pre class="help-examples">/etc/shadow
+/etc/gshadow
+/home/user/.ssh/**
+/home/user/.aws/**
+/home/user/.gnupg/**</pre>
+
+          <div class="help-label mt-sm" style="color: var(--warning);">Common gotchas:</div>
+          <ul class="help-text" style="padding-left: 16px; margin: 4px 0;">
+            <li><code class="inline">.claude.json</code> lives at the home root, not inside <code class="inline">.claude/</code> — must be allowed separately</li>
+            <li><code class="inline">.config/**</code> is needed broadly (git, editor configs) — don't restrict to just one subdir</li>
+            <li>If the agent runs from a <strong>watched parent session</strong> (e.g. Claude Code running inside another Claude Code), the parent agent's policy also applies to <code class="inline">guardian-launch</code></li>
+            <li>Landlock blocks silently — there is no log when it denies access. Use strace (below) to debug</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- OpenClaw Agent Configuration Guide -->
+    <div class="help-section-full mt-md" style="border-top: 1px solid var(--border); padding-top: 12px;">
+      <h4 class="help-title">Configuring Policies for OpenClaw (Telegram / Multi-Channel AI Agent)</h4>
+      <p class="help-text">OpenClaw is a general-purpose AI agent with shell exec, file access, and network capabilities. It connects to 20+ messaging channels (Telegram, Slack, WhatsApp). With <strong>60+ known CVEs</strong> and default-open posture, kernel-level enforcement is critical. The Landlock <strong>allow list is the security boundary</strong> — deny lists are bypassable via symlinks.</p>
+
+      <div class="grid-2 mt-sm">
+        <div>
+          <div class="help-label">File access allow list (cgroup agent, default: deny):</div>
+          <pre class="help-examples"># OpenClaw project + config directories
+/home/user/codebrahma/openclaw/**
+/home/user/.openclaw-dev/**
+/home/user/openclaw-data/**
+
+# Node.js runtime + pnpm toolchain
+/home/user/.local/share/mise/**
+/home/user/.local/share/pnpm/**
+/home/user/.local/bin/**
+/home/user/.npm/**
+/home/user/.cache/**
+
+# System paths (dynamic linking)
+/tmp/**
+/proc/**
+/sys/**
+/dev/**
+/run/**
+/usr/lib/**    /usr/lib64/**
+/usr/libexec/** /usr/share/**
+/usr/local/**   /usr/bin/**
+/usr/sbin/**    /sbin/**
+/lib/**         /lib64/**
+/bin/**</pre>
+
+          <div class="help-label mt-sm">Read-only paths:</div>
+          <pre class="help-examples">/etc/resolv.conf
+/etc/hosts
+/etc/hostname
+/etc/localtime
+/etc/ld.so.cache
+/etc/passwd
+/etc/group
+/etc/nsswitch.conf
+/etc/ssl/**
+/etc/pki/**</pre>
+        </div>
+        <div>
+          <div class="help-label">Exec policy (default: deny):</div>
+          <pre class="help-examples"># Node.js / pnpm (required)
+/home/user/.local/share/mise/**/node
+/home/user/.local/share/mise/**/pnpm
+/home/user/.local/share/pnpm/**/pnpm
+
+# Safe utilities only
+/usr/bin/ls    /usr/bin/cat
+/usr/bin/grep  /usr/bin/sed
+/usr/bin/find  /usr/bin/git
+/usr/bin/bash  /bin/bash
+/usr/bin/sh    /bin/sh
+/usr/bin/env   /usr/bin/mkdir
+/usr/bin/cp    /usr/bin/mv
+/usr/bin/rm    /usr/bin/touch</pre>
+
+          <div class="help-label mt-sm" style="color: var(--critical);">Blocked executables (50+):</div>
+          <pre class="help-examples"># Exfiltration: curl, wget, scp, rsync
+# Reverse shell: ssh, nc, ncat, socat
+# Privilege: sudo, su, chmod, chown
+# Interpreters: python, perl, ruby, gcc
+# Containers: docker, podman, nsenter
+# Recon: ss, netstat, lsof, nmap, ip
+# Encoding: base64, xxd, openssl
+# Debug: gdb, strace, ltrace
+# Persistence: crontab, at</pre>
+
+          <div class="help-label mt-sm">Network policy (default: deny, allow only needed):</div>
+          <pre class="help-examples">
+# Allow only what OpenClaw needs:
+443 (HTTPS — Telegram API, LLM APIs)
+53  (DNS resolution)
+
+# Everything else blocked by default.
+# Deny list as extra layer:
+22, 25, 587, 465,
+3306, 5432, 6379, 27017,
+2375, 2376, 6443, 10250,
+20, 21, 23, 389, 636
+</pre>
+
+          <div class="help-label mt-sm" style="color: var(--warning);">OpenClaw-specific gotchas:</div>
+          <ul class="help-text" style="padding-left: 16px; margin: 4px 0;">
+            <li><code class="inline">~/.openclaw-dev/</code> is needed for <code class="inline">--dev</code> mode, <code class="inline">~/.openclaw/</code> for production — allow only the one you use</li>
+            <li><code class="inline">pnpm</code> downloads tools to <code class="inline">~/.local/share/pnpm/.tools/</code> — must be in allow list</li>
+            <li>Launch from the OpenClaw directory (<code class="inline">cd ~/codebrahma/openclaw</code>) — pnpm scans the CWD</li>
+            <li>Telegram API uses port 443 — do NOT add 443 to deny_ports</li>
+            <li>OpenClaw's <code class="inline">system.run</code> tool inherits all cgroup restrictions — this is the primary attack surface</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <!-- Troubleshooting: Finding Missing Paths -->
+    <div class="help-section-full mt-md" style="border-top: 1px solid var(--border); padding-top: 12px;">
+      <h4 class="help-title">Troubleshooting: Agent Won't Launch</h4>
+      <p class="help-text">When a cgroup agent fails to start with <code class="inline">default: deny</code>, it's usually because Landlock is blocking a file the agent needs. Landlock denials are <strong>silent</strong> — they don't appear in Guardian's logs. Use <code class="inline">strace</code> to find which files are being denied.</p>
+
+      <div class="grid-2 mt-sm">
+        <div>
+          <div class="help-label">Step 1: Install strace</div>
+          <pre class="help-examples"># Fedora / RHEL
+sudo dnf install strace
+
+# Debian / Ubuntu
+sudo apt install strace</pre>
+
+          <div class="help-label mt-sm">Step 2: Trace the agent without Guardian</div>
+          <pre class="help-examples"># Run your agent under strace and log
+# all file access syscalls:
+strace -f -e trace=openat,open,access,stat \
+  -o /tmp/agent_trace.log \
+  /path/to/your/agent
+
+# Example for Claude Code:
+strace -f -e trace=openat,open,access,stat \
+  -o /tmp/claude_trace.log \
+  /home/user/.local/share/mise/installs\
+/node/24.1.0/bin/claude --help</pre>
+
+          <div class="help-label mt-sm">Step 3: Extract accessed paths</div>
+          <pre class="help-examples"># Find all unique paths under /home/:
+grep -oP '"/home/[^"]*"' /tmp/agent_trace.log \
+  | sort -u
+
+# Find all paths that got EACCES errors
+# (these are the ones being blocked):
+grep 'EACCES' /tmp/agent_trace.log \
+  | grep -oP '"[^"]*"' | sort -u</pre>
+        </div>
+        <div>
+          <div class="help-label">Step 4: Add missing paths to allow list</div>
+          <p class="help-text">Group the discovered paths by directory and add them as glob patterns:</p>
+          <pre class="help-examples"># If strace shows access to:
+#   /home/user/.config/git/config
+#   /home/user/.config/mise/config.toml
+# Add the parent directory:
+/home/user/.config/**
+
+# If strace shows a specific file:
+#   /home/user/.claude.json
+# Add the exact file path:
+/home/user/.claude.json</pre>
+
+          <div class="help-label mt-sm">Alternative: Use audit framework</div>
+          <pre class="help-examples"># If strace is unavailable, Linux audit
+# can capture Landlock denials:
+sudo auditctl -a always,exit \
+  -F arch=b64 -S openat \
+  -F exit=-13 -k landlock
+
+# Launch your agent, then search:
+sudo ausearch -k landlock --raw \
+  | aureport -f</pre>
+
+          <div class="help-label mt-sm" style="color: var(--info);">Tip:</div>
+          <p class="help-text">Start with a broad allow (e.g. <code class="inline">/home/user/**</code>), confirm the agent works, then use strace to find the <em>actual</em> paths it needs and narrow the allow list down. This is safer than guessing.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+{% for agent in agents %}
+<div class="card accordion" x-data="{ open: {% if loop.first %}true{% else %}false{% endif %} }">
+  <button @click="open = !open" class="accordion-header">
+    <div class="accordion-agent-info">
+      <span class="accordion-agent-name">{{ agent.name }}</span>
+      <span class="badge {% if agent.identity == "cgroup" %}badge-purple{% else %}badge-gray{% endif %}">{{ agent.identity }}</span>
+      <span class="badge {% if agent.default_action == "deny" %}badge-critical{% else %}badge-success{% endif %}">{{ agent.default_action }}</span>
+      {% if agent.net_default.is_some() %}
+      <span class="badge badge-info">net</span>
+      {% endif %}
+    </div>
+    <svg class="accordion-chevron" :class="open && 'open'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </button>
+
+  <div x-show="open" x-cloak class="accordion-body">
+    <form hx-put="/api/policy/{{ agent.name }}" hx-target="#toast" hx-swap="innerHTML"
+          hx-on::after-request="if(!event.detail.successful) return; var toast = document.getElementById('toast'); toast.scrollIntoView({behavior: 'smooth'}); setTimeout(function() { toast.innerHTML = ''; }, 8000)">
+      <div class="grid-2">
+        <!-- File Access Policy -->
+        <div>
+          <h4 class="section-subtitle">File Access Policy</h4>
+          <div class="form-group">
+            <label>Default Action</label>
+            <select name="default_action">
+              <option value="deny" {% if agent.default_action == "deny" %}selected{% endif %}>deny</option>
+              <option value="allow" {% if agent.default_action == "allow" %}selected{% endif %}>allow</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Allow Rules <span class="help-hint" title="One path per line. Supports ** (recursive) and * (single-level) wildcards.">?</span></label>
+            <textarea name="allow_rules" rows="8" class="font-mono" placeholder="/tmp/**&#10;/proc/**&#10;/usr/lib/**">{% for rule in agent.allow_rules %}{{ rule }}
+{% endfor %}</textarea>
+          </div>
+          <div class="form-group">
+            <label>Deny Rules <span class="help-hint" title="Deny always overrides allow. Put sensitive paths here.">?</span></label>
+            <textarea name="deny_rules" rows="6" class="font-mono" placeholder="/etc/shadow&#10;~/.ssh/**">{% for rule in agent.deny_rules %}{{ rule }}
+{% endfor %}</textarea>
+          </div>
+          <div class="form-group">
+            <label>Read-Only Rules <span class="help-hint" title="Paths that can be read but NOT written, deleted, or renamed. Deny still overrides.">?</span></label>
+            <textarea name="read_only_rules" rows="4" class="font-mono" placeholder="/etc/passwd&#10;/var/log/**">{% for rule in agent.read_only_rules %}{{ rule }}
+{% endfor %}</textarea>
+          </div>
+        </div>
+
+        <!-- Exec Policy -->
+        <div>
+          <h4 class="section-subtitle">Exec Policy</h4>
+          {% if agent.exec_default.is_some() %}
+          <div class="form-group">
+            <label>Default Action</label>
+            <select name="exec_default">
+              <option value="deny" {% if agent.exec_default.as_deref() == Some("deny") %}selected{% endif %}>deny</option>
+              <option value="allow" {% if agent.exec_default.as_deref() == Some("allow") %}selected{% endif %}>allow</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Allow Rules <span class="help-hint" title="Binary paths to allow. e.g. /usr/bin/git, /bin/bash, /usr/bin/**">?</span></label>
+            <textarea name="exec_allow" rows="6" class="font-mono" placeholder="/usr/bin/git&#10;/usr/bin/node&#10;/bin/bash">{% for rule in agent.exec_allow %}{{ rule }}
+{% endfor %}</textarea>
+          </div>
+          <div class="form-group">
+            <label>Deny Rules <span class="help-hint" title="Binary paths to block. Deny overrides allow. Use 'which -a cmd' to find all paths — binaries may exist at /usr/bin, /bin, /usr/sbin, /sbin.">?</span></label>
+            <textarea name="exec_deny" rows="4" class="font-mono" placeholder="/usr/bin/curl&#10;/bin/curl&#10;/usr/bin/wget&#10;/bin/wget">{% for rule in agent.exec_deny %}{{ rule }}
+{% endfor %}</textarea>
+          </div>
+          {% else %}
+          <p class="text-muted mt-lg text-sm">No exec policy configured for this agent. All exec is allowed.</p>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Network Policy -->
+      <div class="mt-md">
+        <h4 class="section-subtitle">Network Policy <span class="help-hint" title="Controls outbound TCP connections by port. Enforced by eBPF + Landlock (kernel 6.7+).">?</span></h4>
+        {% if agent.net_default.is_some() %}
+        <div class="grid-3">
+          <div class="form-group">
+            <label>Default Action</label>
+            <select name="net_default">
+              <option value="deny" {% if agent.net_default.as_deref() == Some("deny") %}selected{% endif %}>deny</option>
+              <option value="allow" {% if agent.net_default.as_deref() == Some("allow") %}selected{% endif %}>allow</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Allow Ports <span class="help-hint" title="Comma or space separated port numbers. e.g. 80, 443, 8080">?</span></label>
+            <input name="net_allow_ports" type="text" class="font-mono"
+                   value="{{ agent.net_allow_ports|join(", ") }}"
+                   placeholder="80, 443, 8080">
+          </div>
+          <div class="form-group">
+            <label>Deny Ports <span class="help-hint" title="Ports to block. Deny overrides allow. e.g. 22, 25, 3306">?</span></label>
+            <input name="net_deny_ports" type="text" class="font-mono"
+                   value="{{ agent.net_deny_ports|join(", ") }}"
+                   placeholder="22, 25, 3306">
+          </div>
+        </div>
+        {% else %}
+        <p class="text-muted text-sm">No network policy configured. All outbound connections allowed.
+          <span class="text-xs" style="color: var(--accent);">To enable, add <code class="inline">[agents.network_policy]</code> to config.toml or recreate this agent with network policy.</span>
+        </p>
+        <input type="hidden" name="net_default" value="">
+        {% endif %}
+      </div>
+
+      <div class="flex justify-end mt-md">
+        <button type="submit" class="btn btn-primary">Save Policy</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+{% if agents.is_empty() %}
+<div class="card card-padded">
+  <p class="empty-state">No agents configured. Add agents from the <a href="/agents" style="color: var(--accent);">Agents</a> page.</p>
+</div>
+{% endif %}
+{% endblock %}

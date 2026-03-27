@@ -20,7 +20,7 @@
 
 [package]
 name = "guardian-ebpf"
-version = "0.1.0"
+version = "0.11.0"
 edition = "2021"
 
 [dependencies]
@@ -31,18 +31,3 @@ aya-ebpf = "0.1"
 # Our shared types (FileAccessEvent, constants)
 guardian-common = { path = "../guardian-common" }
 
-# Build profiles for eBPF programs:
-# - panic = "abort": BPF programs can't unwind the stack
-# - opt-level = 2: Optimization helps the BPF verifier accept the program
-#   (unoptimized code often has patterns the verifier rejects)
-#
-# NOTE: When built via `cargo xtask build-ebpf`, this crate is compiled
-# standalone (not as a workspace member), so these profiles DO apply.
-# The workspace root Cargo.toml warns about this but it's harmless.
-[profile.dev]
-panic = "abort"
-opt-level = 2       # Required: verifier rejects unoptimized BPF code
-debug = 2           # Keep debug info for troubleshooting verifier errors
-
-[profile.release]
-panic = "abort"

@@ -19,15 +19,26 @@ resolver = "2"
 members = [
     "guardian",
     "guardian-common",
+    "guardian-ctl",
     "guardian-ebpf",
+    "guardian-launch",
     "xtask",
 ]
 # guardian-ebpf requires a special target (bpfel-unknown-none) and nightly Rust.
 # It's built separately via `cargo xtask build-ebpf`, NOT by normal `cargo build`.
 # default-members controls what `cargo build` compiles.
-default-members = ["guardian", "xtask"]
+default-members = ["guardian", "guardian-ctl", "guardian-launch", "xtask"]
 
-# NOTE: The guardian-ebpf crate has its own profile settings but since it's
-# built via `cargo xtask build-ebpf` (not normal `cargo build`), workspace
-# profile overrides don't apply to it. The eBPF crate defines its own
-# profiles in its Cargo.toml for when it's built standalone by xtask.
+# eBPF build profiles: panic = "abort" (BPF can't unwind) and opt-level = 2
+# (verifier rejects unoptimized code). These apply workspace-wide but only
+# matter for the guardian-ebpf crate built via `cargo xtask build-ebpf`.
+[profile.dev]
+panic = "abort"
+opt-level = 2
+debug = 2
+
+[profile.release]
+panic = "abort"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

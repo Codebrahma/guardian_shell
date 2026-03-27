@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+{% block title %}Agents{% endblock %}
+{% block nav_agents %}nav-active{% endblock %}
+
+{% block content %}
+<h2 class="section-title">Agent Management</h2>
+
+<!-- Add New Agent -->
+<div class="card accordion mb-lg" x-data="{ open: false }">
+  <button @click="open = !open" class="accordion-header">
+    <div class="accordion-agent-info">
+      <span class="accordion-agent-name">+ Add New Agent</span>
+    </div>
+    <svg class="accordion-chevron" :class="open && 'open'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+    </svg>
+  </button>
+  <div x-show="open" x-cloak class="accordion-body">
+    <form hx-post="/api/agents" hx-target="#toast" hx-swap="innerHTML"
+          hx-on::after-request="if(event.detail.successful) setTimeout(function() { window.location.reload(); }, 1500)"
+          x-data="{ identity: 'cgroup', execEnabled: false, netEnabled: false, homePath: '' }"
+          x-init="homePath = ''">
+
+      <div class="grid-2">
+        <!-- Basic Info -->
+        <div>
+          <h4 class="section-subtitle">Identity</h4>
+          <div class="form-group">
+            <label>Agent Name <span class="help-hint" title="Unique name to identify this agent. Used in logs and policy references.">?</span></label>
+            <input name="name" type="text" placeholder="my-agent" required>
+          </div>
+          <div class="form-group">
+            <label>Identity Method <span class="help-hint" title="Cgroup (Tier 1): Hardened with Landlock+seccomp+eBPF. Launch with guardian-launch.&#10;Comm (Tier 2): eBPF monitoring only. Detected by process name.">?</span></label>
+            <select name="identity" x-model="identity">
+              <option value="cgroup">cgroup (Tier 1 — recommended)</option>
+              <option value="comm">comm (Tier 2 — limited security)</option>
+            </select>
+          </div>
+          <div class="form-group" x-show="identity === 'comm'">
+            <label>Process Name</label>
+            <input name="process_name" type="text" placeholder="e.g. python3, node, aider">
+            <span class="text-xs text-muted">Matched against /proc/&lt;pid&gt;/comm (max 16 chars)</span>
+          </div>
+          <div class="form-group">
+            <label>Home / Project Path <span class="help-hint" title="The agent's working directory. Added to allow rules so it can read/write project files.">?</span></label>
+            <input type="text" x-model="homePath" placeholder="/home/user/project" required>
+            <span class="text-xs text-muted">Agent will have read/write access to this path</span>
+          </div>
+          <div class="form-group">
+            <label>
+              <input name="watch_children" type="checkbox" checked> Watch child processes
+            </label>
+          </div>
+        </div>
+
+        <!-- File Access Policy -->
+        <div>
+          <h4 class="section-subtitle">File Access Policy <span class="help-hint" title="Controls file read/write. Deny rules always override allow rules.&#10;&#10;Patterns: /tmp/** (recursive), /etc/hosts (exact), *.log (wildcard)">?</span></h4>
+          <div class="form-group">
+            <label>Default Action</label>
+            <select name="default_action">
+              <option value="deny" selected>deny (recommended)</option>
+              <option value="allow">allow</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Allow Rules (one per line)</label>
+            <textarea name="allow_rules" rows="16" class="font-mono"
+                      :value="(homePath ? homePath.replace(/\/$/, '') + '/**\n' : '') + '{{ user_home }}/projects/**\n{{ user_home }}/.local/**\n{{ user_home }}/.cache/**\n{{ user_home }}/.config/**\n{{ user_home }}/.npm/**\n{{ user_home }}/.cargo/**\n{{ user_home }}/.bashrc\n{{ user_home }}/.bash_profile\n{{ user_home }}/.profile\n{{ user_home }}/.zshrc\n{{ user_home }}/.inputrc\n/tmp/**\n/proc/**\n/sys/**\n/dev/**\n/run/**\n/var/**\n/usr/lib/**\n/usr/lib64/**\n/usr/libexec/**\n/usr/share/**\n/usr/local/**\n/usr/bin/**\n/usr/sbin/**\n/lib/**\n/lib64/**\n/bin/**\n/etc/**'"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Deny Rules (one per line)</label>
+            <textarea name="deny_rules" rows="6" class="font-mono"
+                      :value="(homePath ? homePath.replace(/\/$/, '') + '/.env\n' : '') + '/etc/shadow\n/etc/gshadow\n{{ user_home }}/.ssh/**\n{{ user_home }}/.aws/**\n{{ user_home }}/.gnupg/**\n{{ user_home }}/.config/gcloud/**\n{{ user_home }}/.docker/**\n{{ user_home }}/.kube/**'"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Exec Policy (optional) -->
+      <div class="mt-md">
+        <label>
+          <input type="checkbox" x-model="execEnabled"> Enable Exec Policy
+          <span class="help-hint" title="Controls which binaries the agent can execute.&#10;&#10;Allowlist: default=deny + allow specific commands&#10;Blocklist: default=allow + deny dangerous commands">?</span>
+          <input type="hidden" name="exec_enabled" :value="execEnabled ? 'on' : ''">
+        </label>
+      </div>
+      <div x-show="execEnabled" x-cloak class="grid-2 mt-md">
+        <div>
+          <div class="form-group">
+            <label>Exec Default</label>
+            <select name="exec_default">
+              <option value="allow">allow (blocklist approach)</option>
+              <option value="deny">deny (allowlist approach)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Exec Allow (one per line)</label>
+            <textarea name="exec_allow" rows="5" class="font-mono">/usr/bin/**
+/usr/libexec/**
+/usr/local/bin/**
+/bin/**</textarea>
+          </div>
+        </div>
+        <div>
+          <div class="form-group">
+            <label>Exec Deny (one per line)</label>
+            <textarea name="exec_deny" rows="4" class="font-mono" placeholder="/usr/bin/curl&#10;/usr/bin/wget&#10;/usr/bin/ssh&#10;/usr/bin/nc"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Network Policy (optional) -->
+      <div class="mt-md">
+        <label>
+          <input type="checkbox" x-model="netEnabled"> Enable Network Policy
+          <span class="help-hint" title="Controls outbound TCP connections by port.&#10;Enforced by eBPF LSM socket_connect + Landlock (kernel 6.7+).&#10;&#10;Common ports: 80 (HTTP), 443 (HTTPS), 22 (SSH), 5432 (Postgres)">?</span>
+          <input type="hidden" name="net_enabled" :value="netEnabled ? 'on' : ''">
+        </label>
+      </div>
+      <div x-show="netEnabled" x-cloak class="grid-3 mt-md">
+        <div class="form-group">
+          <label>Net Default</label>
+          <select name="net_default">
+            <option value="allow">allow</option>
+            <option value="deny">deny</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Allow Ports <span class="help-hint" title="Comma or space separated. e.g. 80, 443, 8080">?</span></label>
+          <input name="net_allow_ports" type="text" class="font-mono" placeholder="80, 443">
+        </div>
+        <div class="form-group">
+          <label>Deny Ports <span class="help-hint" title="Comma or space separated. e.g. 22, 25, 3306">?</span></label>
+          <input name="net_deny_ports" type="text" class="font-mono" placeholder="22, 25">
+        </div>
+      </div>
+
+      <div class="flex justify-end mt-md">
+        <button type="submit" class="btn btn-primary">Create Agent</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Configured Agents -->
+<div class="mb-lg">
+  <h3 class="section-subtitle">Configured Agents</h3>
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Identity</th>
+            <th>Security</th>
+            <th>Status</th>
+            <th>Default</th>
+            <th>Allow</th>
+            <th>Deny</th>
+            <th>Exec Policy</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for agent in config_agents %}
+          <tr id="cfg-agent-{{ agent.name }}">
+            <td class="text-primary fw-500">{{ agent.name }}</td>
+            <td>
+              <span class="badge {% if agent.identity == "cgroup" %}badge-purple{% else %}badge-gray{% endif %}">
+                {{ agent.identity }}
+              </span>
+            </td>
+            <td>
+              {% if agent.security_tier == "Tier 1" %}
+              <span class="badge badge-success" title="Hardened: Landlock + seccomp + eBPF + cgroup">{{ agent.security_tier }}</span>
+              {% else %}
+              <span class="badge badge-warning" title="Limited: eBPF monitoring only. No Landlock, no seccomp. Use cgroup identity for production.">{{ agent.security_tier }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if agent.identity == "cgroup" %}
+                {% if agent.is_running %}
+                <span class="badge badge-success">Running</span>
+                {% else %}
+                <span class="badge badge-warning" title="Not launched with guardian-launch. Use: guardian-launch --name {{ agent.name }} -- &lt;command&gt;">Not Launched</span>
+                {% endif %}
+              {% else %}
+              <span class="badge badge-gray" title="Comm-based agents are detected via /proc scanning">Passive</span>
+              {% endif %}
+            </td>
+            <td>
+              <span class="badge {% if agent.default_action == "deny" %}badge-critical{% else %}badge-success{% endif %}">
+                {{ agent.default_action }}
+              </span>
+            </td>
+            <td>{{ agent.allow_count }}</td>
+            <td>{{ agent.deny_count }}</td>
+            <td>{% if agent.has_exec_policy %}<span class="badge badge-info">Yes</span>{% else %}<span class="text-muted">No</span>{% endif %}</td>
+            <td>
+              <button hx-delete="/api/agents/{{ agent.name }}"
+                      hx-target="#toast" hx-swap="innerHTML"
+                      hx-confirm="Delete agent '{{ agent.name }}'? This removes it from the config."
+                      hx-on::after-request="if(event.detail.successful) setTimeout(function() { window.location.reload(); }, 1000)"
+                      class="btn btn-danger btn-sm">Delete</button>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if config_agents.is_empty() %}
+          <tr><td colspan="9" class="empty-state">No agents configured</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Active Cgroup Agents -->
+<div class="mb-lg">
+  <h3 class="section-subtitle">Active Cgroup Agents</h3>
+
+  <!-- Landlock enforcement info -->
+  <div class="card mb-sm" x-data="{ show: false }" style="border-left: 3px solid var(--info); padding: 10px 14px; background: color-mix(in srgb, var(--info) 6%, var(--bg-card));">
+    <div style="display: flex; gap: 8px; align-items: flex-start; cursor: pointer;" @click="show = !show">
+      <svg style="width:18px; height:18px; flex-shrink:0; margin-top:2px; color: var(--info);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <div style="flex: 1;">
+        <strong style="color: var(--info);">Cgroup agents have 6-layer security — Landlock is the primary enforcer</strong>
+        <span class="text-xs text-muted" x-text="show ? '(click to collapse)' : '(click for details)'"></span>
+      </div>
+    </div>
+    <div x-show="show" x-cloak style="margin-top: 8px; padding-left: 26px;">
+      <table style="font-size: 12px; border-collapse: collapse; width: 100%;">
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;"><strong>Layer</strong></td>
+          <td style="padding: 4px 8px;"><strong>Enforcement</strong></td>
+          <td style="padding: 4px 8px;"><strong>Visible in Events?</strong></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;">Landlock LSM</td>
+          <td style="padding: 4px 8px;">Inode-level file access (symlink-immune)</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-critical" style="font-size: 10px;">No — silent</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;">Seccomp BPF</td>
+          <td style="padding: 4px 8px;">Blocks io_uring, mount, namespace escape</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-critical" style="font-size: 10px;">No — silent</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;">eBPF LSM hooks</td>
+          <td style="padding: 4px 8px;">file_open, bprm_check, socket_connect</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-success" style="font-size: 10px;">Yes</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;">eBPF tracepoints</td>
+          <td style="padding: 4px 8px;">openat, execve, connect monitoring</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-success" style="font-size: 10px;">Yes</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;">Cgroup isolation</td>
+          <td style="padding: 4px 8px;">Resource limits, unspoofable identity</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-gray" style="font-size: 10px;">N/A</span></td>
+        </tr>
+        <tr>
+          <td style="padding: 4px 8px;">PR_SET_NO_NEW_PRIVS</td>
+          <td style="padding: 4px 8px;">Prevents SUID escalation</td>
+          <td style="padding: 4px 8px;"><span class="badge badge-gray" style="font-size: 10px;">N/A</span></td>
+        </tr>
+      </table>
+      <p class="text-sm text-muted" style="margin: 8px 0 0 0;">
+        <strong>Landlock and seccomp block silently</strong> — denials don't appear in the Events page or daemon logs.
+        If an agent gets "Permission denied" but no BLOCKED event appears, the access was denied by Landlock (missing path in allow list) or seccomp (blocked syscall).
+        Run <code class="inline">guardian-launch</code> with <code class="inline">RUST_LOG=info</code> to see the full Landlock ruleset at startup.
+        Use <code class="inline">strace -f -e trace=openat &lt;cmd&gt;</code> to find which file access is failing, then add it to the allow list on the <a href="/policy" style="color: var(--accent);">Policy page</a>.
+      </p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Cgroup</th>
+            <th>Cgroup ID</th>
+            <th>Processes</th>
+            <th>Uptime</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for agent in cgroup_agents %}
+          <tr id="agent-row-{{ agent.name }}">
+            <td class="text-primary fw-500">{{ agent.name }}</td>
+            <td class="font-mono text-xs">{{ agent.cgroup_path }}</td>
+            <td class="text-xs">{{ agent.cgroup_id }}</td>
+            <td class="text-primary">{{ agent.num_processes }}</td>
+            <td>{{ agent.uptime_secs }}s</td>
+            <td>
+              <div class="agent-actions" x-data="{ showGrant: false }">
+                <button hx-post="/api/agents/{{ agent.name }}/stop"
+                        hx-target="#agent-row-{{ agent.name }}"
+                        hx-swap="outerHTML"
+                        hx-confirm="Stop agent '{{ agent.name }}'? This will SIGTERM all processes."
+                        class="btn btn-danger btn-sm">
+                  Stop
+                </button>
+                <button @click="showGrant = !showGrant" class="btn btn-accent btn-sm">
+                  Grant
+                </button>
+                <div x-show="showGrant" x-cloak class="popover" style="position: absolute; top: 36px; right: 0; width: 280px;">
+                  <form hx-post="/api/agents/{{ agent.name }}/grant" hx-target="#toast" hx-swap="innerHTML"
+                        @htmx:after-request="showGrant = false"
+                        x-data="{ grantType: 'file' }">
+                    <div class="form-group">
+                      <label>Grant Type</label>
+                      <select name="grant_type" x-model="grantType" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-primary);">
+                        <option value="file">File Access</option>
+                        <option value="exec">Exec Command</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label x-text="grantType === 'exec' ? 'Command Path' : 'File Path'">File Path</label>
+                      <input name="path"
+                             :placeholder="grantType === 'exec' ? '/usr/bin/grep' : '/path/to/file'"
+                             required>
+                    </div>
+                    <div class="form-group">
+                      <label>Duration (seconds)</label>
+                      <input name="duration" type="number" value="600" min="1" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm btn-block"
+                            x-text="grantType === 'exec' ? 'Grant Exec Access' : 'Grant File Access'">
+                      Grant Access
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if cgroup_agents.is_empty() %}
+          <tr><td colspan="6" class="empty-state">No active cgroup agents. Use <code class="inline">guardian-launch</code> to start one.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

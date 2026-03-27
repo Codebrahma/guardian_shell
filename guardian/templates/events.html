@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+{% block title %}Events{% endblock %}
+{% block nav_events %}nav-active{% endblock %}
+
+{% block content %}
+<!-- Landlock blind spot notice -->
+<div class="card mb-md" style="border-left: 3px solid var(--warning); padding: 10px 14px; background: color-mix(in srgb, var(--warning) 6%, var(--bg-card));">
+  <div style="display: flex; gap: 8px; align-items: flex-start;">
+    <svg style="width:18px; height:18px; flex-shrink:0; margin-top:2px; color: var(--warning);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+    </svg>
+    <div>
+      <strong style="color: var(--warning);">Landlock denials are invisible here</strong>
+      <p class="text-sm text-muted" style="margin: 4px 0 0 0;">
+        Cgroup agents (Tier 1) use Landlock as the primary enforcement layer. When Landlock blocks a file access, the kernel returns EACCES silently — <strong>no event appears in this log</strong>.
+        The eBPF layer may even show the same access as <span class="badge badge-success" style="font-size: 10px;">allow</span> because eBPF and Landlock evaluate independently.
+        If an agent gets "Permission denied" errors but no BLOCKED events appear here, the cause is almost certainly a missing path in the Landlock allow list.
+        Check <code class="inline">guardian-launch</code> startup logs for the Landlock ruleset summary, or use <code class="inline">strace</code> to identify which file access is being denied.
+        See the <a href="/policy" style="color: var(--accent);">Policy page</a> help section for troubleshooting steps.
+      </p>
+    </div>
+  </div>
+</div>
+
+<div x-data="eventFilter()">
+  <div class="page-header">
+    <div class="page-header-left">
+      <h2 class="section-title mb-0">Events</h2>
+      <button @click="tab='live'" class="tab-btn" :class="tab==='live' ? 'tab-active' : 'tab-inactive'">Live</button>
+      <button @click="tab='history'; loadHistory()" class="tab-btn" :class="tab==='history' ? 'tab-active' : 'tab-inactive'">History</button>
+      <span class="conn-status">
+        <span class="conn-dot" :class="connected ? 'connected' : 'disconnected'"></span>
+        <span :style="connected ? 'color: var(--success)' : 'color: var(--danger)'"
+              x-text="connected ? 'Connected' : 'Reconnecting...'"></span>
+      </span>
+      <span x-show="missedEvents > 0" class="text-xs" style="color: var(--warning);"
+            x-text="'(' + missedEvents + ' missed)'"></span>
+    </div>
+    <div class="page-header-right">
+      <select x-model="severityFilter">
+        <option value="">All Severities</option>
+        <option value="info">Info</option>
+        <option value="warning">Warning</option>
+        <option value="critical">Critical</option>
+      </select>
+      <select x-model="actionFilter">
+        <option value="">All Actions</option>
+        <option value="allow">Allow</option>
+        <option value="deny">Deny</option>
+        <option value="blocked">Blocked</option>
+      </select>
+      <button @click="clearEvents()" class="btn btn-secondary btn-sm">Clear</button>
+      <span class="event-count" x-text="(tab === 'live' ? events.length : historyEvents.length) + ' events'"></span>
+    </div>
+  </div>
+
+  <!-- Live events tab -->
+  <div x-show="tab === 'live'" class="card">
+    <div class="table-wrap" style="max-height: 75vh; overflow-y: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Severity</th>
+            <th>Agent</th>
+            <th>Type</th>
+            <th>Action</th>
+            <th>PID</th>
+            <th>Comm</th>
+            <th>Path</th>
+            <th>Mode</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="ev in filteredEvents" :key="ev.id">
+            <tr>
+              <td class="nowrap text-xs" x-text="formatTime(ev.timestamp)"></td>
+              <td><span class="badge" :class="{'badge-info': ev.severity==='info', 'badge-warning': ev.severity==='warning', 'badge-critical': ev.severity==='critical'}" x-text="ev.severity"></span></td>
+              <td class="text-primary" x-text="ev.agent_name"></td>
+              <td class="text-xs" x-text="ev.event_type"></td>
+              <td><span class="badge" :class="{'badge-success': ev.action==='allow', 'badge-warning': ev.action==='deny', 'badge-critical': ev.action==='blocked'}" x-text="ev.action"></span></td>
+              <td class="text-xs" x-text="ev.pid"></td>
+              <td class="text-xs" x-text="ev.comm"></td>
+              <td class="cell-path" x-text="ev.path" :title="ev.path"></td>
+              <td class="text-xs" x-text="ev.access_mode"></td>
+            </tr>
+          </template>
+          <tr x-show="events.length === 0">
+            <td colspan="9" class="empty-state">Waiting for events...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- History tab -->
+  <div x-show="tab === 'history'">
+    <div class="card card-padded mb-md">
+      <div class="form-row">
+        <div>
+          <input x-model="historySearch.agent_name" placeholder="Agent name">
+        </div>
+        <div>
+          <input x-model="historySearch.path_contains" placeholder="Path contains...">
+        </div>
+        <div>
+          <select x-model="historySearch.event_type">
+            <option value="">All Types</option>
+            <option value="file_access">File Access</option>
+            <option value="exec_attempt">Exec Attempt</option>
+          </select>
+        </div>
+        <div style="flex: 0 0 auto;">
+          <button @click="historyOffset = 0; loadHistory()" class="btn btn-accent btn-sm">Search</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="table-wrap" style="max-height: 68vh; overflow-y: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Severity</th>
+              <th>Agent</th>
+              <th>Type</th>
+              <th>Action</th>
+              <th>PID</th>
+              <th>Comm</th>
+              <th>Path</th>
+              <th>Mode</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="ev in filteredHistoryEvents" :key="ev.id">
+              <tr>
+                <td class="nowrap text-xs" x-text="formatTime(ev.timestamp)"></td>
+                <td><span class="badge" :class="{'badge-info': ev.severity==='info', 'badge-warning': ev.severity==='warning', 'badge-critical': ev.severity==='critical'}" x-text="ev.severity"></span></td>
+                <td class="text-primary" x-text="ev.agent_name"></td>
+                <td class="text-xs" x-text="ev.event_type"></td>
+                <td><span class="badge" :class="{'badge-success': ev.action==='allow', 'badge-warning': ev.action==='deny', 'badge-critical': ev.action==='blocked'}" x-text="ev.action"></span></td>
+                <td class="text-xs" x-text="ev.pid"></td>
+                <td class="text-xs" x-text="ev.comm"></td>
+                <td class="cell-path" x-text="ev.path" :title="ev.path"></td>
+                <td class="text-xs" x-text="ev.access_mode"></td>
+              </tr>
+            </template>
+            <tr x-show="historyLoading">
+              <td colspan="9" class="empty-state">Loading...</td>
+            </tr>
+            <tr x-show="!historyLoading && historyEvents.length === 0">
+              <td colspan="9" class="empty-state">No events found</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination" x-show="historyTotal > 0">
+        <span class="pagination-info" x-text="'Showing ' + (historyOffset+1) + '-' + Math.min(historyOffset + historyLimit, historyTotal) + ' of ' + historyTotal"></span>
+        <div class="pagination-btns">
+          <button @click="historyOffset = Math.max(0, historyOffset - historyLimit); loadHistory()"
+                  :disabled="historyOffset === 0" class="btn btn-secondary btn-sm">Previous</button>
+          <button @click="historyOffset += historyLimit; loadHistory()"
+                  :disabled="historyOffset + historyLimit >= historyTotal" class="btn btn-secondary btn-sm">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function eventFilter() {
+  return {
+    tab: 'live', events: [], severityFilter: '', actionFilter: '',
+    nextId: 0, connected: false, missedEvents: 0,
+    historyEvents: [], historySearch: { agent_name: '', path_contains: '', event_type: '' },
+    historyTotal: 0, historyOffset: 0, historyLimit: 100, historyLoading: false,
+
+    init() {
+      const self = this;
+      // Read connection state from window (handles race where onopen fired before Alpine init)
+      self.connected = window.__guardianSSEConnected ||
+        !!(window.__guardianSSE && window.__guardianSSE.readyState === EventSource.OPEN);
+
+      // Listen to events relayed from the shared SSE in base.html
+      document.addEventListener('guardian:event', function(e) {
+        try { const data = JSON.parse(e.detail); data.id = self.nextId++; self.events.unshift(data); if (self.events.length > 500) self.events.pop(); } catch(err) {}
+      });
+      document.addEventListener('guardian:lag', function(e) {
+        try { const data = JSON.parse(e.detail); self.missedEvents += data.missed; } catch(err) {}
+      });
+      document.addEventListener('guardian:sse-open', function() { self.connected = true; });
+      document.addEventListener('guardian:sse-error', function() { self.connected = false; });
+
+      // Periodic self-heal: check actual readyState in case events were missed
+      setInterval(function() {
+        var sse = window.__guardianSSE;
+        if (sse && sse.readyState === EventSource.OPEN) {
+          self.connected = true;
+        }
+      }, 3000);
+    },
+
+    async loadHistory() {
+      this.historyLoading = true;
+      try {
+        const params = new URLSearchParams();
+        params.set('limit', this.historyLimit);
+        params.set('offset', this.historyOffset);
+        if (this.severityFilter) params.set('severity', this.severityFilter);
+        if (this.actionFilter) params.set('action', this.actionFilter);
+        if (this.historySearch.agent_name) params.set('agent_name', this.historySearch.agent_name);
+        if (this.historySearch.path_contains) params.set('path_contains', this.historySearch.path_contains);
+        if (this.historySearch.event_type) params.set('event_type', this.historySearch.event_type);
+        const resp = await fetch('/api/events?' + params.toString());
+        const data = await resp.json();
+        this.historyEvents = data.events || [];
+        this.historyTotal = data.total || 0;
+      } catch(err) { this.historyEvents = []; }
+      this.historyLoading = false;
+    },
+
+    get filteredEvents() {
+      return this.events.filter(ev => {
+        if (this.severityFilter && ev.severity !== this.severityFilter) return false;
+        if (this.actionFilter && ev.action !== this.actionFilter) return false;
+        return true;
+      });
+    },
+    get filteredHistoryEvents() {
+      return this.historyEvents.filter(ev => {
+        if (this.severityFilter && ev.severity !== this.severityFilter) return false;
+        if (this.actionFilter && ev.action !== this.actionFilter) return false;
+        return true;
+      });
+    },
+    formatTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      return d.toLocaleTimeString() + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    },
+    clearEvents() { this.events = []; this.missedEvents = 0; }
+  };
+}
+</script>
+{% endblock %}

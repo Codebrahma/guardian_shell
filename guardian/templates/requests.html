@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Requests{% endblock %}
+{% block nav_requests %}nav-active{% endblock %}
+
+{% block content %}
+<h2 class="section-title">Permission Requests</h2>
+
+<!-- Pending Requests -->
+<div class="mb-lg">
+  <h3 class="section-subtitle">Pending Requests</h3>
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Agent</th>
+            <th>Type</th>
+            <th>Resource</th>
+            <th>Risk</th>
+            <th>Justification</th>
+            <th>Waiting</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="pending-requests">
+          {% for req in pending %}
+          <tr id="perm-row-{{ req.id }}"
+              x-data="{ dur: 600, confirmText: '', waitElapsed: 0, waitTarget: {{ req.wait_seconds }} }"
+              x-init="if (waitTarget > 0) { let iv = setInterval(() => { waitElapsed++; if (waitElapsed >= waitTarget) clearInterval(iv); }, 1000); }">
+            <td class="text-muted">#{{ req.id }}</td>
+            <td class="text-primary fw-500">{{ req.agent_name }}</td>
+            <td>
+              <span class="badge {% if req.resource_type == "exec" %}badge-purple{% else %}badge-info{% endif %}">
+                {{ req.resource_type }}
+              </span>
+            </td>
+            <td class="cell-path">{{ req.resource_path }}</td>
+            <td>
+              <span class="badge badge-risk-{{ req.risk_level }}">{{ req.risk_level }}</span>
+              {% if !req.justification_warnings.is_empty() %}
+              <div style="margin-top: 4px;">
+                {% for w in req.justification_warnings %}
+                <span class="perm-warning-tag">{{ w }}</span>
+                {% endfor %}
+              </div>
+              {% endif %}
+              {% if !req.risk_flags.is_empty() %}
+              <div style="margin-top: 4px; display: flex; gap: 2px; flex-wrap: wrap;">
+                {% for f in req.risk_flags %}
+                <span class="badge badge-gray" style="font-size: 10px;">{{ f }}</span>
+                {% endfor %}
+              </div>
+              {% endif %}
+            </td>
+            <td class="text-secondary text-sm">{{ req.justification }}</td>
+            <td class="text-muted text-xs">{{ req.elapsed_secs }}s / {{ req.timeout_secs }}s</td>
+            <td>
+              <div class="flex gap-sm" style="flex-direction: column; align-items: flex-start;">
+                <div class="flex gap-sm">
+                  <select x-model="dur" style="width: 80px; padding: 3px 6px; font-size: 12px; background: var(--bg-primary); border: 1px solid var(--border); color: var(--text-primary); border-radius: 4px;">
+                    <option value="60">1m</option>
+                    <option value="300">5m</option>
+                    <option value="600" selected>10m</option>
+                    <option value="1800">30m</option>
+                    <option value="3600">1h</option>
+                  </select>
+                  <button class="btn btn-primary btn-sm"
+                          :disabled="(waitTarget > 0 && waitElapsed < waitTarget){% if req.requires_type_confirm %} || confirmText !== 'CONFIRM'{% endif %}"
+                          @click="fetch(`/api/permissions/{{ req.id }}/approve`, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`duration=${dur}`}).then(()=>document.getElementById('perm-row-{{ req.id }}').remove())">
+                    <template x-if="waitTarget > 0 && waitElapsed < waitTarget">
+                      <span x-text="'Wait ' + (waitTarget - waitElapsed) + 's'"></span>
+                    </template>
+                    <template x-if="!(waitTarget > 0 && waitElapsed < waitTarget)">
+                      <span>Approve</span>
+                    </template>
+                  </button>
+                  <button class="btn btn-danger btn-sm"
+                          hx-post="/api/permissions/{{ req.id }}/deny"
+                          hx-target="#perm-row-{{ req.id }}"
+                          hx-swap="outerHTML">
+                    Deny
+                  </button>
+                </div>
+                {% if req.requires_type_confirm %}
+                <div class="perm-type-confirm">
+                  <input type="text" x-model="confirmText" placeholder="Type CONFIRM">
+                  <span class="hint">Required for critical risk</span>
+                </div>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if pending.is_empty() %}
+          <tr id="pending-empty"><td colspan="8" class="empty-state">No pending permission requests</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Resolved History -->
+<div class="mb-lg">
+  <h3 class="section-subtitle">Recent History</h3>
+  <div class="card">
+    <div class="table-wrap" style="max-height: 400px; overflow-y: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Agent</th>
+            <th>Type</th>
+            <th>Resource</th>
+            <th>Risk</th>
+            <th>Decision</th>
+            <th>Reason</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for req in resolved %}
+          <tr>
+            <td class="text-muted">#{{ req.id }}</td>
+            <td class="text-primary fw-500">{{ req.agent_name }}</td>
+            <td>
+              <span class="badge {% if req.resource_type == "exec" %}badge-purple{% else %}badge-info{% endif %}">
+                {{ req.resource_type }}
+              </span>
+            </td>
+            <td class="cell-path">{{ req.resource_path }}</td>
+            <td>
+              {% if !req.risk_level.is_empty() %}
+              <span class="badge badge-risk-{{ req.risk_level }}">{{ req.risk_level }}</span>
+              {% endif %}
+            </td>
+            <td>
+              <span class="badge {% if req.approved %}badge-success{% else %}badge-critical{% endif %}">
+                {% if req.approved %}approved{% else %}denied{% endif %}
+              </span>
+            </td>
+            <td class="text-secondary text-sm">{{ req.reason }}</td>
+            <td class="text-muted text-xs">{% if req.approved %}{{ req.grant_duration_secs }}s{% else %}-{% endif %}</td>
+          </tr>
+          {% endfor %}
+          {% if resolved.is_empty() %}
+          <tr><td colspan="8" class="empty-state">No resolved requests yet</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

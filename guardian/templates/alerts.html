@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Alerts{% endblock %}
+{% block nav_alerts %}nav-active{% endblock %}
+
+{% block content %}
+<h2 class="section-title">Alert Configuration</h2>
+<p class="section-desc">Configure alerting outputs. Changes are saved to disk. Restart daemon to apply output changes.</p>
+
+<form hx-put="/api/alerts" hx-target="#toast" hx-swap="innerHTML">
+  <!-- Global Settings -->
+  <div class="card card-padded mb-md">
+    <h3 class="section-subtitle">Global Settings</h3>
+    <div class="grid-3">
+      <div class="form-group">
+        <label>Min Severity</label>
+        <select name="min_severity">
+          <option value="info" {% if min_severity == "info" %}selected{% endif %}>info</option>
+          <option value="warning" {% if min_severity == "warning" %}selected{% endif %}>warning</option>
+          <option value="critical" {% if min_severity == "critical" %}selected{% endif %}>critical</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Dedup Window (seconds)</label>
+        <input name="dedup_window_seconds" type="number" value="{{ dedup_window }}" min="0">
+      </div>
+      <div class="form-group">
+        <label>Rate Limit (per minute)</label>
+        <input name="rate_limit_per_minute" type="number" value="{{ rate_limit }}" min="1">
+      </div>
+    </div>
+  </div>
+
+  <!-- Output Channels -->
+  <div class="grid-2 mb-md">
+    <!-- JSON Log -->
+    <div class="card card-padded">
+      <div class="channel-header">
+        <h3 class="section-subtitle mb-0">JSON Log</h3>
+        <label class="channel-toggle">
+          <input type="checkbox" name="json_enabled" value="true" {% if json_enabled %}checked{% endif %}>
+          <span>Enabled</span>
+        </label>
+      </div>
+      <div class="form-group">
+        <label>File Path (empty = stdout)</label>
+        <input name="json_path" value="{{ json_path }}" placeholder="/var/log/guardian/events.json">
+      </div>
+    </div>
+
+    <!-- Webhook -->
+    <div class="card card-padded">
+      <div class="channel-header">
+        <h3 class="section-subtitle mb-0">Webhook</h3>
+        <label class="channel-toggle">
+          <input type="checkbox" name="webhook_enabled" value="true" {% if webhook_enabled %}checked{% endif %}>
+          <span>Enabled</span>
+        </label>
+      </div>
+      <div class="form-group">
+        <label>URL</label>
+        <input name="webhook_url" value="{{ webhook_url }}" placeholder="https://siem.example.com/api/events">
+      </div>
+    </div>
+
+    <!-- Slack -->
+    <div class="card card-padded">
+      <div class="channel-header">
+        <h3 class="section-subtitle mb-0">Slack</h3>
+        <label class="channel-toggle">
+          <input type="checkbox" name="slack_enabled" value="true" {% if slack_enabled %}checked{% endif %}>
+          <span>Enabled</span>
+        </label>
+      </div>
+      <div class="form-group">
+        <label>Webhook URL</label>
+        <input name="slack_url" value="{{ slack_url }}" placeholder="https://hooks.slack.com/services/...">
+      </div>
+    </div>
+
+    <!-- Email -->
+    <div class="card card-padded">
+      <div class="channel-header">
+        <h3 class="section-subtitle mb-0">Email</h3>
+        <label class="channel-toggle">
+          <input type="checkbox" name="email_enabled" value="true" {% if email_enabled %}checked{% endif %}>
+          <span>Enabled</span>
+        </label>
+      </div>
+      <div class="form-group">
+        <label>SMTP Host</label>
+        <input name="email_host" value="{{ email_host }}" placeholder="smtp.example.com">
+      </div>
+    </div>
+
+    <!-- Prometheus -->
+    <div class="card card-padded">
+      <div class="channel-header">
+        <h3 class="section-subtitle mb-0">Prometheus</h3>
+        <label class="channel-toggle">
+          <input type="checkbox" name="prometheus_enabled" value="true" {% if prometheus_enabled %}checked{% endif %}>
+          <span>Enabled</span>
+        </label>
+      </div>
+      <div class="form-group">
+        <label>Listen Address</label>
+        <input name="prometheus_addr" value="{{ prometheus_addr }}" placeholder="127.0.0.1:9090">
+      </div>
+    </div>
+  </div>
+
+  <div class="flex justify-end">
+    <button type="submit" class="btn btn-primary">Save Alert Config</button>
+  </div>
+</form>
+{% endblock %}

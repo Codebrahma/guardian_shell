@@ -1,240 +1,408 @@
-// =============================================================================
-// Guardian Shell - Configuration Module
-// =============================================================================
-//
-// This module handles loading and parsing the TOML configuration file that
-// defines security policies for monitored LLM agents.
-//
-// The configuration follows a hierarchical structure:
-//
-//   Global Settings
-//   └── Agents (one or more)
-//       ├── Identity (process_name)
-//       └── File Access Policy
-//           ├── Default action (allow/deny)
-//           ├── Allow patterns
-//           └── Deny patterns
-//
-// SECURITY DESIGN PRINCIPLES:
-//
-//   1. Deny by default: If no rule matches, access should be denied.
-//      This follows the principle of least privilege - agents only get
-//      the access they explicitly need.
-//
-//   2. Deny takes precedence: If a path matches both an allow and deny
-//      pattern, it is DENIED. This prevents accidental over-permissioning.
-//
-//   3. Pattern specificity: More specific patterns should be used for
-//      sensitive paths (e.g., deny "/home/user/.ssh/**" even if
-//      "/home/user/**" is allowed).
-
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 // =============================================================================
 // Configuration Data Structures
 // =============================================================================
 
-/// Root configuration structure.
-///
-/// # Example Configuration (config.toml)
-///
-/// ```toml
-/// [global]
-/// log_level = "info"
-///
-/// [[agents]]
-/// name = "claude-code"
-/// process_name = "claude"
-///
-/// [agents.file_access]
-/// default = "deny"
-/// allow = ["/home/user/projects/**", "/tmp/**"]
-/// deny = ["/home/user/.ssh/**"]
-/// ```
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    /// Global settings that apply to the entire Guardian daemon
     pub global: GlobalConfig,
-
-    /// List of agent configurations, each defining an LLM agent to monitor
-    /// and its associated security policy
     pub agents: Vec<AgentConfig>,
+    /// Phase 4: Alerting & integration configuration.
+    /// Optional — when absent, no alerting outputs are active.
+    #[serde(default)]
+    pub alerting: Option<AlertingConfig>,
+    /// Phase 5: Web dashboard configuration.
+    #[serde(default)]
+    pub dashboard: Option<DashboardConfig>,
+    /// Phase 7c: Permission request hardening.
+    #[serde(default)]
+    pub permissions: Option<PermissionsConfig>,
+    /// Cached mapping from comm name → agent index for O(1) lookup in event processing.
+    /// Built after config load and rebuilt on SIGHUP reload. Skipped during deserialization.
+    #[serde(skip)]
+    pub comm_cache: HashMap<String, usize>,
 }
 
-/// Global daemon settings.
+impl Config {
+    /// Build the comm_cache HashMap from the agents list.
+    /// Maps each comm-based agent's effective_process_name to its index in the agents vec.
+    pub fn build_comm_cache(&mut self) {
+        self.comm_cache.clear();
+        for (i, agent) in self.agents.iter().enumerate() {
+            if agent.effective_identity() == "comm" {
+                self.comm_cache.insert(agent.effective_process_name().to_string(), i);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Alerting Configuration (Phase 4)
+// =============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AlertingConfig {
+    /// Minimum severity for any alert output: "info", "warning", "critical".
+    /// Default: "warning"
+    pub min_severity: Option<String>,
+    /// Suppress duplicate alerts (same agent + event + path + action) within
+    /// this window. Default: 300 seconds.
+    pub dedup_window_seconds: Option<u64>,
+    /// Maximum alerts dispatched per minute across all outputs.
+    /// Default: 100
+    pub rate_limit_per_minute: Option<u32>,
+
+    pub json_log: Option<JsonLogConfig>,
+    pub webhook: Option<WebhookConfig>,
+    pub slack: Option<SlackConfig>,
+    pub email: Option<EmailConfig>,
+    pub prometheus: Option<PrometheusConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonLogConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// File path for JSONL output. If omitted, logs to stdout.
+    pub path: Option<String>,
+    /// Max file size in MB before rotation. Default: 100
+    pub max_size_mb: Option<u32>,
+    /// Max rotated files to keep. Default: 5
+    pub max_files: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Webhook endpoint URL (HTTP POST with JSON body).
+    pub url: Option<String>,
+    /// Optional Authorization header value (e.g. "Bearer token123").
+    pub auth_header: Option<String>,
+    /// Optional custom headers as key-value pairs.
+    pub headers: Option<HashMap<String, String>>,
+    /// Minimum severity for this output. Default: "warning"
+    pub min_severity: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SlackConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Slack incoming webhook URL.
+    pub webhook_url: Option<String>,
+    /// Optional channel override (only works with Slack apps, not incoming webhooks).
+    pub channel: Option<String>,
+    /// Minimum severity for this output. Default: "critical"
+    pub min_severity: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmailConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// SMTP server hostname.
+    pub smtp_host: Option<String>,
+    /// SMTP server port. Default: 587 (STARTTLS)
+    pub smtp_port: Option<u16>,
+    /// SMTP username for authentication.
+    pub username: Option<String>,
+    /// SMTP password for authentication.
+    pub password: Option<String>,
+    /// Sender email address.
+    pub from: Option<String>,
+    /// Recipient email addresses.
+    pub to: Option<Vec<String>>,
+    /// Minimum severity for this output. Default: "critical"
+    pub min_severity: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrometheusConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Address to bind the metrics HTTP server. Default: "127.0.0.1:9090"
+    pub listen_address: Option<String>,
+    /// URL path for the metrics endpoint. Default: "/metrics"
+    pub endpoint: Option<String>,
+}
+
+// =============================================================================
+// Dashboard Configuration (Phase 5)
+// =============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DashboardConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// HTTP listen address for the dashboard. Default: "127.0.0.1:8080"
+    pub listen_address: Option<String>,
+    /// Path to SQLite database for event storage. Default: "/var/lib/guardian/events.db"
+    pub db_path: Option<String>,
+    /// Phase 8: Optional authentication token for dashboard access.
+    /// When set, all dashboard requests must include this token.
+    pub auth_token: Option<String>,
+    /// Minimum severity for events persisted to the database.
+    /// Options: "info", "warning", "critical". Default: "warning".
+    /// "info" persists everything (including ALLOW events — high volume).
+    /// "warning" persists only DENY/BLOCKED events (recommended).
+    /// "critical" persists only BLOCKED events in enforce mode.
+    #[serde(default = "default_db_min_severity")]
+    pub db_min_severity: String,
+}
+
+fn default_db_min_severity() -> String {
+    "warning".to_string()
+}
+
+// =============================================================================
+// Permissions Hardening Configuration (Phase 7c)
+// =============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PermissionsConfig {
+    /// Paths that are NEVER approvable via interactive request.
+    #[serde(default)]
+    pub auto_deny: Vec<String>,
+    /// Low-risk paths that are auto-approved without human intervention.
+    #[serde(default)]
+    pub auto_approve: Vec<AutoApproveRule>,
+    /// Max permission requests per agent per minute. Default: 3.
+    #[serde(default = "default_rate_per_minute")]
+    pub rate_limit_per_minute: u32,
+    /// Max permission requests per agent per hour. Default: 15.
+    #[serde(default = "default_rate_per_hour")]
+    pub rate_limit_per_hour: u32,
+    /// Cooldown after denial in seconds (doubles each time, up to max). Default: 30.
+    #[serde(default = "default_deny_cooldown")]
+    pub deny_cooldown_secs: u64,
+    /// Max pending requests per agent. Default: 2.
+    #[serde(default = "default_max_pending")]
+    pub max_pending_per_agent: u32,
+    /// Phase 8: Risk-based configurable timeouts for permission requests (in seconds).
+    pub timeouts: Option<RiskTimeoutConfig>,
+    /// Phase 8: Maximum total grant seconds allowed per agent. Default: 3600 (1 hour).
+    #[serde(default = "default_max_grant_total_secs")]
+    pub max_grant_total_secs: u64,
+}
+
+/// Phase 8: Risk-based configurable timeouts for permission requests.
+/// Each field specifies the timeout in seconds for the corresponding risk level.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RiskTimeoutConfig {
+    #[serde(default = "default_timeout_low")]
+    pub low: u64,
+    #[serde(default = "default_timeout_medium")]
+    pub medium: u64,
+    #[serde(default = "default_timeout_high")]
+    pub high: u64,
+    #[serde(default = "default_timeout_critical")]
+    pub critical: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AutoApproveRule {
+    pub pattern: String,
+    #[serde(default = "default_auto_approve_duration")]
+    pub max_duration_secs: u64,
+}
+
+fn default_rate_per_minute() -> u32 { 3 }
+fn default_rate_per_hour() -> u32 { 15 }
+fn default_deny_cooldown() -> u64 { 30 }
+fn default_max_pending() -> u32 { 2 }
+fn default_auto_approve_duration() -> u64 { 300 }
+fn default_max_grant_total_secs() -> u64 { 3600 }
+fn default_timeout_low() -> u64 { 60 }
+fn default_timeout_medium() -> u64 { 120 }
+fn default_timeout_high() -> u64 { 180 }
+fn default_timeout_critical() -> u64 { 300 }
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalConfig {
-    /// Log level for the daemon: "trace", "debug", "info", "warn", "error"
-    ///
-    /// - "trace": Everything, including raw event data (very verbose)
-    /// - "debug": Detailed operational info (eBPF loading, PID discovery)
-    /// - "info":  Normal operation (allow/deny decisions, startup/shutdown)
-    /// - "warn":  Policy violations and potential issues
-    /// - "error": Failures that prevent monitoring
     pub log_level: String,
+    /// Operating mode: "monitor" (log only) or "enforce" (block denied access).
+    /// Default: "monitor"
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// Interval in seconds for rescanning /proc to discover new agent processes.
+    /// Default: 5
+    #[serde(default = "default_rescan_interval")]
+    pub pid_rescan_interval: u64,
+    /// Unix socket path for IPC with guardian-launch and CLI tools.
+    /// Default: "/run/guardian.sock"
+    #[serde(default = "default_socket_path")]
+    pub socket_path: String,
 }
 
-/// Configuration for a single LLM agent.
-///
-/// Each agent represents a process (or set of processes with the same name)
-/// that Guardian Shell monitors and restricts.
-///
-/// # Future Extensions
-///
-/// In later phases, this will be extended with:
-///   - `cgroup`: Match by cgroup path (better for containerized agents)
-///   - `exec_policy`: Control which commands the agent can execute
-///   - `network_policy`: Control network access
-///   - `time_window`: Only allow access during specific time periods
-///   - `alert_channels`: Where to send alerts (Slack, email, webhook)
+fn default_mode() -> String {
+    "monitor".to_string()
+}
+
+fn default_rescan_interval() -> u64 {
+    5
+}
+
+fn default_socket_path() -> String {
+    guardian_common::DEFAULT_SOCKET_PATH.to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
-    /// Human-readable name for this agent (used in logs and alerts)
-    ///
-    /// Example: "claude-code", "auto-gpt", "aider"
     pub name: String,
-
-    /// Process name to match against /proc/PID/comm.
-    ///
-    /// The Linux kernel truncates process names to 15 characters.
-    /// You can check a process's comm with: `cat /proc/<PID>/comm`
-    ///
-    /// Example: "node" for a Node.js-based agent, "python3" for Python-based
-    ///
-    /// IMPORTANT: This must match EXACTLY. If the agent runs as "python3.11",
-    /// you must use "python3.11" (which gets truncated to "python3.11" - 11 chars, fits).
-    pub process_name: String,
-
-    /// File access policy for this agent
+    /// Identity method: "comm" (Phase 1/2) or "cgroup" (Phase 3).
+    /// Default: "comm" when process_name is set, "cgroup" otherwise.
+    #[serde(default)]
+    pub identity: Option<String>,
+    /// Process name for comm-based identification (Phase 1/2).
+    /// Required when identity = "comm", ignored when identity = "cgroup".
+    #[serde(default)]
+    pub process_name: Option<String>,
     pub file_access: FileAccessPolicy,
+    /// Exec policy: controls which commands the agent can execute.
+    /// Optional - if not set, all exec is allowed (monitor-only).
+    pub exec_policy: Option<ExecPolicy>,
+    /// Network policy: controls outbound connections.
+    /// Optional - if not set, all connections are allowed (monitor-only).
+    pub network_policy: Option<NetworkPolicy>,
+    /// Whether to track child processes of this agent. Default: true
+    #[serde(default = "default_true")]
+    pub watch_children: bool,
+    /// Resource limits applied via cgroup controllers (Phase 3).
+    /// Only effective for cgroup-based agents.
+    pub resources: Option<ResourceLimits>,
+    /// Phase 8: Fail-closed mode. When true, the agent is blocked if the daemon
+    /// is unreachable or encounters an internal error. Default: None (not set).
+    pub fail_closed: Option<bool>,
 }
 
-/// Defines which files/directories an agent is allowed to access.
-///
-/// # Path Matching Rules
-///
-/// Patterns support simple glob-style matching:
-///
-///   - Exact path: "/etc/passwd" matches only that specific file
-///   - Directory wildcard: "/home/user/**" matches everything under /home/user/
-///     including all subdirectories recursively
-///   - Single-level wildcard: "/tmp/*" matches files directly in /tmp/
-///     but NOT files in subdirectories like /tmp/subdir/file
-///
-/// # Evaluation Order
-///
-///   1. Check DENY patterns first - if ANY deny pattern matches → DENIED
-///   2. Check ALLOW patterns - if ANY allow pattern matches → ALLOWED
-///   3. Apply default action
-///
-/// This means deny patterns ALWAYS win over allow patterns. This is a
-/// security best practice: it's better to accidentally deny something
-/// (user notices and adds an allow rule) than to accidentally allow
-/// access to sensitive files.
-///
-/// # Example
-///
-/// ```toml
-/// [agents.file_access]
-/// default = "deny"
-/// allow = [
-///     "/home/user/projects/**",   # Allow access to project files
-///     "/usr/lib/**",              # Allow reading system libraries
-///     "/tmp/guardian-*",          # Allow specific temp files
-/// ]
-/// deny = [
-///     "/home/user/projects/.env", # But deny .env files even in projects!
-///     "/home/user/.ssh/**",       # Never allow SSH key access
-/// ]
-/// ```
-///
-/// With this config:
-///   - /home/user/projects/main.rs     → ALLOWED (matches allow pattern)
-///   - /home/user/projects/.env        → DENIED  (matches deny, deny wins)
-///   - /home/user/.ssh/id_rsa          → DENIED  (matches deny)
-///   - /etc/passwd                     → DENIED  (no match, default=deny)
+impl AgentConfig {
+    /// Returns the effective identity method for this agent.
+    pub fn effective_identity(&self) -> &str {
+        if let Some(ref id) = self.identity {
+            id.as_str()
+        } else if self.process_name.is_some() {
+            "comm"
+        } else {
+            "cgroup"
+        }
+    }
+
+    /// Returns the process name, defaulting to the agent name if not set.
+    pub fn effective_process_name(&self) -> &str {
+        self.process_name.as_deref().unwrap_or(&self.name)
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileAccessPolicy {
-    /// Default action when no pattern matches: "allow" or "deny"
-    ///
-    /// SECURITY RECOMMENDATION: Always use "deny" as the default.
-    /// This implements the principle of least privilege - agents only
-    /// get access to explicitly allowed paths.
     pub default: String,
-
-    /// List of path patterns that are ALLOWED.
-    ///
-    /// Supports glob patterns:
-    ///   - "/path/to/dir/**" : recursive wildcard (all files under dir)
-    ///   - "/path/to/dir/*"  : single-level wildcard (files directly in dir)
-    ///   - "/path/to/file"   : exact match
     pub allow: Vec<String>,
-
-    /// List of path patterns that are DENIED.
-    ///
-    /// These take precedence over allow patterns. Even if a path matches
-    /// an allow rule, a matching deny rule will block access.
     pub deny: Vec<String>,
+    /// Paths that can be read but NOT written, deleted, renamed, or hardlinked.
+    /// Read-only paths are treated as allowed for read access (file_open),
+    /// but destructive operations (unlink, rename, link) are blocked in eBPF.
+    #[serde(default)]
+    pub read_only: Vec<String>,
+}
+
+/// Policy for command execution (execve monitoring).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExecPolicy {
+    /// Default action for exec: "allow" or "deny"
+    pub default: String,
+    /// List of allowed command path patterns
+    pub allow: Vec<String>,
+    /// List of denied command path patterns
+    pub deny: Vec<String>,
+}
+
+/// Policy for outbound network connections.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NetworkPolicy {
+    /// Default action for connections: "allow" or "deny"
+    pub default: String,
+    /// Allowed destination ports
+    #[serde(default)]
+    pub allow_ports: Vec<u16>,
+    /// Denied destination ports
+    #[serde(default)]
+    pub deny_ports: Vec<u16>,
+}
+
+/// Resource limits applied via cgroup v2 controllers.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResourceLimits {
+    /// Memory limit (e.g., "4G", "512M"). Written to memory.max.
+    pub memory_max: Option<String>,
+    /// Max number of processes. Written to pids.max.
+    pub pids_max: Option<u32>,
+    /// CPU limit (e.g., "200000 100000" = 2 cores). Written to cpu.max.
+    pub cpu_max: Option<String>,
 }
 
 // =============================================================================
 // Configuration Loading
 // =============================================================================
 
-/// Loads and parses the configuration file from the given path.
-///
-/// # Arguments
-///
-/// * `path` - Path to the TOML configuration file
-///
-/// # Returns
-///
-/// The parsed configuration, or an error with context about what went wrong.
-///
-/// # Errors
-///
-/// - File not found: Check the path and ensure the file exists
-/// - Parse error: Check the TOML syntax and field names
-/// - Missing required fields: Ensure all required fields are present
-///
-/// # Example
-///
-/// ```rust
-/// let config = load_config("config.toml")?;
-/// println!("Monitoring {} agents", config.agents.len());
-/// for agent in &config.agents {
-///     println!("  - {} (process: {})", agent.name, agent.process_name);
-/// }
-/// ```
 pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config> {
     let path = path.as_ref();
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-    let config: Config = toml::from_str(&content)
+    let mut config: Config = toml::from_str(&content)
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
     validate_config(&config)?;
 
+    // Build the comm name → agent index cache for O(1) event lookups
+    config.build_comm_cache();
+
     Ok(config)
 }
 
-/// Validates the configuration for common mistakes and security issues.
-///
-/// This function checks for:
-///   - Empty agent list (probably a config mistake)
-///   - Invalid default actions (must be "allow" or "deny")
-///   - Overly permissive patterns (e.g., "/**" allows everything)
-///   - Missing deny patterns for sensitive system files
 fn validate_config(config: &Config) -> Result<()> {
     if config.agents.is_empty() {
         log::warn!("No agents configured - Guardian Shell won't monitor anything");
     }
 
+    // Validate mode
+    match config.global.mode.as_str() {
+        "monitor" | "enforce" | "strict" => {}
+        other => {
+            anyhow::bail!(
+                "Invalid global mode '{}'. Must be 'monitor', 'enforce', or 'strict'",
+                other
+            );
+        }
+    }
+
     for agent in &config.agents {
-        // Validate the default action
+        // Validate identity method
+        match agent.effective_identity() {
+            "comm" => {
+                // Comm-based agents need a process_name (or use agent name)
+            }
+            "cgroup" => {
+                // Cgroup-based agents are registered dynamically via launcher
+            }
+            other => {
+                anyhow::bail!(
+                    "Agent '{}': invalid identity method '{}'. Must be 'comm' or 'cgroup'",
+                    agent.name,
+                    other
+                );
+            }
+        }
+
         match agent.file_access.default.as_str() {
             "allow" | "deny" => {}
             other => {
@@ -246,43 +414,136 @@ fn validate_config(config: &Config) -> Result<()> {
             }
         }
 
-        // Security warning: default "allow" is risky
         if agent.file_access.default == "allow" {
             log::warn!(
-                "Agent '{}': default action is 'allow'. This is permissive - \
-                 consider using 'deny' with explicit allow patterns for better security.",
+                "Agent '{}': default action is 'allow'. Consider using 'deny' for better security.",
                 agent.name
             );
         }
 
-        // Security warning: overly broad allow patterns
         for pattern in &agent.file_access.allow {
             if pattern == "/**" || pattern == "/*" {
                 log::warn!(
-                    "Agent '{}': allow pattern '{}' is extremely broad and \
-                     effectively allows access to everything. Consider being more specific.",
+                    "Agent '{}': allow pattern '{}' is extremely broad.",
                     agent.name,
                     pattern
                 );
             }
         }
 
-        // Validate patterns are absolute paths
         for pattern in agent
             .file_access
             .allow
             .iter()
             .chain(agent.file_access.deny.iter())
+            .chain(agent.file_access.read_only.iter())
         {
             if !pattern.starts_with('/') {
                 log::warn!(
-                    "Agent '{}': pattern '{}' is not an absolute path. \
-                     Relative path matching may not work as expected since the \
-                     eBPF program captures the path as provided by the syscall \
-                     (which may be relative to the process CWD).",
+                    "Agent '{}': pattern '{}' is not an absolute path.",
                     agent.name,
                     pattern
                 );
+            }
+        }
+
+        if !agent.file_access.read_only.is_empty() {
+            log::info!(
+                "Agent '{}': {} read_only path(s) configured (reads allowed, writes/deletes/renames blocked)",
+                agent.name,
+                agent.file_access.read_only.len(),
+            );
+        }
+
+        // Validate exec policy if present
+        if let Some(exec) = &agent.exec_policy {
+            match exec.default.as_str() {
+                "allow" | "deny" => {}
+                other => {
+                    anyhow::bail!(
+                        "Agent '{}': invalid exec default action '{}'. Must be 'allow' or 'deny'",
+                        agent.name,
+                        other
+                    );
+                }
+            }
+        }
+    }
+
+    // Validate alerting config
+    if let Some(ref alerting) = config.alerting {
+        validate_alerting_config(alerting)?;
+    }
+
+    Ok(())
+}
+
+fn validate_alerting_config(config: &AlertingConfig) -> Result<()> {
+    // Validate severity values
+    if let Some(ref sev) = config.min_severity {
+        match sev.as_str() {
+            "info" | "warning" | "critical" => {}
+            other => anyhow::bail!("Invalid alerting min_severity '{}'. Must be 'info', 'warning', or 'critical'", other),
+        }
+    }
+
+    // Validate webhook config
+    if let Some(ref wh) = config.webhook {
+        if wh.enabled {
+            if wh.url.as_ref().map(|u| u.is_empty()).unwrap_or(true) {
+                anyhow::bail!("Webhook is enabled but 'url' is not set");
+            }
+            if let Some(ref url) = wh.url {
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    log::warn!("Webhook URL does not start with http:// or https://: {}", url);
+                }
+            }
+        }
+        if let Some(ref sev) = wh.min_severity {
+            match sev.as_str() {
+                "info" | "warning" | "critical" => {}
+                other => anyhow::bail!("Invalid webhook min_severity '{}'", other),
+            }
+        }
+    }
+
+    // Validate Slack config
+    if let Some(ref slack) = config.slack {
+        if slack.enabled {
+            if slack.webhook_url.as_ref().map(|u| u.is_empty()).unwrap_or(true) {
+                anyhow::bail!("Slack is enabled but 'webhook_url' is not set");
+            }
+            if let Some(ref url) = slack.webhook_url {
+                if !url.starts_with("https://hooks.slack.com/") && !url.starts_with("https://") {
+                    log::warn!("Slack webhook URL doesn't look like a Slack webhook: {}", url);
+                }
+            }
+        }
+    }
+
+    // Validate email config
+    if let Some(ref email) = config.email {
+        if email.enabled {
+            if email.smtp_host.as_ref().map(|h| h.is_empty()).unwrap_or(true) {
+                anyhow::bail!("Email is enabled but 'smtp_host' is not set");
+            }
+            if email.from.as_ref().map(|f| f.is_empty()).unwrap_or(true) {
+                anyhow::bail!("Email is enabled but 'from' address is not set");
+            }
+            if email.to.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
+                anyhow::bail!("Email is enabled but 'to' addresses list is empty");
+            }
+        }
+    }
+
+    // Validate Prometheus config
+    if let Some(ref prom) = config.prometheus {
+        if prom.enabled {
+            if let Some(ref addr) = prom.listen_address {
+                // Basic validation: should contain a colon (host:port)
+                if !addr.contains(':') {
+                    log::warn!("Prometheus listen_address '{}' doesn't contain a port (expected host:port)", addr);
+                }
             }
         }
     }
@@ -291,104 +552,188 @@ fn validate_config(config: &Config) -> Result<()> {
 }
 
 // =============================================================================
+// Path Normalization (Phase 7a — closes symlink, traversal, /proc/self/root bypasses)
+// =============================================================================
+
+/// Normalize a raw path to remove common bypass tricks.
+/// Catches /proc/self/root/, /proc/<pid>/root/, and ".." traversal.
+/// Does NOT resolve symlinks (that requires kernel-side bpf_d_path).
+pub fn normalize_path(raw: &str) -> String {
+    // Phase 1: Strip /proc/self/root/ or /proc/<pid>/root/ prefixes.
+    // Work on &str slices to avoid intermediate String allocations.
+    let stripped = if let Some(rest) = raw.strip_prefix("/proc/self/root/") {
+        rest
+    } else if raw == "/proc/self/root" {
+        return "/".to_string();
+    } else if raw.starts_with("/proc/") {
+        let after_proc = &raw[6..];
+        if let Some(slash_pos) = after_proc.find('/') {
+            let pid_part = &after_proc[..slash_pos];
+            if pid_part.bytes().all(|b| b.is_ascii_digit()) {
+                let after_pid = &after_proc[slash_pos..];
+                if let Some(rest) = after_pid.strip_prefix("/root/") {
+                    rest
+                } else if after_pid == "/root" {
+                    return "/".to_string();
+                } else {
+                    raw
+                }
+            } else {
+                raw
+            }
+        } else {
+            raw
+        }
+    } else {
+        raw
+    };
+
+    // Phase 2: Resolve ".." and "." components into a single String.
+    // Pre-allocate with capacity to avoid repeated reallocations.
+    let mut result = String::with_capacity(stripped.len() + 1);
+    // First pass: collect valid components into a small stack-friendly Vec
+    let mut components: Vec<&str> = Vec::with_capacity(16);
+    for component in stripped.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => { components.pop(); }
+            c => components.push(c),
+        }
+    }
+
+    if components.is_empty() {
+        return "/".to_string();
+    }
+
+    for comp in &components {
+        result.push('/');
+        result.push_str(comp);
+    }
+    result
+}
+
+// =============================================================================
 // Path Pattern Matching
 // =============================================================================
 
-/// Checks if a file access is allowed by the given policy.
-///
-/// # Evaluation Order
-///
-/// 1. If path matches ANY deny pattern → DENIED (deny always wins)
-/// 2. If path matches ANY allow pattern → ALLOWED
-/// 3. Apply default action from policy
-///
-/// # Arguments
-///
-/// * `policy` - The file access policy to evaluate against
-/// * `path` - The file path being accessed (from the eBPF event)
-///
-/// # Returns
-///
-/// `true` if access is allowed, `false` if denied
-///
-/// # Examples
-///
-/// ```rust
-/// let policy = FileAccessPolicy {
-///     default: "deny".to_string(),
-///     allow: vec!["/home/user/**".to_string()],
-///     deny: vec!["/home/user/.ssh/**".to_string()],
-/// };
-///
-/// assert!(check_file_policy(&policy, "/home/user/code/main.rs"));   // allowed
-/// assert!(!check_file_policy(&policy, "/home/user/.ssh/id_rsa"));   // denied
-/// assert!(!check_file_policy(&policy, "/etc/passwd"));              // default deny
-/// ```
 pub fn check_file_policy(policy: &FileAccessPolicy, path: &str) -> bool {
-    // Step 1: Check deny list first (deny takes precedence over everything)
+    let normalized = normalize_path(path);
+    let path = normalized.as_str();
+
     for pattern in &policy.deny {
         if path_matches(path, pattern) {
             return false;
         }
     }
 
-    // Step 2: Check allow list
     for pattern in &policy.allow {
         if path_matches(path, pattern) {
             return true;
         }
     }
 
-    // Step 3: Apply default action
+    // Read-only paths are allowed for read access (evaluate_policy in eBPF also allows them).
+    // Destructive operations are blocked separately by is_readonly() checks in eBPF.
+    for pattern in &policy.read_only {
+        if path_matches(path, pattern) {
+            return true;
+        }
+    }
+
     policy.default == "allow"
 }
 
-/// Matches a file path against a glob-like pattern.
-///
-/// Supported patterns:
-///
-///   - `/path/to/dir/**` : Recursive wildcard
-///     Matches everything under /path/to/dir/, including subdirectories.
-///     Example: "/home/user/**" matches "/home/user/a/b/c/file.txt"
-///
-///   - `/path/to/dir/*` : Single-level wildcard
-///     Matches files directly in /path/to/dir/, but NOT subdirectories.
-///     Example: "/tmp/*" matches "/tmp/file.txt" but NOT "/tmp/sub/file.txt"
-///
-///   - `/path/to/file` : Exact match
-///     Matches only the exact path.
-///     Example: "/etc/passwd" matches only "/etc/passwd"
-///
-/// # Arguments
-///
-/// * `path` - The actual file path to check
-/// * `pattern` - The glob pattern to match against
-///
-/// # Returns
-///
-/// `true` if the path matches the pattern
-fn path_matches(path: &str, pattern: &str) -> bool {
+/// Check whether a path is in the read_only list (userspace policy check).
+/// Used for userspace-side decision logging of destructive operations.
+#[allow(dead_code)]
+pub fn is_path_read_only(policy: &FileAccessPolicy, path: &str) -> bool {
+    let normalized = normalize_path(path);
+    let path = normalized.as_str();
+
+    for pattern in &policy.read_only {
+        if path_matches(path, pattern) {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn check_exec_policy(policy: &ExecPolicy, path: &str) -> bool {
+    let normalized = normalize_path(path);
+    let path = normalized.as_str();
+
+    for pattern in &policy.deny {
+        if path_matches(path, pattern) {
+            return false;
+        }
+    }
+
+    for pattern in &policy.allow {
+        if path_matches(path, pattern) {
+            return true;
+        }
+    }
+
+    policy.default == "allow"
+}
+
+/// Check whether a network connection (by port) is allowed by a network policy.
+/// Deny takes precedence over allow.
+pub fn check_network_policy(policy: &NetworkPolicy, port: u16) -> bool {
+    if policy.deny_ports.contains(&port) {
+        return false;
+    }
+    if policy.allow_ports.contains(&port) {
+        return true;
+    }
+    policy.default == "allow"
+}
+
+pub fn path_matches(path: &str, pattern: &str) -> bool {
     if pattern.ends_with("/**") {
-        // Recursive wildcard: match everything under this directory
-        // Remove the trailing "/**" to get the directory prefix
         let prefix = &pattern[..pattern.len() - 3];
-        // The path must start with the prefix and either:
-        //   - Equal the prefix exactly (the directory itself)
-        //   - Have a '/' after the prefix (a file/dir under it)
         path == prefix || path.starts_with(&format!("{}/", prefix))
     } else if pattern.ends_with("/*") {
-        // Single-level wildcard: match files directly in this directory
         let prefix = &pattern[..pattern.len() - 2];
         if let Some(rest) = path.strip_prefix(prefix) {
-            // Must start with '/' and not contain another '/' after that
             rest.starts_with('/') && !rest[1..].contains('/')
         } else {
             false
         }
     } else {
-        // Exact match
         path == pattern
     }
+}
+
+// =============================================================================
+// Policy Rule Conversion (for BPF maps)
+// =============================================================================
+
+/// Convert a path pattern string into a PolicyRule for kernel-side enforcement.
+#[allow(dead_code)]
+pub fn pattern_to_policy_rule(pattern: &str) -> guardian_common::PolicyRule {
+    let mut rule = guardian_common::PolicyRule {
+        path_prefix: [0u8; guardian_common::MAX_FILENAME_LEN],
+        prefix_len: 0,
+        match_type: 0,
+        _pad: [0; 3],
+    };
+
+    let (prefix, match_type) = if pattern.ends_with("/**") {
+        (&pattern[..pattern.len() - 3], 1u8)
+    } else if pattern.ends_with("/*") {
+        (&pattern[..pattern.len() - 2], 2u8)
+    } else {
+        (pattern, 0u8)
+    };
+
+    let bytes = prefix.as_bytes();
+    let copy_len = core::cmp::min(bytes.len(), guardian_common::MAX_FILENAME_LEN);
+    rule.path_prefix[..copy_len].copy_from_slice(&bytes[..copy_len]);
+    rule.prefix_len = copy_len as u32;
+    rule.match_type = match_type;
+
+    rule
 }
 
 // =============================================================================
@@ -429,6 +774,7 @@ mod tests {
             default: "allow".to_string(),
             allow: vec!["/home/user/**".to_string()],
             deny: vec!["/home/user/.ssh/**".to_string()],
+            read_only: vec![],
         };
 
         assert!(check_file_policy(&policy, "/home/user/code/main.rs"));
@@ -441,6 +787,7 @@ mod tests {
             default: "deny".to_string(),
             allow: vec!["/tmp/**".to_string()],
             deny: vec![],
+            read_only: vec![],
         };
 
         assert!(check_file_policy(&policy, "/tmp/file.txt"));
@@ -453,9 +800,164 @@ mod tests {
             default: "allow".to_string(),
             allow: vec![],
             deny: vec!["/etc/shadow".to_string()],
+            read_only: vec![],
         };
 
         assert!(check_file_policy(&policy, "/tmp/file.txt"));
         assert!(!check_file_policy(&policy, "/etc/shadow"));
+    }
+
+    #[test]
+    fn test_read_only_allows_reads() {
+        let policy = FileAccessPolicy {
+            default: "deny".to_string(),
+            allow: vec![],
+            deny: vec![],
+            read_only: vec!["/etc/passwd".to_string(), "/var/log/**".to_string()],
+        };
+
+        // read_only paths are allowed for reads
+        assert!(check_file_policy(&policy, "/etc/passwd"));
+        assert!(check_file_policy(&policy, "/var/log/syslog"));
+        // Non-read-only paths are still denied
+        assert!(!check_file_policy(&policy, "/etc/shadow"));
+    }
+
+    #[test]
+    fn test_read_only_deny_overrides() {
+        let policy = FileAccessPolicy {
+            default: "deny".to_string(),
+            allow: vec![],
+            deny: vec!["/etc/shadow".to_string()],
+            read_only: vec!["/etc/**".to_string()],
+        };
+
+        // Deny takes precedence over read_only
+        assert!(!check_file_policy(&policy, "/etc/shadow"));
+        // Other /etc paths are read_only (allowed for reads)
+        assert!(check_file_policy(&policy, "/etc/passwd"));
+    }
+
+    #[test]
+    fn test_is_path_read_only() {
+        let policy = FileAccessPolicy {
+            default: "deny".to_string(),
+            allow: vec!["/tmp/**".to_string()],
+            deny: vec![],
+            read_only: vec!["/etc/passwd".to_string(), "/var/log/**".to_string()],
+        };
+
+        assert!(is_path_read_only(&policy, "/etc/passwd"));
+        assert!(is_path_read_only(&policy, "/var/log/syslog"));
+        assert!(!is_path_read_only(&policy, "/tmp/file.txt"));
+        assert!(!is_path_read_only(&policy, "/etc/shadow"));
+    }
+
+    #[test]
+    fn test_exec_policy() {
+        let policy = ExecPolicy {
+            default: "deny".to_string(),
+            allow: vec!["/usr/bin/**".to_string()],
+            deny: vec!["/usr/bin/rm".to_string()],
+        };
+
+        assert!(check_exec_policy(&policy, "/usr/bin/ls"));
+        assert!(!check_exec_policy(&policy, "/usr/bin/rm"));
+        assert!(!check_exec_policy(&policy, "/usr/sbin/reboot"));
+    }
+
+    #[test]
+    fn test_pattern_to_policy_rule() {
+        let rule = pattern_to_policy_rule("/home/user/.ssh/**");
+        assert_eq!(rule.match_type, 1);
+        assert_eq!(rule.prefix_len, 15);
+        assert_eq!(&rule.path_prefix[..15], b"/home/user/.ssh");
+
+        let rule = pattern_to_policy_rule("/etc/shadow");
+        assert_eq!(rule.match_type, 0);
+        assert_eq!(rule.prefix_len, 11);
+    }
+
+    #[test]
+    fn test_normalize_path_dotdot() {
+        assert_eq!(normalize_path("/tmp/../etc/shadow"), "/etc/shadow");
+        assert_eq!(normalize_path("/home/user/../../etc/passwd"), "/etc/passwd");
+        assert_eq!(normalize_path("/tmp/./file"), "/tmp/file");
+    }
+
+    #[test]
+    fn test_normalize_path_proc_self_root() {
+        assert_eq!(normalize_path("/proc/self/root/etc/shadow"), "/etc/shadow");
+        assert_eq!(normalize_path("/proc/self/root/home/user/.ssh/id_rsa"), "/home/user/.ssh/id_rsa");
+    }
+
+    #[test]
+    fn test_normalize_path_proc_pid_root() {
+        assert_eq!(normalize_path("/proc/1234/root/etc/shadow"), "/etc/shadow");
+        assert_eq!(normalize_path("/proc/1/root/etc/passwd"), "/etc/passwd");
+    }
+
+    #[test]
+    fn test_normalize_path_already_clean() {
+        assert_eq!(normalize_path("/etc/shadow"), "/etc/shadow");
+        assert_eq!(normalize_path("/tmp/file.txt"), "/tmp/file.txt");
+    }
+
+    #[test]
+    fn test_policy_blocks_normalized_bypass() {
+        let policy = FileAccessPolicy {
+            default: "allow".to_string(),
+            allow: vec!["/tmp/**".to_string()],
+            deny: vec!["/etc/shadow".to_string()],
+            read_only: vec![],
+        };
+        // These should all be denied after normalization
+        assert!(!check_file_policy(&policy, "/proc/self/root/etc/shadow"));
+        assert!(!check_file_policy(&policy, "/tmp/../etc/shadow"));
+        assert!(!check_file_policy(&policy, "/proc/1234/root/etc/shadow"));
+    }
+
+    #[test]
+    fn test_effective_identity_comm() {
+        let agent = AgentConfig {
+            name: "test".to_string(),
+            identity: None,
+            process_name: Some("myproc".to_string()),
+            file_access: FileAccessPolicy {
+                default: "deny".to_string(),
+                allow: vec![],
+                deny: vec![],
+                read_only: vec![],
+            },
+            exec_policy: None,
+            network_policy: None,
+            watch_children: true,
+            resources: None,
+            fail_closed: None,
+        };
+        assert_eq!(agent.effective_identity(), "comm");
+        assert_eq!(agent.effective_process_name(), "myproc");
+    }
+
+    #[test]
+    fn test_effective_identity_cgroup() {
+        let agent = AgentConfig {
+            name: "test".to_string(),
+            identity: Some("cgroup".to_string()),
+            process_name: None,
+            file_access: FileAccessPolicy {
+                default: "deny".to_string(),
+                allow: vec![],
+                deny: vec![],
+                read_only: vec![],
+            },
+            exec_policy: None,
+            network_policy: None,
+            watch_children: true,
+            resources: None,
+            fail_closed: None,
+        };
+        assert_eq!(agent.effective_identity(), "cgroup");
+        assert_eq!(agent.effective_process_name(), "test");
     }
 }

@@ -1,0 +1,22 @@
+# =============================================================================
+# Guardian Ctl - CLI for Managing Guardian Shell Agents
+# =============================================================================
+#
+# Provides commands to interact with a running Guardian daemon:
+#   guardian-ctl list                    — List running agents
+#   guardian-ctl stop --name <agent>     — Stop an agent
+#   guardian-ctl grant --name <agent> --path <path> --duration <secs>
+#                                       — Grant temporary file access
+
+[package]
+name = "guardian-ctl"
+version = "0.11.0"
+edition = "2021"
+description = "CLI tool for managing Guardian Shell agents"
+
+[dependencies]
+guardian-common = { path = "../guardian-common", features = ["user"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"

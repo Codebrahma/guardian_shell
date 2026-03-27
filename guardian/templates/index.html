@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block nav_index %}nav-active{% endblock %}
+
+{% block content %}
+<h2 class="section-title">Dashboard Overview</h2>
+
+<!-- Status Cards (auto-refresh every 5s) -->
+<div id="status-cards"
+     hx-get="/api/status"
+     hx-trigger="load, every 5s"
+     hx-swap="innerHTML">
+  <div class="grid-4">
+    <div class="stat-card"><div class="skeleton" style="height: 48px;"></div></div>
+    <div class="stat-card"><div class="skeleton" style="height: 48px;"></div></div>
+    <div class="stat-card"><div class="skeleton" style="height: 48px;"></div></div>
+    <div class="stat-card"><div class="skeleton" style="height: 48px;"></div></div>
+  </div>
+</div>
+
+<!-- Recent Events via SSE -->
+<div class="mt-lg" x-data="recentEvents()">
+  <div class="flex items-center gap-md mb-md">
+    <h3 class="section-subtitle mb-0">Recent Events</h3>
+    <span class="conn-status">
+      <span class="conn-dot" :class="connected ? 'connected' : 'disconnected'"></span>
+      <span :style="connected ? 'color: var(--success)' : 'color: var(--danger)'"
+            x-text="connected ? 'Live' : 'Reconnecting...'"></span>
+    </span>
+  </div>
+  <div class="card">
+    <div class="table-wrap" style="max-height: 60vh; overflow-y: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Severity</th>
+            <th>Agent</th>
+            <th>Type</th>
+            <th>Action</th>
+            <th>Path</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="ev in events" :key="ev.id">
+            <tr>
+              <td class="nowrap text-xs" x-text="formatTime(ev.timestamp)"></td>
+              <td>
+                <span class="badge"
+                      :class="{'badge-info': ev.severity==='info', 'badge-warning': ev.severity==='warning', 'badge-critical': ev.severity==='critical'}"
+                      x-text="ev.severity"></span>
+              </td>
+              <td class="text-primary" x-text="ev.agent_name"></td>
+              <td class="text-xs" x-text="ev.event_type"></td>
+              <td>
+                <span class="badge"
+                      :class="{'badge-success': ev.action==='allow', 'badge-warning': ev.action==='deny', 'badge-critical': ev.action==='blocked'}"
+                      x-text="ev.action"></span>
+              </td>
+              <td class="cell-path" x-text="ev.path" :title="ev.path"></td>
+            </tr>
+          </template>
+          <tr x-show="events.length === 0">
+            <td colspan="6" class="empty-state">Waiting for events...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+function recentEvents() {
+  return {
+    events: [],
+    nextId: 0,
+    connected: false,
+
+    init() {
+      const self = this;
+      // Read connection state from window (handles race where onopen fired before Alpine init)
+      self.connected = window.__guardianSSEConnected ||
+        !!(window.__guardianSSE && window.__guardianSSE.readyState === EventSource.OPEN);
+
+      // Listen to events relayed from the shared SSE in base.html
+      document.addEventListener('guardian:event', function(e) {
+        try {
+          const data = JSON.parse(e.detail);
+          data.id = self.nextId++;
+          self.events.unshift(data);
+          if (self.events.length > 50) self.events.pop();
+        } catch(err) {}
+      });
+      document.addEventListener('guardian:sse-open', function() { self.connected = true; });
+      document.addEventListener('guardian:sse-error', function() { self.connected = false; });
+
+      // Periodic self-heal: check actual readyState in case events were missed
+      setInterval(function() {
+        var sse = window.__guardianSSE;
+        if (sse && sse.readyState === EventSource.OPEN) {
+          self.connected = true;
+        }
+      }, 3000);
+    },
+
+    formatTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      return d.toLocaleTimeString() + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    }
+  };
+}
+</script>
+{% endblock %}

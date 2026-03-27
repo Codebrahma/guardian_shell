@@ -16,14 +16,16 @@
 
 [package]
 name = "guardian-common"
-version = "0.1.0"
+version = "0.11.0"
 edition = "2021"
 description = "Shared types between Guardian Shell eBPF and userspace components"
 
 [features]
 default = []
 # Enable this feature in userspace code for std-dependent functionality
-user = []
+user = ["aya", "serde", "serde_json"]
 
 [dependencies]
-# Intentionally empty - this crate must work in both no_std (eBPF) and std contexts
+aya = { version = "0.13", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }

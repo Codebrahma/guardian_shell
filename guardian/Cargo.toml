@@ -18,7 +18,7 @@
 
 [package]
 name = "guardian"
-version = "0.1.0"
+version = "0.11.0"
 edition = "2021"
 description = "Userspace daemon for Guardian Shell - monitors LLM agent file access"
 
@@ -27,9 +27,8 @@ description = "Userspace daemon for Guardian Shell - monitors LLM agent file acc
 # Provides APIs to load eBPF programs, manage maps, and read perf buffers
 aya = { version = "0.13", features = ["async_tokio"] }
 
-# Aya log integration - receives log messages from the eBPF program
-# and forwards them to the standard Rust `log` facade
-aya-log = "0.2"
+# Note: aya-log was removed because aya-log-ebpf was removed from the eBPF
+# program to reduce BPF verifier complexity. No AYA_LOGS map exists.
 
 # Our shared types (FileAccessEvent, constants)
 guardian-common = { path = "../guardian-common", features = ["user"] }
@@ -39,6 +38,7 @@ tokio = { version = "1", features = ["full"] }
 
 # Configuration parsing
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 
 # Logging
@@ -53,3 +53,26 @@ bytes = "1"
 
 # Command-line argument parsing
 clap = { version = "4", features = ["derive"] }
+
+# Unix-specific system calls (kill, etc.)
+libc = "0.2"
+
+# Phase 4: Alerting & Integration
+# HTTP client for webhook/Slack alerts (rustls avoids openssl dependency)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# SMTP email for alert notifications
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+# Timestamps with ISO 8601 formatting
+chrono = { version = "0.4", features = ["serde"] }
+# Prometheus metrics for observability
+prometheus = "0.13"
+
+# Phase 5: Dashboard & UI
+axum = { version = "0.8", features = ["macros"] }
+askama = "0.12"
+askama_axum = "0.4"
+rust-embed = "8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+rusqlite = { version = "0.31", features = ["bundled"] }

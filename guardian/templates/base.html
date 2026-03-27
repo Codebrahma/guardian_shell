@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guardian Shell — {% block title %}Dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js"></script>
+  <script>
+    // htmx 2.0 doesn't swap 4xx/5xx responses by default.
+    // Force swap so error toasts (CSRF 403, validation errors) are visible.
+    document.addEventListener('htmx:beforeSwap', function(evt) {
+      if (evt.detail.xhr.status >= 400) {
+        evt.detail.shouldSwap = true;
+        evt.detail.isError = false;
+      }
+    });
+  </script>
+  <script defer src="/static/alpine.min.js"></script>
+</head>
+<body x-data="{ sidebarOpen: false }">
+  <!-- Mobile header -->
+  <div class="mobile-header">
+    <button class="hamburger" @click="sidebarOpen = !sidebarOpen">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+      </svg>
+    </button>
+    <h1>Guardian Shell</h1>
+  </div>
+
+  <!-- Sidebar overlay (mobile) -->
+  <div class="sidebar-overlay" :class="sidebarOpen && 'open'" @click="sidebarOpen = false"></div>
+
+  <div class="layout">
+    <!-- Sidebar -->
+    <nav class="sidebar" :class="sidebarOpen && 'open'">
+      <div class="sidebar-brand">
+        <h1>Guardian Shell</h1>
+        <p>Security Dashboard</p>
+      </div>
+      <ul class="sidebar-nav">
+        <li>
+          <a href="/" class="{% block nav_index %}{% endblock %}">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+            Overview
+          </a>
+        </li>
+        <li>
+          <a href="/events" class="{% block nav_events %}{% endblock %}">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Events
+          </a>
+        </li>
+        <li>
+          <a href="/agents" class="{% block nav_agents %}{% endblock %}">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            Agents
+          </a>
+        </li>
+        <li>
+          <a href="/policy" class="{% block nav_policy %}{% endblock %}">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+            Policy
+          </a>
+        </li>
+        <li>
+          <a href="/requests" class="{% block nav_requests %}{% endblock %}" style="position: relative;">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            Requests
+            <template x-if="$store.perms.pending.length > 0">
+              <span class="nav-badge" x-text="$store.perms.pending.length"></span>
+            </template>
+          </a>
+        </li>
+        <li>
+          <a href="/alerts" class="{% block nav_alerts %}{% endblock %}">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+            Alerts
+          </a>
+        </li>
+        <li>
+          <a href="/metrics" target="_blank">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+            Metrics
+          </a>
+        </li>
+      </ul>
+      <div class="sidebar-footer">
+        <button hx-post="/api/config/reload" hx-target="#toast" hx-swap="innerHTML"
+                class="btn btn-secondary btn-block">
+          Reload Config
+        </button>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Permission Request Banner (global, all pages) -->
+      <template x-for="req in $store.perms.pending" :key="req.id">
+        <div class="perm-banner"
+             :class="'risk-' + (req.risk_level || 'medium')"
+             x-data="{ dur: 600, confirmText: '', waitElapsed: 0 }"
+             x-init="if (req.wait_seconds > 0) { let iv = setInterval(() => { waitElapsed++; if (waitElapsed >= req.wait_seconds) clearInterval(iv); }, 1000); }">
+          <div class="perm-banner-header">
+            <div class="perm-banner-title">
+              <span class="perm-banner-icon" x-text="req.risk_level === 'critical' ? '!' : '?'"></span>
+              Permission Request from
+              <strong x-text="req.agent_name"></strong>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="badge"
+                    :class="'badge-risk-' + (req.risk_level || 'medium')"
+                    x-text="(req.risk_level || 'medium').toUpperCase()"></span>
+              <div class="perm-banner-timer">
+                <span x-text="$store.perms.remaining(req)"></span>s left
+              </div>
+            </div>
+          </div>
+          <div class="perm-banner-body">
+            <div class="perm-banner-detail">
+              Wants to <span class="badge" :class="req.resource_type === 'exec' ? 'badge-purple' : 'badge-info'" x-text="req.resource_type.toUpperCase()"></span>
+              <code class="inline" x-text="req.resource_path"></code>
+            </div>
+            <div class="perm-banner-reason" x-show="req.justification" x-text="req.justification"></div>
+            <!-- Justification warnings -->
+            <template x-if="req.justification_warnings && req.justification_warnings.length > 0">
+              <div class="perm-banner-warnings">
+                <template x-for="w in req.justification_warnings" :key="w">
+                  <span class="perm-warning-tag" x-text="w"></span>
+                </template>
+              </div>
+            </template>
+            <!-- Risk flags -->
+            <template x-if="req.risk_flags && req.risk_flags.length > 0">
+              <div style="margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap;">
+                <template x-for="f in req.risk_flags" :key="f">
+                  <span class="badge badge-gray" style="font-size: 10px;" x-text="f"></span>
+                </template>
+              </div>
+            </template>
+          </div>
+          <div class="perm-banner-actions">
+            <select x-model="dur" class="perm-banner-select">
+              <option value="60">1 min</option>
+              <option value="300">5 min</option>
+              <option value="600" selected>10 min</option>
+              <option value="1800">30 min</option>
+              <option value="3600">1 hour</option>
+            </select>
+            <!-- Type-to-confirm for CRITICAL risk -->
+            <template x-if="req.requires_type_confirm">
+              <div class="perm-type-confirm">
+                <input type="text" x-model="confirmText" placeholder="Type CONFIRM">
+                <span class="hint">Type CONFIRM to enable approve</span>
+              </div>
+            </template>
+            <!-- Approve button: disabled during mandatory wait, and until CONFIRM typed for critical -->
+            <button class="btn btn-primary btn-sm"
+                    :disabled="(req.wait_seconds > 0 && waitElapsed < req.wait_seconds) || (req.requires_type_confirm && confirmText !== 'CONFIRM')"
+                    @click="$store.perms.approve(req.id, dur)">
+              <template x-if="req.wait_seconds > 0 && waitElapsed < req.wait_seconds">
+                <span x-text="'Wait ' + (req.wait_seconds - waitElapsed) + 's'"></span>
+              </template>
+              <template x-if="!(req.wait_seconds > 0 && waitElapsed < req.wait_seconds)">
+                <span>Approve</span>
+              </template>
+            </button>
+            <button class="btn btn-danger btn-sm" @click="$store.perms.deny(req.id)">Deny</button>
+          </div>
+        </div>
+      </template>
+
+      <div id="toast" class="mb-md"></div>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <script>
+  // Single shared SSE connection — prevents HTTP/1.1 connection exhaustion.
+  // Child pages listen to custom DOM events instead of opening their own EventSource.
+  // Connection state is tracked on window.__guardianSSEConnected so Alpine components
+  // can read it even if onopen fires before their listeners are registered.
+  (function() {
+    var sse = null;
+    var errorTimer = null;
+    window.__guardianSSEConnected = false;
+
+    function connectSSE() {
+      if (sse) { sse.close(); }
+      sse = new EventSource('/events/stream');
+      window.__guardianSSE = sse;
+
+      sse.onopen = function() {
+        // Clear any pending error timer — connection recovered
+        if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+        window.__guardianSSEConnected = true;
+        document.dispatchEvent(new CustomEvent('guardian:sse-open'));
+      };
+      sse.onerror = function() {
+        // Debounce: only mark as disconnected if not recovered within 2s.
+        // EventSource fires onerror during normal reconnect cycles.
+        if (!errorTimer) {
+          errorTimer = setTimeout(function() {
+            window.__guardianSSEConnected = false;
+            document.dispatchEvent(new CustomEvent('guardian:sse-error'));
+            errorTimer = null;
+          }, 2000);
+        }
+      };
+
+      // Relay SSE event types as custom DOM events for child page components
+      sse.addEventListener('event', function(e) {
+        // Receiving events means we're connected — ensure state is correct
+        if (!window.__guardianSSEConnected) {
+          if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+          window.__guardianSSEConnected = true;
+          document.dispatchEvent(new CustomEvent('guardian:sse-open'));
+        }
+        document.dispatchEvent(new CustomEvent('guardian:event', { detail: e.data }));
+      });
+      sse.addEventListener('lag', function(e) {
+        document.dispatchEvent(new CustomEvent('guardian:lag', { detail: e.data }));
+      });
+      sse.addEventListener('permission', function(e) {
+        if (!window.__guardianSSEConnected) {
+          if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+          window.__guardianSSEConnected = true;
+          document.dispatchEvent(new CustomEvent('guardian:sse-open'));
+        }
+        document.dispatchEvent(new CustomEvent('guardian:permission', { detail: e.data }));
+      });
+    }
+
+    connectSSE();
+
+    // Close SSE on page navigation to free the connection slot
+    window.addEventListener('beforeunload', function() {
+      if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+      if (sse) { sse.close(); sse = null; window.__guardianSSE = null; window.__guardianSSEConnected = false; }
+    });
+  })();
+
+  document.addEventListener('alpine:init', () => {
+    Alpine.store('perms', {
+      pending: [],
+      _tick: 0,
+
+      init() {
+        const self = this;
+
+        // Tick every second to drive countdown reactivity
+        setInterval(() => { self._tick++; }, 1000);
+
+        // Fetch any existing pending requests on page load
+        fetch('/api/permissions/pending')
+          .then(r => r.json())
+          .then(data => {
+            data.forEach(req => {
+              req.deadline = new Date(req.requested_at).getTime() + req.timeout_secs * 1000;
+              req.grantDuration = 600;
+              req.risk_level = req.risk_level || 'medium';
+              req.risk_flags = req.risk_flags || [];
+              req.wait_seconds = req.wait_seconds || 0;
+              req.requires_type_confirm = req.requires_type_confirm || false;
+              req.justification_warnings = req.justification_warnings || [];
+              if (!self.pending.find(p => p.id === req.id)) {
+                self.pending.push(req);
+              }
+            });
+          })
+          .catch(() => {});
+
+        // Listen for permission events relayed from the shared SSE connection
+        document.addEventListener('guardian:permission', function(e) {
+          try {
+            const data = JSON.parse(e.detail);
+            if (data.kind === 'request') {
+              data.deadline = new Date(data.requested_at).getTime() + data.timeout_secs * 1000;
+              data.grantDuration = 600;
+              data.risk_level = data.risk_level || 'medium';
+              data.risk_flags = data.risk_flags || [];
+              data.wait_seconds = data.wait_seconds || 0;
+              data.requires_type_confirm = data.requires_type_confirm || false;
+              data.justification_warnings = data.justification_warnings || [];
+              if (!self.pending.find(p => p.id === data.id)) {
+                self.pending.push(data);
+              }
+            } else if (data.kind === 'resolved') {
+              self.dismiss(data.id);
+            }
+          } catch(err) {}
+        });
+      },
+
+      remaining(req) {
+        void this._tick; // Access to create Alpine dependency
+        return Math.max(0, Math.ceil((req.deadline - Date.now()) / 1000));
+      },
+
+      dismiss(id) {
+        this.pending = this.pending.filter(p => p.id !== id);
+      },
+
+      approve(id, duration) {
+        const self = this;
+        fetch('/api/permissions/' + id + '/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'duration=' + duration
+        }).then(() => self.dismiss(id));
+      },
+
+      deny(id) {
+        const self = this;
+        fetch('/api/permissions/' + id + '/deny', {
+          method: 'POST'
+        }).then(() => self.dismiss(id));
+      }
+    });
+  });
+  </script>
+</body>
+</html>

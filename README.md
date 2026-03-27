@@ -161,6 +161,8 @@ auth_token = "your-secret-token-here"
 | 9 | Done | Network enforcement (socket_connect LSM) |
 | 10 | Done | Landlock sandbox, expanded seccomp, IPC sandbox config |
 | 11 | Done | Security hardening, privilege dropping, CSRF, perf fixes |
+| 12 | Planned | Resilience & lifecycle (orphaned cgroup cleanup, daemon watchdog) |
+| 13 | Planned | OpenShell features (L7 inspection, credential isolation, binary integrity) |
 
 ## Requirements
 
@@ -210,6 +212,26 @@ cat /boot/config-$(uname -r) | grep -E 'CONFIG_BPF|CONFIG_FTRACE'
 This is a known interaction between Landlock and SELinux when running as root.
 Guardian Shell automatically drops privileges to the invoking user (via `SUDO_UID`).
 If the issue persists, use `--user <uid>` or see `docs/landlock-exec-investigation.md`.
+
+## Contributing
+
+Contributions are welcome. Please open an issue to discuss your idea before
+submitting a pull request.
+
+**Development setup:**
+```bash
+# Clone and build
+git clone https://github.com/anthropics/guardian-shell.git
+cd guardian-shell
+cargo xtask build-ebpf --release
+cargo build --release
+
+# Run tests (Linux only)
+cargo test --workspace
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for internals and [CLAUDE.md](CLAUDE.md)
+for the full development handoff document.
 
 ## License
 

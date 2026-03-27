@@ -149,22 +149,31 @@ Alternatives to eBPF and why we didn't use them:
 | **eBPF tracepoints** (our approach) | Kernel-level interception that can't be bypassed by userspace. Can read syscall arguments. Low overhead. Dynamic policy from userspace. |
 
 eBPF is the sweet spot: kernel-level visibility with userspace-level flexibility.
+Guardian Shell actually uses **all of** eBPF, Landlock, seccomp, and cgroups
+together as defense-in-depth — each technology covers gaps left by the others.
+See the [Security Tiers section in README.md](README.md#security-tiers).
 
 ---
 
 ## Architecture Overview
 
-Guardian Shell has four crates in a Cargo workspace:
+Guardian Shell has six crates in a Cargo workspace:
 
 ```
 guardian_shell/
 ├── guardian-common/     # Shared types (no_std) — runs in both kernel and userspace
 ├── guardian-ebpf/       # eBPF kernel program — compiled to BPF bytecode
-├── guardian/            # Userspace daemon — loads eBPF, processes events
+├── guardian/            # Userspace daemon — loads eBPF, processes events, dashboard, alerting
+├── guardian-launch/     # Agent launcher — cgroup isolation, Landlock, seccomp, privilege drop
+├── guardian-ctl/        # CLI management tool — list, stop, grant, approve/deny permissions
 └── xtask/              # Build tooling — cross-compiles eBPF program
 ```
 
-The system operates in two spaces simultaneously:
+The system operates in two spaces simultaneously. The diagram below shows the
+Phase 1 monitoring flow. Since then, enforcement (LSM hooks), cgroup isolation,
+Landlock, seccomp, and a web dashboard have been layered on top — see the
+[current architecture diagram in README.md](README.md#architecture) for the
+full picture.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -174,13 +183,14 @@ The system operates in two spaces simultaneously:
 │  │ config.toml │───>│              Guardian Daemon                     │  │
 │  └─────────────┘    │                                                 │  │
 │                      │  1. Parse config, validate policy               │  │
-│                      │  2. Load eBPF program into kernel               │  │
-│                      │  3. Populate WATCHED_COMMS map                  │  │
-│                      │  4. Attach to sys_enter_openat tracepoint       │  │
-│                      │  5. Read events from perf buffer (async, N CPUs)│  │
-│                      │  6. Evaluate policy: allow or deny?             │  │
-│                      │  7. Log decision                                │  │
-│                      └──────────────────────┬──────────────────────────┘  │
+│  ┌─────────────┐    │  2. Load eBPF program into kernel               │  │
+│  │ guardian-   │<──>│  3. Populate BPF maps (comms, cgroups, policy)  │  │
+│  │ launch     │    │  4. Attach tracepoints + LSM hooks              │  │
+│  └─────────────┘    │  5. IPC server (Unix socket)                    │  │
+│  ┌─────────────┐    │  6. Web dashboard (axum + htmx)                 │  │
+│  │ guardian-   │<──>│  7. Alerting (Slack, email, webhook, Prometheus)│  │
+│  │ ctl        │    │  8. Permission request handling                  │  │
+│  └─────────────┘    └──────────────────────┬──────────────────────────┘  │
 │                                              │ perf buffer                │
 │ ═════════════════════════════════════════════╪════════════════════════════ │
 │                                              │                            │
@@ -188,28 +198,21 @@ The system operates in two spaces simultaneously:
 │                                              │                            │
 │  ┌───────────────────────────────────────────┴─────────────────────────┐ │
 │  │                    eBPF Program (BPF VM)                             │ │
-│  │              attached to: syscalls/sys_enter_openat                   │ │
+│  │  Tracepoints: openat, open, openat2, execve, connect                 │ │
+│  │  LSM hooks:   file_open, bprm_check_security, socket_connect,       │ │
+│  │               inode_rename, inode_unlink, inode_link                  │ │
 │  │                                                                      │ │
-│  │  For EVERY openat() call on the entire system:                       │ │
-│  │                                                                      │ │
-│  │  1. bpf_get_current_comm()  → get process name                      │ │
-│  │  2. WATCHED_COMMS.get(&comm) → is this process watched?             │ │
-│  │     ├─ No  → return 0 (ignore, ~50ns overhead)                      │ │
-│  │     └─ Yes → continue ↓                                             │ │
-│  │  3. Read PID, UID, filename, flags from syscall args                │ │
-│  │  4. Write FileAccessEvent to per-CPU scratch buffer                 │ │
-│  │  5. EVENTS.output() → send to userspace via perf ring buffer        │ │
+│  │  3-tier identification: cgroup ID → TGID → comm name                │ │
+│  │  Kernel-side policy evaluation with BPF maps                        │ │
+│  │  PENDING_DENY maps for tracepoint→LSM enforcement handoff           │ │
 │  └──────────────────────────────────────────────────────────────────────┘ │
 │                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────────┐ │
-│  │   WATCHED_COMMS map     EVENT_BUF (per-CPU)     EVENTS (perf ring)  │ │
-│  │   ┌──────┬───┐          ┌──────────────┐        ┌───────────────┐  │ │
-│  │   │"cat" │ 1 │          │CPU0: [292 B] │        │CPU0: ●●●○○○○ │  │ │
-│  │   │"node"│ 1 │          │CPU1: [292 B] │        │CPU1: ●●○○○○○ │  │ │
-│  │   │"py3" │ 1 │          │CPU2: [292 B] │        │CPU2: ●○○○○○○ │  │ │
-│  │   └──────┴───┘          │CPU3: [292 B] │        │CPU3: ○○○○○○○ │  │ │
-│  │                          └──────────────┘        └───────────────┘  │ │
-│  └──────────────────────────────────────────────────────────────────────┘ │
+│  ┌────────────────────┐  ┌──────────────┐  ┌──────────────────────────┐ │
+│  │   Landlock LSM     │  │ Seccomp BPF  │  │ Cgroup v2 isolation     │ │
+│  │   (inode-level     │  │ (blocks      │  │ (resource limits,       │ │
+│  │    file control)   │  │  io_uring,   │  │  unspoofable identity)  │ │
+│  │                    │  │  mount, etc) │  │                          │ │
+│  └────────────────────┘  └──────────────┘  └──────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -259,9 +262,15 @@ eBPF has no heap allocator. Every data structure must have a known size at compi
 **Target**: `bpfel-unknown-none` (BPF bytecode, little-endian)
 **Constraints**: `#![no_std]`, `#![no_main]`, 512-byte stack, must pass BPF verifier
 
-This is the eBPF program that runs inside the kernel. It's attached to the `sys_enter_openat` tracepoint, which fires every time any process on the system calls `openat()` — the syscall that opens files.
+This is the eBPF program that runs inside the kernel. The diagram below shows the
+original Phase 1 flow for `sys_enter_openat`. The current program is significantly
+more complex: it attaches to 5 tracepoints (`openat`, `open`, `openat2`, `execve`,
+`connect`) and 6 LSM hooks (`file_open`, `bprm_check_security`, `socket_connect`,
+`inode_rename`, `inode_unlink`, `inode_link`), uses 3-tier agent identification
+(cgroup ID → TGID → comm), evaluates policy in-kernel via BPF maps, and uses the
+PENDING_DENY pattern for tracepoint→LSM enforcement handoff.
 
-**Program flow:**
+**Phase 1 program flow (simplified):**
 
 ```
 openat() called by any process
@@ -335,50 +344,60 @@ cat /sys/kernel/debug/tracing/events/syscalls/sys_enter_openat/format
 
 ### guardian (userspace): Daemon
 
-**Path**: `guardian/src/main.rs` and `guardian/src/config.rs`
+**Path**: `guardian/src/main.rs`, `guardian/src/config.rs`, `guardian/src/ipc.rs`, `guardian/src/permissions.rs`
 **Target**: `x86_64-unknown-linux-gnu` (native Linux binary)
 
-The daemon orchestrates everything:
+The daemon orchestrates everything. The startup sequence below reflects the
+current Phase 11 state:
 
 **Startup sequence:**
 
 ```
-1. Parse CLI args (--config, --ebpf-program)
+1. Parse CLI args (--config, --ebpf-program, --validate-config)
          │
          ▼
 2. Load and validate config.toml
-   ├── Parse TOML
-   ├── Validate agent configs
-   ├── Warn about overly permissive patterns
-   └── Warn about relative paths
+   ├── Parse TOML, validate agent configs
+   ├── Build comm_cache (O(1) agent lookup)
+   └── Warn about overly permissive patterns
          │
          ▼
 3. Load eBPF program into kernel
    ├── Ebpf::load_file() reads ELF binary
-   ├── Kernel creates BPF maps
+   ├── Kernel creates BPF maps (20+ maps)
    └── Kernel relocates program references to maps
          │
          ▼
-4. Populate WATCHED_COMMS map
-   ├── For each agent in config:
-   │   Convert process_name to [u8; 16]
-   │   Insert into WATCHED_COMMS map
-   └── Log watched process names
+4. Populate BPF maps
+   ├── WATCHED_COMMS, ENFORCE_COMMS (comm-based agents)
+   ├── WATCHED_CGROUPS, ENFORCE_CGROUPS (cgroup agents)
+   ├── DENY/ALLOW/READONLY prefix+exact maps (policy rules)
+   ├── NET_DENY_PORTS, NET_ALLOW_PORTS (network policy)
+   ├── DYNAMIC_LINKERS, FAIL_CLOSED_CGROUPS
+   └── Build comm_cache HashMap for O(1) event lookup
          │
          ▼
-5. Attach eBPF program to tracepoint
-   ├── program.load() → load into BPF VM
-   └── program.attach("syscalls", "sys_enter_openat")
+5. Attach eBPF programs
+   ├── Tracepoints: openat, open, openat2, execve, connect
+   ├── LSM hooks: file_open, bprm_check_security, socket_connect,
+   │              inode_rename, inode_unlink, inode_link
+   └── Graceful fallback for unavailable hooks (openat2, LSM)
          │
          ▼
-6. Set up event processing
-   ├── Open perf buffer for each online CPU
-   ├── Spawn one async tokio task per CPU
-   └── Each task loops: read events → parse → check policy → log
+6. Start services
+   ├── IPC server (Unix socket, agent registration, permissions)
+   ├── Web dashboard (axum + htmx, SSE events)
+   ├── Alerting (JSON log, Slack, email, webhook, Prometheus)
+   ├── SQLite audit trail
+   └── Anomaly detection background task
          │
          ▼
-7. Wait for Ctrl+C
-   └── On signal: log shutdown, exit (kernel auto-cleans eBPF resources)
+7. Event processing loop
+   ├── Per-CPU async tasks read perf buffers
+   ├── Parse FileAccessEvent / ExecEvent / NetworkEvent
+   ├── O(1) agent lookup via comm_cache
+   ├── Log, alert, broadcast to dashboard
+   └── SIGHUP → reload config + rebuild maps
 ```
 
 **Event processing (per CPU, async):**
@@ -913,66 +932,36 @@ Looking back on the Phase 1 development, here's what we'd change:
 
 ---
 
-## What Comes Next
+## Development History
 
-Phase 1 gave us a working monitor. The next two phases turn Guardian Shell into a
-real enforcement tool with robust agent identification.
+Phase 1 gave us a working monitor. Since then, Guardian Shell has evolved through
+11 phases into a full enforcement tool with defense-in-depth security.
 
-### Phase 2: Enforcement + Exec Monitoring
+### Completed Phases
 
-The biggest limitation of Phase 1 is that it **logs but doesn't block**. A
-malicious or misconfigured agent can read `/etc/shadow` and Guardian will write
-a DENY log, but the read still succeeds.
+| Phase | What It Added |
+|-------|---------------|
+| **Phase 1** | eBPF monitoring via `sys_enter_openat` tracepoint, comm-based agent identification |
+| **Phase 2** | LSM `file_open` enforcement, `sys_enter_execve` monitoring, kernel-side policy evaluation |
+| **Phase 3** | Cgroup-based agent identity, `guardian-launch`, `guardian-ctl`, Unix socket IPC |
+| **Phase 4** | Alerting: JSON logs, Slack, email, webhooks, Prometheus metrics |
+| **Phase 5** | Web dashboard (axum + htmx + Alpine.js), SSE event stream, policy editor |
+| **Phase 6** | Interactive permission requests with human-in-the-loop approval |
+| **Phase 7** | Path normalization, openat2 hook, risk-based approval workflows, audit trail |
+| **Phase 8** | Seccomp hardening, inode LSM hooks, dynamic linker detection, dashboard auth |
+| **Phase 9** | Network enforcement via LSM `socket_connect`, port-based BPF policy maps |
+| **Phase 10** | Landlock LSM sandbox, expanded seccomp, PR_SET_NO_NEW_PRIVS, two security tiers |
+| **Phase 11** | PENDING map fail-closed, privilege dropping, CSRF protection, O(1) agent lookup, memory cleanup |
 
-Phase 2 fixes this by:
+> See [CLAUDE.md](CLAUDE.md) for detailed phase descriptions and
+> [docs/phase_*_implementation.md](docs/) for implementation notes.
 
-- **Replacing the tracepoint with LSM BPF hooks** (`security_file_open`). LSM
-  hooks fire *before* the kernel grants access, so returning `-EACCES` actually
-  blocks the file open. This moves Guardian from "security camera" to "security
-  guard."
-- **Adding `sys_enter_execve` monitoring.** Phase 1 only watches file opens.
-  Phase 2 will also track what commands agents execute (`curl`, `python`,
-  `bash -c ...`), giving visibility into agent behavior beyond file access.
-- **Process tree tracking.** When a watched agent spawns child processes, those
-  children inherit the parent's policy. This closes the loophole where an agent
-  could fork a subprocess to bypass monitoring.
-- **Moving policy evaluation into the eBPF program.** Currently, policy rules
-  are checked in userspace (after the fact). Phase 2 will encode allow/deny
-  rules into BPF maps so the kernel can make enforcement decisions at syscall
-  time with zero userspace latency.
+### What's Next
 
-> See [PHASE2_PLAN.md](PHASE2_PLAN.md) for the full implementation plan.
-
-### Phase 3: Robust Agent Identity + Guardian Launcher
-
-Phase 1's comm-based matching works but is fragile — any process named `cat`
-gets monitored, and an agent could rename itself with `prctl(PR_SET_NAME)`.
-
-Phase 3 fixes this by:
-
-- **Cgroup-based agent identification.** Each agent runs in its own cgroup
-  (e.g., `/sys/fs/cgroup/guardian.slice/claude-agent.scope`). The eBPF program
-  checks cgroup membership, which is kernel-enforced and can't be spoofed by
-  the agent.
-- **Guardian Launcher (`guardian-launch`).** A CLI tool that wraps any agent
-  command: `guardian-launch --agent claude -- claude-agent start`. The launcher
-  creates the cgroup, places the agent process in it, registers it with the
-  Guardian daemon, and applies the matching policy.
-- **Dynamic agent registration.** New agents can start after the daemon is
-  running. The launcher notifies the daemon via Unix socket, and the daemon
-  updates BPF maps in real time — no restart needed.
-- **Time-boxed permissions.** Temporary access grants like "allow `/etc/hosts`
-  for 5 minutes" with automatic revocation, enabling a human-in-the-loop
-  consent flow for sensitive operations.
-
-> See [PHASE3_PLAN.md](PHASE3_PLAN.md) for the full implementation plan.
-
-### Beyond Phase 3
-
-Phases 4 and 5 (outlined in [CLAUDE.md](CLAUDE.md)) focus on integration and
-usability: webhook alerts, Slack/email notifications, Prometheus metrics, a
-web dashboard, and a visual policy editor. These build on the enforcement and
-identity foundation from Phases 2 and 3.
+Phase 12 (planned) focuses on resilience and lifecycle: orphaned cgroup cleanup,
+agent re-adoption after daemon restart, and daemon watchdog. Phase 13 explores
+OpenShell-inspired features: L7 network inspection, credential isolation, and
+binary integrity verification.
 
 ---
 
@@ -984,7 +973,7 @@ identity foundation from Phases 2 and 3.
 | **BPF verifier** | Kernel component that statically analyzes eBPF programs to ensure safety before loading. |
 | **BPF map** | Shared data structure between kernel eBPF programs and userspace. Types include HashMap, Array, PerfEventArray, RingBuf. |
 | **Tracepoint** | A static instrumentation point in the kernel. `sys_enter_openat` fires on every file open. |
-| **LSM hook** | Linux Security Module hook. Can enforce access control decisions (block syscalls). Used in Phase 2. |
+| **LSM hook** | Linux Security Module hook. Can enforce access control decisions (block syscalls). Guardian uses `file_open`, `bprm_check_security`, `socket_connect`, `inode_rename`, `inode_unlink`, `inode_link`. |
 | **comm** | Process command name, stored in `task_struct->comm` and visible at `/proc/PID/comm`. Max 15 chars + null. |
 | **tgid** | Thread Group ID. What userspace calls "PID". The main thread's kernel PID. |
 | **pid** | In kernel context: the thread ID. Each thread has its own PID. The main thread's PID equals its TGID. |
@@ -998,6 +987,12 @@ identity foundation from Phases 2 and 3.
 | **perf buffer** | Memory-mapped ring buffer used by the kernel's perf subsystem. Events written by eBPF, read by userspace. |
 | **JIT** | Just-In-Time compilation. The kernel JIT-compiles BPF bytecode to native machine code for performance. |
 | **`AT_FDCWD`** | Special file descriptor value (-100) meaning "relative to current working directory". Used with `openat()`. |
+| **Landlock** | Linux security module (5.13+) for unprivileged, inode-level file access sandboxing. Immune to symlinks and TOCTOU races. Primary enforcement layer for cgroup agents. |
+| **seccomp** | Secure computing mode. Filters syscalls via BPF programs. Guardian blocks io_uring, memfd_create, mount, namespace escape, and other dangerous syscalls. |
+| **cgroup v2** | Kernel mechanism for grouping and controlling processes. Guardian uses cgroups for unspoofable agent identity and resource limits (memory, PIDs, CPU). |
+| **PENDING_DENY** | BPF HashMap used to pass deny decisions from tracepoints to LSM hooks. The tracepoint inserts; the LSM hook checks and removes. Per-CPU overflow arrays provide fail-closed backup. |
+| **guardian-launch** | Agent launcher binary that creates cgroup, registers with daemon, applies Landlock + seccomp + privilege drop, then execs the agent. |
+| **guardian-ctl** | CLI management tool for listing agents, stopping them, granting temporary access, and approving/denying permission requests. |
 
 ---
 

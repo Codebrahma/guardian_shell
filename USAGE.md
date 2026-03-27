@@ -2,9 +2,9 @@
 
 Guardian Shell is a Linux security tool that monitors and enforces file access policies for LLM agents (Claude Code, OpenAI Codex, Aider, OpenClaw, Cursor, etc.) using eBPF. It hooks into the kernel's file-open syscall, evaluates every file access against your policy rules in real time, and can block unauthorized access at the kernel level.
 
-**Current mode: Phase 10 — Hardened Cgroup Agents (Defense in Depth)**
+**Current mode: Phase 11 — Security Hardening & Performance**
 
-Guardian Shell now provides ten layers of protection:
+Guardian Shell now provides eleven layers of protection:
 - **Phase 1**: Monitor-only file access logging via eBPF tracepoints
 - **Phase 2**: Kernel-level enforcement via LSM BPF hooks (blocks denied access)
 - **Phase 3**: Unspoofable cgroup-based agent identity, resource limits, launcher wrapper, and time-based access grants
@@ -15,6 +15,7 @@ Guardian Shell now provides ten layers of protection:
 - **Phase 8**: Security hardening — inode protection (rename/unlink/hardlink enforcement), io_uring/memfd_create blocking via seccomp, BPF map capacity 1024, path truncation detection, dynamic linker detection, execveat hook, strict enforcement mode, dashboard authentication, risk-based configurable timeouts, CLI permission approval, grant accumulation limits, weighted justification analysis, anomaly detection, fail-closed mode
 - **Phase 9**: Network enforcement — LSM `socket_connect` hook for kernel-level connection blocking, port-based deny/allow BPF maps, per-cgroup network defaults
 - **Phase 10**: Hardened cgroup agents — Landlock LSM sandbox (inode-level, symlink-immune file access control), expanded seccomp filter (blocks mount/namespace/chroot escape), PR_SET_NO_NEW_PRIVS (prevents SUID escalation), IPC sandbox config delivery, two security tiers (hardened cgroup vs. legacy comm), Landlock TCP port filtering (kernel 6.7+)
+- **Phase 11**: Security hardening & performance — PENDING map fail-closed enforcement (per-CPU overflow arrays, 16K entries), privilege dropping in guardian-launch (SUDO_UID/SUDO_GID), grant accumulation enforcement before decision, CSRF protection, O(1) agent lookup cache, IPC read timeout, memory cleanup (rate limiter + grant accumulator TTL), default cgroup agent config, Debian/Ubuntu multiarch support
 
 ---
 
@@ -79,18 +80,24 @@ Guardian Shell now provides ten layers of protection:
     - [PR_SET_NO_NEW_PRIVS](#pr_set_no_new_privs)
     - [Kernel Requirements for Landlock](#kernel-requirements-for-landlock)
     - [Disabling Sandbox Layers](#disabling-sandbox-layers)
-12. [Understanding the Output](#understanding-the-output)
+12. [Security Hardening & Performance (Phase 11)](#security-hardening--performance-phase-11)
+    - [PENDING Map Fail-Closed](#pending-map-fail-closed)
+    - [Grant Accumulation Enforcement](#grant-accumulation-enforcement)
+    - [Performance: O(1) Agent Lookup](#performance-o1-agent-lookup)
+    - [Memory Leak Prevention](#memory-leak-prevention)
+    - [Default Cgroup Agent Config](#default-cgroup-agent-config)
+13. [Understanding the Output](#understanding-the-output)
     - [Startup Messages](#startup-messages)
     - [ALLOW Events](#allow-events)
     - [DENY Events](#deny-events)
     - [Event Fields](#event-fields)
-13. [Writing Effective Policies](#writing-effective-policies)
+14. [Writing Effective Policies](#writing-effective-policies)
     - [Principle of Least Privilege](#principle-of-least-privilege)
     - [Common Allow Patterns](#common-allow-patterns)
     - [Recommended Deny Patterns](#recommended-deny-patterns)
     - [Per-Agent Policies](#per-agent-policies)
     - [Tuning Your Policy](#tuning-your-policy)
-14. [Real-World Examples](#real-world-examples)
+15. [Real-World Examples](#real-world-examples)
     - [Monitoring Claude Code (comm-based)](#monitoring-claude-code-comm-based)
     - [Isolating Aider with Cgroups](#isolating-aider-with-cgroups)
     - [Running OpenClaw in a Sandbox](#running-openclaw-in-a-sandbox)
@@ -99,16 +106,16 @@ Guardian Shell now provides ten layers of protection:
     - [Hardened Aider with Full Sandbox](#hardened-aider-with-full-sandbox)
     - [Strict Lockdown Policy](#strict-lockdown-policy)
     - [Permissive Audit Policy](#permissive-audit-policy)
-15. [How It Works](#how-it-works)
+16. [How It Works](#how-it-works)
     - [Architecture Overview](#architecture-overview)
     - [eBPF and Tracepoints](#ebpf-and-tracepoints)
     - [3-Tier Agent Identification](#3-tier-agent-identification)
     - [Event Pipeline](#event-pipeline)
-16. [LLM Agent Security: Why This Matters](#llm-agent-security-why-this-matters)
-17. [Troubleshooting](#troubleshooting)
-18. [Security Considerations](#security-considerations)
-19. [Known Limitations](#known-limitations)
-20. [Roadmap](#roadmap)
+17. [LLM Agent Security: Why This Matters](#llm-agent-security-why-this-matters)
+18. [Troubleshooting](#troubleshooting)
+19. [Security Considerations](#security-considerations)
+20. [Known Limitations](#known-limitations)
+21. [Roadmap](#roadmap)
 
 ---
 
@@ -2625,7 +2632,7 @@ cargo install bpf-linker
 - **IPC connection limiting**: Maximum 64 concurrent connections to prevent resource exhaustion
 - **SSRF prevention**: Webhook and Slack URLs validated against private/loopback IP ranges
 - **Email injection prevention**: Subject line inputs sanitized to strip newline characters
-- **CDN integrity**: SRI (Subresource Integrity) hashes on all CDN-loaded scripts prevent supply chain attacks
+- **Bundled assets**: htmx and Alpine.js are embedded in the binary via rust-embed; no external CDN dependency
 
 ### Best Practices
 
@@ -2690,7 +2697,7 @@ cargo install bpf-linker
 | **Comm-based agents still spoofable** | Process name can be changed via `prctl(PR_SET_NAME)` | Use cgroup-based identity for untrusted agents |
 | **No webhook retry** | Failed webhook/Slack/email sends are logged and dropped | Monitor `alerts_sent{status="error"}` metric |
 | **Email password in plaintext** | SMTP password stored in config file | Protect config with `chmod 600` |
-| **Dashboard CDN dependency** | First load requires internet for TailwindCSS/htmx/Alpine.js; SRI hashes prevent tampering | Bundle libraries locally via rust-embed |
+| **No TailwindCSS utility classes** | Dashboard uses custom CSS only; htmx and Alpine.js are bundled locally via rust-embed | No internet required for dashboard |
 | **Policy edits don't update BPF maps** | Kernel enforcement rules unchanged until reload | Use "Reload Config" button or SIGHUP |
 | **Config comments lost on dashboard save** | TOML write-back removes original comments | Use version control for config files |
 | **openat2 requires kernel 5.6+** | `sys_enter_openat2` tracepoint not available on older kernels | Gracefully skipped; `openat` and `open` hooks still active |
@@ -2704,6 +2711,9 @@ cargo install bpf-linker
 | **Landlock grants are irreversible** | `guardian-ctl grant` only updates eBPF maps, not Landlock sandbox. Landlock baseline cannot be relaxed | Agent must be relaunched for truly expanded access |
 | **UDP not enforced by Landlock** | Landlock only filters TCP connect/bind. UDP `sendto()` unrestricted | Requires network namespace for UDP control |
 | **Comm-based agents lack Landlock/seccomp** | Tier 2 agents don't go through `guardian-launch` | Use cgroup agents for production security |
+| **Privilege drop requires SUDO_UID or --user** | Direct root login without sudo can't auto-detect target user | Use `--user`/`--group` flags or run via `sudo` |
+| **CSRF protection requires HX-Request header** | Non-htmx browser forms without auth token will be rejected | Use dashboard's built-in htmx forms or include header |
+| **DNS unmonitored** | DNS resolution happens before `connect()`. No domain-based policy possible | Port 53 can be controlled but not DNS content |
 
 ---
 
@@ -2748,7 +2758,7 @@ cargo install bpf-linker
 - [x] Preset configuration templates (minimal, recommended, strict, development)
 
 ### Phase 5 - Dashboard & UI ✅
-- [x] Embedded web dashboard (axum + htmx + Alpine.js + TailwindCSS)
+- [x] Embedded web dashboard (axum + htmx + Alpine.js)
 - [x] Real-time event streaming via SSE (Server-Sent Events)
 - [x] Live event feed with severity/action filtering
 - [x] Agent management UI (view, stop cgroup agents, grant temporary access)
@@ -2829,7 +2839,7 @@ cargo install bpf-linker
 - [x] `/metrics` endpoint requires auth when `auth_token` is configured
 - [x] SSRF prevention for webhook/Slack URLs (blocks private/loopback IPs)
 - [x] Email subject header injection prevention (newline sanitization)
-- [x] CDN SRI (Subresource Integrity) hashes on all dashboard scripts
+- [x] htmx and Alpine.js bundled locally via rust-embed (no CDN dependency)
 
 ### Phase 9 - Network Enforcement ✅
 
@@ -2855,3 +2865,29 @@ cargo install bpf-linker
 - [x] `--no-landlock` and `--no-seccomp-hardened` CLI flags for debugging
 - [x] Two security tiers documented: Tier 1 (hardened cgroup) vs Tier 2 (legacy comm)
 - [x] `strip_glob()` converts path patterns (`/tmp/**`) to Landlock PathBeneath base directories (`/tmp`)
+
+### Phase 11 - Security Hardening & Performance ✅
+
+**11a: Critical Security Fixes**
+- [x] PENDING map overflow fail-closed: per-CPU overflow arrays prevent enforcement bypass when BPF HashMaps are full (16,384 entries, up from 4,096)
+- [x] Privilege dropping: `guardian-launch` drops root to SUDO_UID/SUDO_GID before Landlock+exec (fixes Landlock+exec EACCES on SELinux)
+- [x] `--user`/`--group` flags for explicit UID/GID override
+- [x] Grant accumulation limits enforced before sending decision to agent (was checked after)
+
+**11b: High Security Fixes**
+- [x] Privilege drop mandatory on SELinux (bail instead of warn)
+- [x] Landlock default-allow returns error (not silent Ok)
+- [x] CSRF protection for dashboard (HX-Request header validation on POST/PUT/DELETE)
+
+**11c: Performance & Reliability**
+- [x] O(1) agent lookup via `comm_cache` HashMap (was O(N) linear scan per event)
+- [x] IPC socket 30-second read timeout (prevents client stall attacks)
+- [x] Rate limiter TTL cleanup (1 hour, prevents unbounded memory growth)
+- [x] Grant accumulator TTL cleanup (24 hours, hourly background task)
+- [x] BPF grant removal logged at WARN (was DEBUG)
+
+**11d: Usability & Platform**
+- [x] Default cgroup agent config auto-created on registration (sensible deny-all defaults)
+- [x] Debian/Ubuntu dynamic linker multiarch paths (`/lib/x86_64-linux-gnu/`)
+- [x] Dashboard form defaults updated for Fedora + Debian system paths
+- [x] Landlock system paths: `/usr/libexec`, `/sbin`, `/snap`, `/var`

@@ -93,7 +93,7 @@ guardian_shell/
 │   ├── Cargo.toml
 │   ├── askama.toml             # Template config
 │   ├── templates/              # Phase 5/6: Askama HTML templates
-│   │   ├── base.html           # Base layout (nav, head, TailwindCSS/htmx/Alpine.js, permission banner)
+│   │   ├── base.html           # Base layout (nav, head, htmx/Alpine.js, permission banner)
 │   │   ├── index.html          # Dashboard overview with status cards + recent events
 │   │   ├── events.html         # Live SSE event stream with filtering
 │   │   ├── agents.html         # Agent management (list, stop, grant with exec type)
@@ -102,7 +102,9 @@ guardian_shell/
 │   │   └── requests.html       # Phase 6: Permission requests (pending + resolved history)
 │   ├── static/                 # Phase 5: Static assets (embedded via rust-embed)
 │   │   ├── app.js              # Custom JavaScript
-│   │   └── app.css             # Custom CSS
+│   │   ├── app.css             # Custom CSS
+│   │   ├── htmx.min.js         # htmx library (bundled)
+│   │   └── alpine.min.js       # Alpine.js library (bundled)
 │   └── src/
 │       ├── main.rs             # Entry point, eBPF loading, event loop, IPC server
 │       ├── config.rs           # TOML parsing, policy engine, path normalization, alerting + dashboard config
@@ -118,6 +120,7 @@ guardian_shell/
 │       └── dashboard/          # Phase 5: Web Dashboard
 │           ├── mod.rs          # Axum router, static file handler, server startup
 │           ├── state.rs        # DashboardState (shared refs to IPC, alerts, event bus)
+│           ├── db.rs           # SQLite backend (permission audit trail)
 │           └── routes/
 │               ├── mod.rs      # Route module declarations
 │               ├── pages.rs    # Page handlers (/, /agents, /policy, /alerts, /events, /requests)
@@ -333,7 +336,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 11. **Email password stored in plaintext config**: Use file permissions to protect config
 12. **Dashboard policy changes don't update BPF maps**: Require daemon restart or SIGHUP
 13. **Config write-back loses comments**: Dashboard saves config as clean TOML
-14. **TailwindCSS/htmx/Alpine.js loaded from CDN**: Dashboard requires internet access
+14. **Dashboard uses custom CSS**: htmx and Alpine.js are bundled locally via rust-embed; no CDN or internet required
 15. **Landlock requires Linux 5.13+**: Gracefully skipped on older kernels. Network filtering requires 6.7+.
 16. **Landlock incompatible with `default = "allow"`**: Agents with permissive default skip Landlock sandbox.
 17. **Seccomp filter is x86_64 only**: Syscall numbers hardcoded for x86_64 in guardian-launch
@@ -378,7 +381,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 - **Preset configs** in `configs/` (minimal, recommended, strict, development)
 
 ### Phase 5: Dashboard & UI ✅ DONE
-- **Web dashboard** embedded in guardian binary (axum + htmx + Alpine.js + TailwindCSS)
+- **Web dashboard** embedded in guardian binary (axum + htmx + Alpine.js)
 - **Live event stream** via SSE with severity/action filtering
 - **Agent management**: view configured agents, stop cgroup agents, grant temporary access
 - **Policy editor**: edit file access and exec rules per agent, save to disk

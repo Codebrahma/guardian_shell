@@ -241,7 +241,7 @@ async fn main() -> Result<()> {
         populate_watched_tgids(&mut bpf, &config, enforce_mode)?;
 
     // 4b: Enforcement maps (deny/allow rules)
-    let policy_maps = if enforce_mode {
+    let mut policy_maps = if enforce_mode {
         let maps = populate_enforcement_maps(&mut bpf, &config)?;
         info!("Enforcement maps populated");
         Some(maps)
@@ -252,11 +252,15 @@ async fn main() -> Result<()> {
     };
 
     // 4c: Exec enforcement maps (Phase 7 — kernel-side exec blocking)
+    // The exec allow maps are already in policy_maps (taken by populate_enforcement_maps).
+    // Pass them to populate_exec_enforcement_maps to populate the deny/default maps.
     if enforce_mode {
-        if let Err(e) = populate_exec_enforcement_maps(&mut bpf, &config) {
-            warn!("Failed to populate exec enforcement maps: {}. Exec enforcement unavailable.", e);
-        } else {
-            info!("Exec enforcement maps populated");
+        if let Some(ref mut pm) = policy_maps {
+            if let Err(e) = populate_exec_enforcement_maps(&mut bpf, &config, &mut pm.exec_allow_prefixes, &mut pm.exec_allow_exact, &mut pm.exec_deny_prefixes, &mut pm.exec_deny_exact) {
+                warn!("Failed to populate exec enforcement maps: {}. Exec enforcement unavailable.", e);
+            } else {
+                info!("Exec enforcement maps populated");
+            }
         }
     }
 
@@ -948,26 +952,32 @@ fn populate_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<PolicyBp
         deny_count, allow_count, readonly_count
     );
 
+    // Take exec maps here so they can be included in PolicyBpfMaps for runtime grant updates.
+    // The exec deny/default/cgroup maps are populated in populate_exec_enforcement_maps.
+    let exec_allow_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        LpmTrie::try_from(bpf.take_map("EXEC_ALLOW_PREFIXES").context("EXEC_ALLOW_PREFIXES map not found")?)?;
+    let exec_allow_exact: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        HashMap::try_from(bpf.take_map("EXEC_ALLOW_EXACT").context("EXEC_ALLOW_EXACT map not found")?)?;
+    let exec_deny_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        LpmTrie::try_from(bpf.take_map("EXEC_DENY_PREFIXES").context("EXEC_DENY_PREFIXES map not found")?)?;
+    let exec_deny_exact: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> =
+        HashMap::try_from(bpf.take_map("EXEC_DENY_EXACT").context("EXEC_DENY_EXACT map not found")?)?;
+
     // Return map handles for dynamic updates (temporary grants)
     Ok(PolicyBpfMaps {
         allow_prefixes,
         allow_exact,
+        exec_allow_prefixes,
+        exec_allow_exact,
+        exec_deny_prefixes,
+        exec_deny_exact,
     })
 }
 
 /// Populate exec enforcement BPF maps from config.
-fn populate_exec_enforcement_maps(bpf: &mut Ebpf, config: &Config) -> Result<()> {
-    let mut exec_deny_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8> =
-        LpmTrie::try_from(bpf.take_map("EXEC_DENY_PREFIXES").context("EXEC_DENY_PREFIXES map not found")?)?;
-
-    let mut exec_deny_exact: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> =
-        HashMap::try_from(bpf.take_map("EXEC_DENY_EXACT").context("EXEC_DENY_EXACT map not found")?)?;
-
-    let mut exec_allow_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8> =
-        LpmTrie::try_from(bpf.take_map("EXEC_ALLOW_PREFIXES").context("EXEC_ALLOW_PREFIXES map not found")?)?;
-
-    let mut exec_allow_exact: HashMap<MapData, [u8; MAX_FILENAME_LEN], u8> =
-        HashMap::try_from(bpf.take_map("EXEC_ALLOW_EXACT").context("EXEC_ALLOW_EXACT map not found")?)?;
+/// Note: EXEC_ALLOW_PREFIXES and EXEC_ALLOW_EXACT are taken by populate_enforcement_maps
+/// and passed via PolicyBpfMaps for runtime grant updates. This function receives them as params.
+fn populate_exec_enforcement_maps(bpf: &mut Ebpf, config: &Config, exec_allow_prefixes: &mut LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8>, exec_allow_exact: &mut HashMap<MapData, [u8; MAX_FILENAME_LEN], u8>, exec_deny_prefixes: &mut LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8>, exec_deny_exact: &mut HashMap<MapData, [u8; MAX_FILENAME_LEN], u8>) -> Result<()> {
 
     let mut exec_default_action: HashMap<MapData, [u8; 16], u8> =
         HashMap::try_from(bpf.take_map("EXEC_DEFAULT_ACTION").context("EXEC_DEFAULT_ACTION map not found")?)?;

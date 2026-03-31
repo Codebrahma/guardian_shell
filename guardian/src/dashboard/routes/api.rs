@@ -357,6 +357,21 @@ pub async fn grant_access(
             }
         }
 
+        // Update exec BPF maps: remove from deny + add to allow.
+        // Deny is checked before allow in eBPF, so we must remove the deny entry.
+        if let Some(ref mut policy_maps) = ipc.policy_maps {
+            if is_prefix {
+                let prefix = format!("{}/", &form.path[..form.path.len() - 3]);
+                let key = crate::ipc::path_to_lpm_key_pub(prefix.as_bytes());
+                let _ = policy_maps.exec_deny_prefixes.remove(&key);
+                let _ = policy_maps.exec_allow_prefixes.insert(&key, 1, 0);
+            } else {
+                let key = crate::ipc::path_to_map_key_pub(form.path.as_bytes());
+                let _ = policy_maps.exec_deny_exact.remove(&key);
+                let _ = policy_maps.exec_allow_exact.insert(key, 1, 0);
+            }
+        }
+
         ipc.grants.push(crate::ipc::TemporaryGrant {
             agent_name: name.clone(),
             path: form.path.clone(),

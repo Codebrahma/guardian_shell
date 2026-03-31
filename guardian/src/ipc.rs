@@ -125,6 +125,10 @@ pub struct CgroupBpfMaps {
 pub struct PolicyBpfMaps {
     pub allow_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8>,
     pub allow_exact: BpfHashMap<MapData, [u8; MAX_FILENAME_LEN], u8>,
+    pub exec_allow_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8>,
+    pub exec_allow_exact: BpfHashMap<MapData, [u8; MAX_FILENAME_LEN], u8>,
+    pub exec_deny_prefixes: LpmTrie<MapData, [u8; MAX_FILENAME_LEN], u8>,
+    pub exec_deny_exact: BpfHashMap<MapData, [u8; MAX_FILENAME_LEN], u8>,
 }
 
 /// All shared IPC state.
@@ -173,11 +177,15 @@ pub async fn start_ipc_server(socket_path: &str, state: SharedIpcState) -> Resul
     let listener = UnixListener::bind(socket_path)
         .with_context(|| format!("Failed to bind IPC socket at {}", socket_path))?;
 
-    // Restrict socket to owner only (root). Prevents unprivileged local users
-    // from sending IPC commands (register agents, grant access, approve permissions).
+    // Allow all local users to connect to the socket. Authorization is enforced
+    // per-request: only root can issue privileged commands (Stop, Grant, Approve,
+    // Deny), while non-root users can only send RequestPermission (creates a
+    // pending request for human review — no security impact).
+    // This is required for cgroup agents with privilege dropping (Phase 11):
+    // guardian-ctl runs as the dropped user and needs socket access.
     let _ = std::fs::set_permissions(
         socket_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        std::os::unix::fs::PermissionsExt::from_mode(0o666),
     );
 
     info!("IPC server listening on {}", socket_path);
@@ -188,23 +196,17 @@ pub async fn start_ipc_server(socket_path: &str, state: SharedIpcState) -> Resul
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
-                // Verify peer credentials: only root (UID 0) may issue IPC commands.
-                // This prevents unprivileged local processes from manipulating agents.
-                match stream.peer_cred() {
-                    Ok(cred) => {
-                        if cred.uid() != 0 {
-                            warn!(
-                                "IPC connection rejected: peer UID {} is not root",
-                                cred.uid()
-                            );
-                            continue;
-                        }
-                    }
+                // Get peer UID for per-request authorization.
+                // Non-root UIDs are allowed to connect but can only send
+                // RequestPermission (safe: creates a pending request for human review).
+                // Privileged operations (Stop, Grant, Approve, Deny) require root.
+                let peer_uid = match stream.peer_cred() {
+                    Ok(cred) => cred.uid(),
                     Err(e) => {
                         warn!("IPC connection rejected: failed to get peer credentials: {}", e);
                         continue;
                     }
-                }
+                };
 
                 let permit = match semaphore.clone().try_acquire_owned() {
                     Ok(p) => p,
@@ -216,7 +218,7 @@ pub async fn start_ipc_server(socket_path: &str, state: SharedIpcState) -> Resul
 
                 let state = state.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, state).await {
+                    if let Err(e) = handle_connection(stream, state, peer_uid).await {
                         warn!("IPC connection error: {}", e);
                     }
                     drop(permit); // Release connection slot
@@ -234,7 +236,7 @@ pub async fn start_ipc_server(socket_path: &str, state: SharedIpcState) -> Resul
 const IPC_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Handle a single IPC connection.
-async fn handle_connection(mut stream: UnixStream, state: SharedIpcState) -> Result<()> {
+async fn handle_connection(mut stream: UnixStream, state: SharedIpcState, peer_uid: u32) -> Result<()> {
     // Read length-prefixed message with a timeout to prevent hanging on
     // malicious or buggy clients that connect but never send data.
     let mut len_buf = [0u8; 4];
@@ -260,6 +262,29 @@ async fn handle_connection(mut stream: UnixStream, state: SharedIpcState) -> Res
         .context("Failed to parse IPC request")?;
 
     debug!("IPC request: {:?}", request);
+
+    // Authorization: non-root UIDs may only send RequestPermission.
+    // This allows cgroup agents (which run with dropped privileges) to
+    // request permissions via guardian-ctl, while keeping privileged
+    // operations (Stop, Grant, Approve, Deny, Register) root-only.
+    if peer_uid != 0 {
+        let allowed = matches!(&request, IpcRequest::RequestPermission { .. });
+        if !allowed {
+            warn!(
+                "IPC request rejected: peer UID {} is not root (only RequestPermission allowed for non-root)",
+                peer_uid
+            );
+            let response = IpcResponse::Error {
+                message: format!("Permission denied: UID {} is not authorized for this operation", peer_uid),
+            };
+            let resp_json = serde_json::to_vec(&response)?;
+            let resp_len = (resp_json.len() as u32).to_be_bytes();
+            stream.write_all(&resp_len).await?;
+            stream.write_all(&resp_json).await?;
+            stream.flush().await?;
+            return Ok(());
+        }
+    }
 
     // Validate IPC request fields before processing
     if let Some(err) = validate_request(&request) {
@@ -743,6 +768,11 @@ async fn handle_grant_access(
             }
         }
 
+        // Update exec BPF maps: remove from deny + add to allow (including symlink alternates).
+        if let Some(ref mut policy_maps) = state.policy_maps {
+            apply_exec_grant_to_maps(policy_maps, path, is_prefix);
+        }
+
         state.grants.push(TemporaryGrant {
             agent_name: agent_name.to_string(),
             path: path.to_string(),
@@ -1142,6 +1172,69 @@ async fn handle_request_permission(
 
 /// Resolve a pending permission request (called from dashboard API).
 /// Returns Ok(()) if resolved, Err(msg) if not found.
+/// Generate symlink alternate paths for merged-usr systems.
+/// E.g., /usr/bin/curl → /bin/curl, /usr/sbin/curl, /sbin/curl
+fn exec_symlink_alternates(path: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let binary_name = match path.rsplit_once('/') {
+        Some((_, name)) => name,
+        None => return results,
+    };
+    let bin_dirs = ["/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/"];
+    let is_bin = bin_dirs.iter().any(|d| path.starts_with(d));
+    if is_bin {
+        for dir in &bin_dirs {
+            let candidate = format!("{}{}", dir, binary_name);
+            if candidate != path && std::path::Path::new(&candidate).exists() {
+                results.push(candidate);
+            }
+        }
+    }
+    results
+}
+
+/// Remove an exec path (and its symlink alternates) from deny maps,
+/// and add to allow maps. Used by exec grants.
+fn apply_exec_grant_to_maps(policy_maps: &mut PolicyBpfMaps, path: &str, is_prefix: bool) {
+    let mut paths = vec![path.to_string()];
+    if !is_prefix {
+        paths.extend(exec_symlink_alternates(path));
+    }
+    for p in &paths {
+        if is_prefix {
+            let prefix = strip_glob_to_prefix(p);
+            let key = path_to_lpm_key(prefix.as_bytes());
+            let _ = policy_maps.exec_deny_prefixes.remove(&key);
+            let _ = policy_maps.exec_allow_prefixes.insert(&key, 1, 0);
+        } else {
+            let key = path_to_map_key(p.as_bytes());
+            let _ = policy_maps.exec_deny_exact.remove(&key);
+            let _ = policy_maps.exec_allow_exact.insert(key, 1, 0);
+        }
+    }
+}
+
+/// Re-add an exec path (and its symlink alternates) to deny maps,
+/// and remove from allow maps. Used when exec grants expire.
+fn revoke_exec_grant_from_maps(policy_maps: &mut PolicyBpfMaps, path: &str, is_prefix: bool) {
+    let mut paths = vec![path.to_string()];
+    if !is_prefix {
+        paths.extend(exec_symlink_alternates(path));
+    }
+    for p in &paths {
+        if is_prefix {
+            let prefix = strip_glob_to_prefix(p);
+            let key = path_to_lpm_key(prefix.as_bytes());
+            let _ = policy_maps.exec_allow_prefixes.remove(&key);
+            let _ = policy_maps.exec_deny_prefixes.insert(&key, 1, 0);
+        } else {
+            let key = path_to_map_key(p.as_bytes());
+            let _ = policy_maps.exec_allow_exact.remove(&key);
+            let _ = policy_maps.exec_deny_exact.insert(key, 1, 0);
+        }
+    }
+}
+
 pub async fn resolve_permission(
     state: &SharedIpcState,
     permission_id: u64,
@@ -1214,6 +1307,10 @@ pub async fn resolve_permission(
                     if !exec.allow.contains(&pending.resource_path) {
                         exec.allow.push(pending.resource_path.clone());
                     }
+                }
+                // Update exec BPF maps: remove from deny + add to allow (including symlink alternates).
+                if let Some(ref mut policy_maps) = s.policy_maps {
+                    apply_exec_grant_to_maps(policy_maps, &pending.resource_path, is_prefix);
                 }
                 s.grants.push(TemporaryGrant {
                     agent_name: pending.agent_name.clone(),

@@ -94,24 +94,216 @@ allow set.
 
 ---
 
-## 3. What Was Added to OpenClaw
+## 3. Adding the Permission Tool to OpenClaw (Step-by-Step)
 
-### New File: `guardian-permission-tool.ts`
+This section explains how to add the `guardian_request_permission` tool to
+OpenClaw so the LLM can automatically request access when it hits EACCES.
 
-**Path:** `openclaw/src/agents/tools/guardian-permission-tool.ts`
+### Step 1: Create the tool file
 
-A new OpenClaw tool that wraps `guardian-ctl request-permission`. It:
+Create `openclaw/src/agents/tools/guardian-permission-tool.ts`:
 
-- Accepts `resource_type` ("file" or "exec"), `resource_path`, and optional `justification`
-- Shells out to: `guardian-ctl --socket /run/guardian.sock request-permission --name openclaw --path <path> --resource-type <type>`
-- Blocks up to 180s waiting for the human decision (daemon auto-denies at 120s)
-- Parses the response into a structured JSON result:
-  - `approved: true/false`
-  - `reason`: human-readable explanation
-  - `grant_duration_secs`: how long the grant lasts (if approved)
-  - `message`: context for the LLM to understand next steps
+```typescript
+import { Type } from "@sinclair/typebox";
+import { execSync } from "node:child_process";
+import { type AnyAgentTool, jsonResult, readStringParam } from "./common.js";
 
-**Tool parameters:**
+const GuardianPermissionSchema = Type.Object({
+  resource_type: Type.String({
+    description: '"file" for file access or "exec" for command execution',
+  }),
+  resource_path: Type.String({
+    description:
+      "Absolute path to the file or executable (e.g., /etc/hosts, /usr/bin/curl)",
+  }),
+  justification: Type.Optional(
+    Type.String({
+      description: "Brief explanation of why this access is needed",
+    }),
+  ),
+});
+
+export function createGuardianPermissionTool(opts?: {
+  agentName?: string;
+  guardianCtlPath?: string;
+  socketPath?: string;
+}): AnyAgentTool {
+  const agentName = opts?.agentName ?? "openclaw";
+  const ctlPath = opts?.guardianCtlPath
+    ?? "/home/suren/codebrahma/guardian_shell/target/release/guardian-ctl";
+  const socketPath = opts?.socketPath ?? "/run/guardian.sock";
+
+  return {
+    label: "Guardian Permission",
+    name: "guardian_request_permission",
+    displaySummary:
+      "Request temporary file or exec access from the Guardian Shell sandbox operator",
+    description:
+      "Request temporary permission for a file or command that is currently blocked by " +
+      "Guardian Shell. The request is sent to a human operator via the Guardian dashboard. " +
+      "This tool blocks until the operator approves or denies the request (up to 120s " +
+      "timeout). Use this when you get a 'Permission denied' (EACCES) error on a file " +
+      "read/write or command execution. Always provide a justification.",
+    parameters: GuardianPermissionSchema,
+    execute: async (_toolCallId, args) => {
+      const params = args as Record<string, unknown>;
+      const resourceType = readStringParam(params, "resource_type", { required: true });
+      const resourcePath = readStringParam(params, "resource_path", { required: true });
+      const justification = readStringParam(params, "justification");
+
+      if (resourceType !== "file" && resourceType !== "exec") {
+        return jsonResult({ approved: false, error: 'resource_type must be "file" or "exec"' });
+      }
+      if (!resourcePath.startsWith("/")) {
+        return jsonResult({ approved: false, error: "resource_path must be absolute" });
+      }
+
+      // IMPORTANT: --socket goes BEFORE the subcommand (it's a top-level flag)
+      const cmd = [
+        ctlPath, "--socket", socketPath,
+        "request-permission",
+        "--name", agentName,
+        "--path", resourcePath,
+        "--resource-type", resourceType,
+      ];
+      if (justification) {
+        cmd.push("--justification", JSON.stringify(justification));
+      }
+
+      try {
+        const stdout = execSync(cmd.join(" "), { timeout: 180_000, encoding: "utf-8" });
+        const match = stdout.match(/APPROVED:\s*(.+?)\s*\(granted for (\d+)s\)/);
+        if (match) {
+          return jsonResult({
+            approved: true,
+            reason: match[1],
+            grant_duration_secs: parseInt(match[2], 10),
+            message: `Permission APPROVED for ${resourceType} access to ${resourcePath}. ` +
+                     `Grant expires in ${match[2]}s — retry your command now.`,
+          });
+        }
+        return jsonResult({ approved: true, reason: stdout.trim(),
+          message: `Permission APPROVED for ${resourcePath}. Retry now.` });
+      } catch (err: unknown) {
+        const error = err as { stderr?: Buffer | string; stdout?: Buffer | string };
+        const stderr = error.stderr?.toString() ?? "";
+        const stdout = error.stdout?.toString() ?? "";
+        const denyMatch = stdout.match(/DENIED:\s*(.+)/);
+        const autoMatch = stdout.match(/AUTO[_-]DENIED:\s*(.+)/i);
+
+        if (autoMatch) {
+          return jsonResult({ approved: false, reason: autoMatch[1],
+            message: `AUTO-DENIED for ${resourcePath}. On the never-approve list.` });
+        }
+        if (stderr.includes("timed out") || stdout.includes("timed out")) {
+          return jsonResult({ approved: false, reason: "Timed out (120s)",
+            message: `Request timed out — no human responded within 120s.` });
+        }
+        if (stderr.includes("rate limit") || stdout.includes("rate limit")) {
+          return jsonResult({ approved: false, reason: "Rate limited",
+            message: "Too many requests. Wait before trying again." });
+        }
+        if (denyMatch) {
+          return jsonResult({ approved: false, reason: denyMatch[1],
+            message: `Permission DENIED: ${denyMatch[1]}` });
+        }
+        return jsonResult({ approved: false, reason: stderr || stdout || "Unknown error",
+          message: `Request failed: ${stderr || stdout || "Unknown error"}` });
+      }
+    },
+  };
+}
+```
+
+**Important notes:**
+- `--socket` must go **before** the `request-permission` subcommand (it's a
+  top-level flag in guardian-ctl, not a subcommand flag)
+- `guardianCtlPath` must point to the actual guardian-ctl binary location
+- The 180s timeout is above the daemon's 120s auto-deny to capture the response
+- `agentName` must match the agent name in Guardian Shell's `config.toml`
+
+### Step 2: Register the tool in `openclaw-tools.ts`
+
+Edit `openclaw/src/agents/openclaw-tools.ts`:
+
+**Add the import** (with the other tool imports at the top):
+
+```typescript
+import { createGuardianPermissionTool } from "./tools/guardian-permission-tool.js";
+```
+
+**Add to the tools array** (at the end of the array, before `];`):
+
+```typescript
+    ...(pdfTool ? [pdfTool] : []),
+    createGuardianPermissionTool(),   // <-- add this line
+  ];
+```
+
+To configure for a different agent name or guardian-ctl path:
+
+```typescript
+    createGuardianPermissionTool({
+      agentName: "my-agent",                    // must match config.toml
+      guardianCtlPath: "/usr/local/bin/guardian-ctl",
+      socketPath: "/run/guardian.sock",
+    }),
+```
+
+### Step 3: Add `guardian-ctl` to the agent's exec allow list
+
+In Guardian Shell's `config.toml`, add `guardian-ctl` to the openclaw agent's
+exec policy so it can run inside the cgroup:
+
+```toml
+[agents.exec_policy]
+allow = [
+    # ... existing entries ...
+    # Guardian Shell permission tool
+    "/home/suren/codebrahma/guardian_shell/target/release/guardian-ctl",
+]
+```
+
+Also ensure `/run/**` is in `file_access.allow` (for socket access):
+
+```toml
+[agents.file_access]
+allow = [
+    "/run/**",
+    # ... other entries ...
+]
+```
+
+### Step 4: Enable interactive permissions
+
+In `config.toml`, the agent needs `interactive = true`:
+
+```toml
+[agents.permissions]
+interactive = true
+max_grant_duration_secs = 300
+max_grant_total_secs = 1800
+auto_deny = ["/etc/shadow", "/home/suren/.ssh/**"]
+auto_approve = ["/tmp/**", "/proc/self/**"]
+```
+
+### Step 5: Build and launch
+
+```bash
+# 1. Build OpenClaw outside the cgroup (compiles the new tool)
+cd /path/to/openclaw
+pnpm openclaw --dev gateway
+# Wait for startup, then Ctrl+C
+
+# 2. Start Guardian daemon
+sudo RUST_LOG=info target/release/guardian --config config.toml
+
+# 3. Launch OpenClaw inside cgroup
+sudo guardian-launch --name openclaw --memory 2G --pids 150 -- \
+    pnpm openclaw --dev gateway
+```
+
+### Tool parameters reference
 
 | Parameter       | Required | Type   | Description                                              |
 |-----------------|----------|--------|----------------------------------------------------------|
@@ -119,12 +311,16 @@ A new OpenClaw tool that wraps `guardian-ctl request-permission`. It:
 | resource_path   | Yes      | string | Absolute path (e.g., `/usr/bin/curl`, `/etc/hosts`)      |
 | justification   | No       | string | Brief explanation of why access is needed                |
 
-### Registration in `openclaw-tools.ts`
+### How the LLM knows to use it
 
-**Path:** `openclaw/src/agents/openclaw-tools.ts`
+The tool's description tells the LLM to use it on EACCES errors. The flow:
 
-The tool is imported and added to the `createOpenClawTools()` tool array, making
-it available to all OpenClaw agent sessions.
+1. LLM tries to execute a command via the `exec` tool
+2. Gets "Permission denied" in the output
+3. Calls `guardian_request_permission` with the blocked path and a justification
+4. Blocks waiting for human decision (up to 120s)
+5. If approved → retries the command within the grant window
+6. If denied → reports failure and suggests alternatives
 
 ---
 

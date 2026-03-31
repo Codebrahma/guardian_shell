@@ -93,6 +93,118 @@
         <code class="inline" style="display: block; padding: 6px 8px; background: var(--bg-card); border-radius: 4px; margin-bottom: 8px; word-break: break-all;">sudo guardian-launch --name openclaw --memory 2G --pids 150 -- pnpm openclaw --dev gateway</code>
       </div>
 
+      <h4 class="section-subtitle">Adding the Permission Tool to OpenClaw</h4>
+      <div style="background: var(--bg-main); border-radius: 6px; padding: 12px; font-size: 12px; margin-bottom: 12px;">
+
+        <p class="text-sm" style="margin: 0 0 8px 0;"><strong>Step 1</strong> — Create the tool file at <code class="inline">openclaw/src/agents/tools/guardian-permission-tool.ts</code>:</p>
+        <details style="margin-bottom: 10px;">
+          <summary style="cursor: pointer; color: var(--accent); font-size: 12px;">Click to expand full source code</summary>
+          <pre style="background: var(--bg-card); border-radius: 4px; padding: 10px; margin-top: 6px; overflow-x: auto; font-size: 11px; line-height: 1.4;"><code>import { Type } from "@sinclair/typebox";
+import { execSync } from "node:child_process";
+import { type AnyAgentTool, jsonResult, readStringParam } from "./common.js";
+
+const GuardianPermissionSchema = Type.Object({
+  resource_type: Type.String({
+    description: &#x27;"file" for file access or "exec" for command execution&#x27;,
+  }),
+  resource_path: Type.String({
+    description: "Absolute path to the file or executable",
+  }),
+  justification: Type.Optional(
+    Type.String({ description: "Why this access is needed" }),
+  ),
+});
+
+export function createGuardianPermissionTool(opts?: {
+  agentName?: string;
+  guardianCtlPath?: string;
+  socketPath?: string;
+}): AnyAgentTool {
+  const agentName = opts?.agentName ?? "openclaw";
+  const ctlPath = opts?.guardianCtlPath
+    ?? "/home/suren/codebrahma/guardian_shell/target/release/guardian-ctl";
+  const socketPath = opts?.socketPath ?? "/run/guardian.sock";
+
+  return {
+    label: "Guardian Permission",
+    name: "guardian_request_permission",
+    displaySummary: "Request temporary access from Guardian Shell operator",
+    description:
+      "Request temporary permission for a blocked file or command. " +
+      "Blocks until human approves/denies (up to 120s). " +
+      "Use on EACCES errors. Always provide a justification.",
+    parameters: GuardianPermissionSchema,
+    execute: async (_toolCallId, args) =&gt; {
+      const params = args as Record&lt;string, unknown&gt;;
+      const resourceType = readStringParam(params, "resource_type", { required: true });
+      const resourcePath = readStringParam(params, "resource_path", { required: true });
+      const justification = readStringParam(params, "justification");
+
+      if (resourceType !== "file" &amp;&amp; resourceType !== "exec")
+        return jsonResult({ approved: false, error: &#x27;must be "file" or "exec"&#x27; });
+      if (!resourcePath.startsWith("/"))
+        return jsonResult({ approved: false, error: "must be absolute path" });
+
+      // --socket goes BEFORE the subcommand (top-level flag)
+      const cmd = [
+        ctlPath, "--socket", socketPath,
+        "request-permission",
+        "--name", agentName,
+        "--path", resourcePath,
+        "--resource-type", resourceType,
+      ];
+      if (justification) cmd.push("--justification", JSON.stringify(justification));
+
+      try {
+        const stdout = execSync(cmd.join(" "), { timeout: 180_000, encoding: "utf-8" });
+        const m = stdout.match(/APPROVED:\s*(.+?)\s*\(granted for (\d+)s\)/);
+        if (m) return jsonResult({ approved: true, reason: m[1],
+          grant_duration_secs: parseInt(m[2], 10),
+          message: `APPROVED for ${resourcePath}. Retry now (${m[2]}s grant).` });
+        return jsonResult({ approved: true, reason: stdout.trim() });
+      } catch (err: unknown) {
+        const e = err as { stderr?: Buffer|string; stdout?: Buffer|string };
+        const se = e.stderr?.toString() ?? "", so = e.stdout?.toString() ?? "";
+        if (/AUTO[_-]DENIED/i.test(so))
+          return jsonResult({ approved: false, message: "Auto-denied (never-approve list)" });
+        if (se.includes("timed out") || so.includes("timed out"))
+          return jsonResult({ approved: false, message: "Timed out (120s)" });
+        if (se.includes("rate limit") || so.includes("rate limit"))
+          return jsonResult({ approved: false, message: "Rate limited" });
+        const dm = so.match(/DENIED:\s*(.+)/);
+        if (dm) return jsonResult({ approved: false, message: `Denied: ${dm[1]}` });
+        return jsonResult({ approved: false, message: se || so || "Unknown error" });
+      }
+    },
+  };
+}</code></pre>
+        </details>
+
+        <p class="text-sm" style="margin: 0 0 8px 0;"><strong>Step 2</strong> — Register in <code class="inline">openclaw/src/agents/openclaw-tools.ts</code>:</p>
+        <pre style="background: var(--bg-card); border-radius: 4px; padding: 8px; font-size: 11px; margin-bottom: 10px; overflow-x: auto;"><code>// Add import at top:
+import { createGuardianPermissionTool } from "./tools/guardian-permission-tool.js";
+
+// Add to tools array (before the closing ]);
+    ...(pdfTool ? [pdfTool] : []),
+    createGuardianPermissionTool(),   // &lt;-- add this
+  ];</code></pre>
+
+        <p class="text-sm" style="margin: 0 0 8px 0;"><strong>Step 3</strong> — Add <code class="inline">guardian-ctl</code> to agent's exec allow list in <code class="inline">config.toml</code>:</p>
+        <pre style="background: var(--bg-card); border-radius: 4px; padding: 8px; font-size: 11px; margin-bottom: 10px; overflow-x: auto;"><code>[agents.exec_policy]
+allow = [
+    # ... existing entries ...
+    "/path/to/guardian-ctl",  # add this
+]</code></pre>
+
+        <p class="text-sm" style="margin: 0 0 8px 0;"><strong>Step 4</strong> — Enable interactive permissions in <code class="inline">config.toml</code>:</p>
+        <pre style="background: var(--bg-card); border-radius: 4px; padding: 8px; font-size: 11px; margin-bottom: 10px; overflow-x: auto;"><code>[agents.permissions]
+interactive = true
+max_grant_duration_secs = 300
+max_grant_total_secs = 1800</code></pre>
+
+        <p class="text-sm text-muted" style="margin: 0;">See <code class="inline">docs/openclaw-guardian-permission-integration.md</code> for the complete guide.</p>
+      </div>
+
       <h4 class="section-subtitle">Permission Request Flow</h4>
       <p class="text-sm text-muted" style="margin: 0 0 8px 0;">
         OpenClaw has a <code class="inline">guardian_request_permission</code> tool. When it gets "Permission denied" on an exec, it automatically requests approval from you via this dashboard.

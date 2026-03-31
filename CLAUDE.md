@@ -320,6 +320,9 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | Landlock default-deny only | Landlock has no deny rules — it's inherently default-deny. Agents with `file_access.default = "allow"` skip Landlock (incompatible model). |
 | System read paths in Landlock | Common paths (/usr/lib, /etc/resolv.conf, /dev/null, etc.) get read+execute for dynamic linking. Without these, most binaries can't start. |
 | Two security tiers | Cgroup agents get 4-layer defense (Landlock+seccomp+eBPF+cgroup). Comm-based agents get eBPF only. Clear documentation prevents false sense of security. |
+| Exec grant deny removal | eBPF checks deny before allow. Exec grants must remove the deny entry (and symlink alternates) then re-add on expiry. |
+| Per-request IPC auth | Socket is 0666 (world-accessible) but non-root UIDs can only send RequestPermission. Other commands require root. Enables cgroup agents with privilege drop to request permissions. |
+| OpenClaw guardian_request_permission tool | Shells out to guardian-ctl from inside the cgroup. Blocks up to 180s for human approval. Parses APPROVED/DENIED/AUTO-DENIED responses. |
 
 ## Known Limitations (Phase 11)
 
@@ -344,6 +347,9 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 19. **DNS unmonitored**: DNS resolution happens before `connect()`. No domain-based policy possible.
 20. **Privilege drop requires SUDO_UID or --user**: Direct root login without sudo can't auto-detect target user
 21. **CSRF protection requires HX-Request header**: Non-htmx browser forms without auth token will be rejected
+22. **Exec grants were not updating BPF maps**: Fixed — exec grants now write to EXEC_ALLOW_EXACT/EXEC_DENY_EXACT maps including symlink alternates
+23. **IPC socket was root-only**: Fixed — socket is now 0666 with per-request authorization (non-root can only send RequestPermission)
+24. **OpenClaw jiti build must run outside cgroup first**: Landlock sandbox blocks jiti TypeScript compilation. Run `pnpm openclaw --dev gateway` once outside cgroup before launching with guardian-launch.
 
 ## Build Notes
 

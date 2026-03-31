@@ -69,6 +69,83 @@
   </div>
 </div>
 
+
+<!-- OpenClaw Quick Start -->
+<div class="mt-lg" x-data="{ show: false }">
+  <div class="card" style="border-left: 3px solid var(--accent);">
+    <div style="cursor: pointer; padding: 12px 16px;" @click="show = !show">
+      <div class="flex items-center gap-md">
+        <span style="font-size: 20px;">🦞</span>
+        <div>
+          <strong style="color: var(--accent);">OpenClaw Agent Integration</strong>
+          <span class="text-xs text-muted" x-text="show ? '(click to collapse)' : '(click for setup guide)'"></span>
+        </div>
+      </div>
+    </div>
+    <div x-show="show" x-cloak style="padding: 0 16px 16px 16px; border-top: 1px solid var(--border);">
+      <h4 class="section-subtitle mt-md">Launch Procedure</h4>
+      <div style="background: var(--bg-main); border-radius: 6px; padding: 12px; font-size: 12px; margin-bottom: 12px;">
+        <p class="text-sm" style="margin: 0 0 8px 0;"><strong>Important:</strong> OpenClaw uses jiti (JIT TypeScript) for plugins. You must build outside the cgroup first, then launch inside it.</p>
+        <p class="text-sm" style="margin: 0 0 4px 0;"><strong>Step 1</strong> — Build TypeScript (run outside cgroup):</p>
+        <code class="inline" style="display: block; padding: 6px 8px; background: var(--bg-card); border-radius: 4px; margin-bottom: 8px; word-break: break-all;">pnpm openclaw --dev gateway</code>
+        <p class="text-sm" style="margin: 0 0 4px 0;"><strong>Step 2</strong> — Wait for startup, then Ctrl+C</p>
+        <p class="text-sm" style="margin: 0 0 4px 0;"><strong>Step 3</strong> — Launch inside cgroup sandbox:</p>
+        <code class="inline" style="display: block; padding: 6px 8px; background: var(--bg-card); border-radius: 4px; margin-bottom: 8px; word-break: break-all;">sudo guardian-launch --name openclaw --memory 2G --pids 150 -- pnpm openclaw --dev gateway</code>
+      </div>
+
+      <h4 class="section-subtitle">Permission Request Flow</h4>
+      <p class="text-sm text-muted" style="margin: 0 0 8px 0;">
+        OpenClaw has a <code class="inline">guardian_request_permission</code> tool. When it gets "Permission denied" on an exec, it automatically requests approval from you via this dashboard.
+      </p>
+      <div style="font-size: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+        <span class="badge badge-info">Telegram msg</span>
+        <span style="color: var(--text-muted);">→</span>
+        <span class="badge badge-critical">EACCES</span>
+        <span style="color: var(--text-muted);">→</span>
+        <span class="badge badge-warning">Tool call</span>
+        <span style="color: var(--text-muted);">→</span>
+        <span class="badge badge-purple">Dashboard</span>
+        <span style="color: var(--text-muted);">→</span>
+        <span class="badge badge-success">Approved</span>
+        <span style="color: var(--text-muted);">→</span>
+        <span class="badge badge-info">Retry succeeds</span>
+      </div>
+
+      <h4 class="section-subtitle">Test Prompts for Telegram</h4>
+      <table style="font-size: 12px; width: 100%; border-collapse: collapse;">
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;"><strong>Telegram Message</strong></td>
+          <td style="padding: 4px 8px;"><strong>Expected</strong></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;"><code class="inline">Run: curl https://httpbin.org/ip</code></td>
+          <td style="padding: 4px 8px;">Blocked → permission request → <a href="/requests" style="color: var(--accent);">approve here</a></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;"><code class="inline">Run: python3 -c "print('hi')"</code></td>
+          <td style="padding: 4px 8px;">Blocked → permission request → approve here</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 4px 8px;"><code class="inline">Read ~/.ssh/id_rsa</code></td>
+          <td style="padding: 4px 8px;">Auto-denied (in never-approve list)</td>
+        </tr>
+        <tr>
+          <td style="padding: 4px 8px;"><code class="inline">Write hello to /tmp/test.txt</code></td>
+          <td style="padding: 4px 8px;">Auto-approved (in auto-approve list)</td>
+        </tr>
+      </table>
+
+      <div class="mt-md" style="background: color-mix(in srgb, var(--warning) 8%, var(--bg-main)); border-radius: 6px; padding: 10px 12px;">
+        <p class="text-sm" style="margin: 0;"><strong style="color: var(--warning);">Note:</strong>
+          Exec grants work because Landlock does not enforce execute — only eBPF does.
+          File grants only work for paths already in Landlock's allow list.
+          The warning <code class="inline">.openclaw/AGENTS.md: Permission denied</code> is expected and harmless.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function recentEvents() {
   return {

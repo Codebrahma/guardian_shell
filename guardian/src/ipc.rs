@@ -861,6 +861,110 @@ async fn handle_request_permission(
             };
         }
 
+        // --- Landlock feasibility check ---
+        // Landlock is immutable after restrict_self(). If the requested resource
+        // would be blocked by Landlock, deny immediately — no point asking a human
+        // to approve a grant that the kernel will still block.
+        let is_landlock = s.agents.get(&agent_name)
+            .map(|a| a.landlock_active)
+            .unwrap_or(false);
+
+        if is_landlock {
+            let landlock_denied = if resource_type == "file" || resource_type == "exec" {
+                // Check if path is reachable under the Landlock ruleset.
+                // Landlock allows: file_access.allow (rw), file_access.read_only (ro),
+                // and system read paths (ro). Anything else is blocked.
+                let agent_cfg = s.config.agents.iter().find(|a| a.name == agent_name);
+                if let Some(cfg) = agent_cfg {
+                    let in_allow = cfg.file_access.allow.iter()
+                        .any(|p| crate::config::path_matches(&resource_path, p));
+                    let in_read_only = cfg.file_access.read_only.iter()
+                        .any(|p| crate::config::path_matches(&resource_path, p));
+                    let in_exec_allow = cfg.exec_policy.as_ref()
+                        .map(|e| e.allow.iter().any(|p| crate::config::path_matches(&resource_path, p)))
+                        .unwrap_or(false);
+
+                    // System read paths that Landlock grants read-only access to.
+                    const SYSTEM_READ_PATHS: &[&str] = &[
+                        "/usr/lib/**", "/usr/lib64/**", "/usr/libexec/**",
+                        "/lib/**", "/lib64/**", "/usr/share/**",
+                        "/usr/bin/**", "/usr/sbin/**", "/sbin/**",
+                        "/usr/local/**", "/etc/**",
+                        "/dev/null", "/dev/zero", "/dev/urandom", "/dev/random",
+                        "/dev/pts/**", "/dev/tty",
+                        "/var/**", "/snap/**", "/proc/self/**",
+                    ];
+                    let in_system = SYSTEM_READ_PATHS.iter()
+                        .any(|p| crate::config::path_matches(&resource_path, p));
+
+                    // For exec: binary must be in exec_allow or system read paths
+                    // (system paths like /usr/bin are read+execute in Landlock)
+                    if resource_type == "exec" {
+                        !in_exec_allow && !in_system && !in_allow
+                    } else {
+                        // For file: must be in allow, read_only, or system paths
+                        !in_allow && !in_read_only && !in_system
+                    }
+                } else {
+                    false // Can't find config, let normal flow handle it
+                }
+            } else if resource_type == "network" {
+                // Landlock TCP connect filtering: only net_allow_ports are permitted.
+                // If the port isn't in the allow list and net default is "deny", block it.
+                let agent_cfg = s.config.agents.iter().find(|a| a.name == agent_name);
+                if let Some(cfg) = agent_cfg {
+                    if let Some(ref net) = cfg.network_policy {
+                        // Parse port from resource_path (could be "port" or "host:port")
+                        let port: Option<u16> = resource_path.rsplit(':').next()
+                            .and_then(|s| s.parse().ok())
+                            .or_else(|| resource_path.parse().ok());
+                        if let Some(port) = port {
+                            // Landlock TCP connect: only allow_ports are permitted when default=deny
+                            net.default == "deny" && !net.allow_ports.contains(&port)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if landlock_denied {
+                let reason = format!(
+                    "Denied: enforced by Landlock sandbox (immutable).                      {} access to '{}' is not in the Landlock allow set                      and cannot be granted at runtime.",
+                    resource_type, resource_path
+                );
+                info!(
+                    "Permission request Landlock-denied: agent='{}' type='{}' path='{}'",
+                    agent_name, resource_type, resource_path
+                );
+                // Persist to audit trail
+                if let Some(ref db) = s.event_db {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let flags = vec!["landlock_enforced".to_string()];
+                    if let Err(e) = db.insert_permission_audit(
+                        s.next_permission_id, &agent_name, &resource_type, &resource_path,
+                        justification.as_deref(), "critical", &flags, &now, &now,
+                        false, &reason, None,
+                    ) {
+                        warn!("Failed to persist permission audit: {}", e);
+                    }
+                    s.next_permission_id += 1;
+                }
+                return IpcResponse::PermissionDecision {
+                    approved: false,
+                    reason,
+                    grant_duration_secs: None,
+                    warning: None,
+                };
+            }
+        }
+
         // --- Phase 7c: Permission Hardening ---
 
         // Clone permissions config to avoid holding immutable borrow while mutating rate_limits.

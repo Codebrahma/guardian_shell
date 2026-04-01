@@ -306,7 +306,7 @@
         const self = this;
         fetch('/api/permissions/' + id + '/approve', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'HX-Request': 'true' },
           body: 'duration=' + duration
         }).then(() => self.dismiss(id));
       },
@@ -314,7 +314,8 @@
       deny(id) {
         const self = this;
         fetch('/api/permissions/' + id + '/deny', {
-          method: 'POST'
+          method: 'POST',
+          headers: { 'HX-Request': 'true' }
         }).then(() => self.dismiss(id));
       }
     });

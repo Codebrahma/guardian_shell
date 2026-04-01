@@ -5,6 +5,19 @@
 {% block content %}
 <h2 class="section-title">Permission Requests</h2>
 
+<!-- Landlock grant limitation notice -->
+<div class="mb-md" style="background: color-mix(in srgb, var(--warning) 8%, var(--bg-main)); border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent); border-radius: 6px; padding: 10px 14px;">
+  <p class="text-sm" style="margin: 0 0 6px 0;"><strong style="color: var(--warning);">Landlock limits on-demand grants for cgroup agents</strong></p>
+  <p class="text-sm" style="margin: 0; color: var(--text-secondary); line-height: 1.5;">
+    Cgroup agents (Tier 1) with <code class="inline">default: deny</code> have an immutable Landlock sandbox applied at launch.
+    <strong>File access grants</strong> approved here only update the eBPF layer &mdash; Landlock will still block paths not in the original allow list.
+    <strong>Exec grants</strong> work for binaries in standard system paths (<code class="inline">/usr/bin</code>, <code class="inline">/usr/sbin</code>, etc.)
+    or the agent's <code class="inline">exec_allow</code> config, because those paths have Landlock read access.
+    Binaries at non-standard paths not readable by Landlock will still fail even with an exec grant.
+    To permanently allow a new path, add it to the agent's policy and restart the agent.
+  </p>
+</div>
+
 <!-- Pending Requests -->
 <div class="mb-lg">
   <h3 class="section-subtitle">Pending Requests</h3>

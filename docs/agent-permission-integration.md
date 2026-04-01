@@ -49,6 +49,8 @@ Agent unblocks <── decision sent back <── Human approves/denies on Dashb
 | `guardian-ctl request-permission` | file, exec (`-t exec`) | Yes (dashboard) | Agent asks, human decides |
 | Dashboard UI (agents page) | file, exec | No (immediate) | Operator grants via browser |
 
+> **Landlock limitation:** Cgroup agents with `file_access.default = "deny"` have an immutable Landlock sandbox. **File grants** only update eBPF maps — Landlock still blocks paths not in the original allow list. **Exec grants work** because Landlock does not enforce execute (only eBPF does). `guardian-ctl` prints a `WARNING:` to stderr when a file grant is approved for a Landlock-sandboxed agent. To allow a new file path, add it to the agent's config and restart.
+
 ---
 
 ## 1. Sample System Prompt for LLM Agents

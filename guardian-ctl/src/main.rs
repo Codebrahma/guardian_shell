@@ -219,12 +219,18 @@ fn main() -> Result<()> {
             approved,
             reason,
             grant_duration_secs,
+            warning,
         } => {
             if approved {
                 let dur = grant_duration_secs.unwrap_or(0);
                 println!("APPROVED: {} (granted for {}s)", reason, dur);
             } else {
                 println!("DENIED: {}", reason);
+            }
+            if let Some(w) = warning {
+                eprintln!("WARNING: {}", w);
+            }
+            if !approved {
                 std::process::exit(1);
             }
         }

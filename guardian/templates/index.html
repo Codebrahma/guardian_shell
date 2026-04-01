@@ -247,10 +247,21 @@ max_grant_total_secs = 1800</code></pre>
         </tr>
       </table>
 
-      <div class="mt-md" style="background: color-mix(in srgb, var(--warning) 8%, var(--bg-main)); border-radius: 6px; padding: 10px 12px;">
-        <p class="text-sm" style="margin: 0;"><strong style="color: var(--warning);">Note:</strong>
-          Exec grants work because Landlock does not enforce execute — only eBPF does.
-          File grants only work for paths already in Landlock's allow list.
+      <div class="mt-md" style="background: color-mix(in srgb, var(--warning) 8%, var(--bg-main)); border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent); border-radius: 6px; padding: 10px 12px;">
+        <p class="text-sm" style="margin: 0 0 6px 0;"><strong style="color: var(--warning);">Landlock limits on-demand file grants</strong></p>
+        <p class="text-sm" style="margin: 0 0 6px 0; line-height: 1.5;">
+          Cgroup agents (like OpenClaw) have an immutable Landlock sandbox applied at launch via <code class="inline">restrict_self()</code>.
+          <strong>File access grants</strong> approved via this dashboard or <code class="inline">guardian-ctl</code> only update eBPF maps &mdash;
+          Landlock will still block paths not in the original allow list. The daemon returns a warning in the IPC response and
+          <code class="inline">guardian-ctl</code> prints it to stderr.
+        </p>
+        <p class="text-sm" style="margin: 0 0 6px 0; line-height: 1.5;">
+          <strong>Exec grants</strong> work for binaries in standard system paths (<code class="inline">/usr/bin</code>,
+          <code class="inline">/usr/sbin</code>, etc.) or the agent's <code class="inline">exec_allow</code> config,
+          because those have Landlock read access. Binaries at non-standard paths not readable by Landlock
+          will still fail. To permanently allow a new path, add it to the agent's config and restart.
+        </p>
+        <p class="text-sm text-muted" style="margin: 0;">
           The warning <code class="inline">.openclaw/AGENTS.md: Permission denied</code> is expected and harmless.
         </p>
       </div>

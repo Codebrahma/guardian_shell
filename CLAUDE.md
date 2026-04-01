@@ -350,6 +350,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 22. **Exec grants were not updating BPF maps**: Fixed — exec grants now write to EXEC_ALLOW_EXACT/EXEC_DENY_EXACT maps including symlink alternates
 23. **IPC socket was root-only**: Fixed — socket is now 0666 with per-request authorization (non-root can only send RequestPermission)
 24. **OpenClaw jiti build must run outside cgroup first**: Landlock sandbox blocks jiti TypeScript compilation. Run `pnpm openclaw --dev gateway` once outside cgroup before launching with guardian-launch.
+25. **On-demand grants limited by Landlock**: Landlock is immutable after `restrict_self()`. Grants approved via dashboard or `guardian-ctl` only update eBPF maps — Landlock still blocks paths not in the original allow set. **File grants** only work for paths already in `file_access.allow` or system read paths. **Exec grants** work for binaries in standard system paths (`/usr/bin`, `/usr/sbin`, etc.) or `exec_allow` config — but binaries at non-standard paths (e.g. `/opt/custom/tool`) not readable by Landlock will still fail. The daemon returns a `warning` in the `PermissionDecision` IPC response, `guardian-ctl` prints it to stderr, and the `/requests` dashboard page displays a banner.
 
 ## Build Notes
 

@@ -635,6 +635,36 @@ Agent → guardian-ctl request-permission → daemon IPC → permission_bus: Non
 
 ---
 
+### 4.2b File Grants Ineffective for Landlock-Sandboxed Agents (MEDIUM)
+
+**Status:** Documented — warning added to dashboard and CLI
+
+#### What Happens
+
+Cgroup agents with `file_access.default = "deny"` have an immutable Landlock sandbox applied in `guardian-launch` via `landlock_restrict_self()`. Landlock rulesets **cannot be modified** after creation — not by the daemon, not by BPF map updates.
+
+When a human approves a **file access** grant (via dashboard or `guardian-ctl`), the daemon updates the eBPF allow maps. But Landlock sits in front of the eBPF layer and blocks the access at the VFS/inode level before eBPF is even consulted.
+
+```
+File grant approved → BPF ALLOW_EXACT map updated → Landlock still blocks → EACCES
+```
+
+**Exec grants are not affected** because Landlock does not enforce execute permissions — only the eBPF `bprm_check_security` LSM hook does. Exec grants update eBPF maps and work correctly.
+
+#### Impact
+
+- Operators may approve file grants thinking they took effect, but the agent still gets EACCES
+- Landlock denials are silent — no log entry, no dashboard event
+
+#### Mitigation
+
+- The daemon now includes a `warning` field in the `PermissionDecision` IPC response for file grants on Landlock-sandboxed agents
+- `guardian-ctl` prints `WARNING:` to stderr when this occurs
+- The dashboard `/requests` page displays a banner explaining the limitation
+- To permanently allow a new file path: add it to the agent's config and restart the agent
+
+---
+
 ### 4.3 No Anomaly Detection on Approval Patterns (MEDIUM)
 
 **Status:** Not implemented

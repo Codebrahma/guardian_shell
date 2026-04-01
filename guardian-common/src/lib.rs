@@ -352,6 +352,9 @@ pub mod ipc {
             reason: String,
             /// If approved, how long the grant lasts (seconds).
             grant_duration_secs: Option<u64>,
+            /// Optional warning (e.g., Landlock will still block this grant).
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            warning: Option<String>,
         },
 
         /// List of pending permission requests.

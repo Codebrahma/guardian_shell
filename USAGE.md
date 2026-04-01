@@ -771,6 +771,10 @@ else
 fi
 ```
 
+**Landlock limitation for cgroup agents:**
+
+Cgroup agents with `file_access.default = "deny"` have an immutable Landlock sandbox applied at launch. **File access grants** approved via the dashboard or CLI only update eBPF maps — Landlock will still block paths not in the original allow list. **Exec grants work** because Landlock does not enforce execute (only eBPF does). To permanently allow a new file path, add it to the agent's policy and restart the agent. `guardian-ctl` prints a `WARNING:` on stderr when a file grant is approved for a Landlock-sandboxed agent.
+
 **Requirements:**
 - The web dashboard must be enabled (`[dashboard] enabled = true` in config) OR use `guardian-ctl approve/deny` from the CLI
 - If the dashboard is disabled and no CLI approval is provided, requests are auto-denied after timeout

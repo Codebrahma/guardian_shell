@@ -260,6 +260,7 @@ Updated "Add Agent" form defaults to match real-world requirements:
 | 1.11 | MEDIUM | Port-only network policy | Roadmap — IP/domain filtering requires DNS interception |
 | 1.12 | MEDIUM | UDP not enforced | Roadmap — needs sendto/sendmsg hooks |
 | 1.13 | MEDIUM | Perf buffer overflow | Inherent — kernel-side perf buffers have fixed capacity |
+| NEW | MEDIUM | File grants ineffective with Landlock | Documented — Landlock is immutable after restrict_self(). File grants only update eBPF maps. Exec grants work. Warning added to IPC response, guardian-ctl stderr, and dashboard /requests page. |
 
 ---
 

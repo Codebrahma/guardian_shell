@@ -25,6 +25,8 @@ pub struct RegisteredAgent {
     pub cgroup_path: String,
     pub cgroup_id: u64,
     pub registered_at: Instant,
+    /// Whether Landlock sandbox is active for this agent (file_access.default == "deny").
+    pub landlock_active: bool,
 }
 
 /// The type of temporary grant.
@@ -611,11 +613,14 @@ async fn handle_register(
     }
 
     // Store registration
+    // Landlock is active when file_access.default == "deny" (Landlock is inherently default-deny).
+    let landlock_active = agent_config.file_access.default == "deny";
     let agent = RegisteredAgent {
         name: agent_name.clone(),
         cgroup_path: cgroup_path.clone(),
         cgroup_id,
         registered_at: Instant::now(),
+        landlock_active,
     };
     state.agents.insert(agent_name.clone(), agent);
 
@@ -852,6 +857,7 @@ async fn handle_request_permission(
                 approved: false,
                 reason: "Dashboard not enabled — no one to approve requests".to_string(),
                 grant_duration_secs: None,
+                warning: None,
             };
         }
 
@@ -886,6 +892,7 @@ async fn handle_request_permission(
                     pending_count, perm_config.max_pending_per_agent
                 ),
                 grant_duration_secs: None,
+                warning: None,
             };
         }
 
@@ -916,6 +923,7 @@ async fn handle_request_permission(
                 approved: false,
                 reason,
                 grant_duration_secs: None,
+                warning: None,
             };
         }
 
@@ -942,10 +950,25 @@ async fn handle_request_permission(
                 }
                 s.next_permission_id += 1;
             }
+            let warning = if resource_type == "file" {
+                let is_landlock = s.agents.get(&agent_name)
+                    .map(|a| a.landlock_active)
+                    .unwrap_or(false);
+                if is_landlock {
+                    Some("Landlock sandbox is active. File grants only take effect in \
+                          the eBPF layer — Landlock will still block paths not in the \
+                          original allow list.".to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             return IpcResponse::PermissionDecision {
                 approved: true,
                 reason,
                 grant_duration_secs: Some(max_duration),
+                warning,
             };
         }
 
@@ -976,6 +999,7 @@ async fn handle_request_permission(
                 approved: false,
                 reason: full_reason,
                 grant_duration_secs: None,
+                warning: None,
             };
         }
 
@@ -1078,10 +1102,30 @@ async fn handle_request_permission(
                 "Permission #{} resolved: approved={} reason='{}'",
                 request_id, decision.approved, decision.reason
             );
+
+            // Warn if approving a file grant for a Landlock-sandboxed agent.
+            // Landlock is immutable after restrict_self() — BPF map grants can't override it.
+            let warning = if decision.approved && resource_type == "file" {
+                let s = state.lock().await;
+                let is_landlock = s.agents.get(&agent_name)
+                    .map(|a| a.landlock_active)
+                    .unwrap_or(false);
+                if is_landlock {
+                    Some("Landlock sandbox is active for this agent. File grants only \
+                          take effect in the eBPF layer — Landlock will still block \
+                          access to paths not in the original allow list.".to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             IpcResponse::PermissionDecision {
                 approved: decision.approved,
                 reason: decision.reason,
                 grant_duration_secs: decision.grant_duration_secs,
+                warning,
             }
         }
         _ => {
@@ -1165,6 +1209,7 @@ async fn handle_request_permission(
                     timeout_secs
                 ),
                 grant_duration_secs: None,
+                warning: None,
             }
         }
     }

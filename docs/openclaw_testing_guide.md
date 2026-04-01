@@ -603,6 +603,8 @@ cat /var/log/guardian/events.json | grep '"agent":"openclaw"' | tail -20
 | **12. Fail-closed** | BPF overflow arrays | Map overflow → deny (not allow) |
 | **13. Anomaly detection** | Background task | Flags rubber-stamping, high volume, deny-then-approve |
 
+> **Landlock grant limitation:** Landlock is immutable after `restrict_self()`. On-demand **file access grants** approved via the dashboard or `guardian-ctl` only update eBPF maps — Landlock will still block paths not in the original allow list. **Exec grants work** because Landlock does not enforce execute (only eBPF does). `guardian-ctl` prints a `WARNING:` to stderr when a file grant is approved for a Landlock-sandboxed agent, and the dashboard `/requests` page displays a banner about this limitation. To permanently allow a new file path, add it to the agent's config and restart.
+
 ### Resource limits
 
 | Resource | Limit | Purpose |

@@ -213,6 +213,132 @@ This is a known interaction between Landlock and SELinux when running as root.
 Guardian Shell automatically drops privileges to the invoking user (via `SUDO_UID`).
 If the issue persists, use `--user <uid>` or see `docs/landlock-exec-investigation.md`.
 
+### Grant approved but agent still gets EACCES
+
+Cgroup agents with `file_access.default = "deny"` have an immutable Landlock sandbox
+applied at launch. Grants approved via the dashboard or `guardian-ctl` only update
+eBPF maps — Landlock cannot be modified after `restrict_self()`.
+
+**File grants:** Only work for paths already in the Landlock allow set (agent's
+`file_access.allow` list + system read paths). Grants for paths outside the allow set
+are silently blocked by Landlock. `guardian-ctl` prints a `WARNING:` when this occurs.
+
+**Exec grants:** Landlock does **not** handle `AccessFs::Execute` — exec enforcement is
+eBPF-only. However, to exec a binary the kernel must first **read** it. Binaries in
+standard system paths (`/usr/bin`, `/usr/sbin`, `/sbin`, `/usr/local`, `/lib`, etc.)
+are always readable because `guardian-launch` includes them as system read paths in
+the Landlock ruleset. Binaries in the agent's `exec_allow` config also get Landlock
+read access. But a binary at a non-standard path (e.g. `/opt/custom/tool`) that is
+not in `system_read_paths`, `file_allow`, or `exec_allow` will be blocked by Landlock
+at the read level — and an exec grant cannot fix that.
+
+**To permanently allow a new path**, add it to the agent's config and restart.
+
+## Permission Request System
+
+When an agent hits EACCES, it can request temporary access via `guardian-ctl request-permission`.
+The request goes through several checks before reaching a human:
+
+### Auto-Deny (instant, no human prompt)
+
+Resources on the `auto_deny` list are rejected immediately. No dashboard notification,
+no waiting. Configure in `config.toml`:
+
+```toml
+[agents.permissions]
+auto_deny = [
+  "/etc/shadow",
+  "/home/user/.ssh/**",
+  "/home/user/.gnupg/**",
+  "/home/user/.aws/**",
+]
+```
+
+### Auto-Approve (instant, no human prompt)
+
+Low-risk resources on the `auto_approve` list are granted immediately with a capped
+duration. No human approval needed:
+
+```toml
+[[agents.permissions.auto_approve]]
+pattern = "/tmp/**"
+max_duration_secs = 300    # 5 minutes max
+```
+
+### Rate Limiting
+
+Prevents agents from flooding the approval queue:
+
+| Limit | Default | Effect |
+|-------|---------|--------|
+| Per-minute | 3 requests | 4th request in same minute is rejected |
+| Per-hour | 15 requests | 16th request in same hour is rejected |
+| Max pending | 2 per agent | 3rd concurrent request is rejected |
+| Same-resource cooldown | 5 minutes | Re-requesting a denied resource is blocked |
+| Grant accumulation | 3600s (1hr) / 24h | Total granted time per resource capped |
+
+### Exponential Backoff After Denials
+
+Each consecutive denial doubles the cooldown before the agent can request again:
+
+| Consecutive denials | Cooldown (base 30s) | Effect |
+|---------------------|---------------------|--------|
+| 1 | 30s | Agent must wait 30s before next request |
+| 2 | 60s | |
+| 3 | 120s | |
+| 4 | 240s | |
+| 5+ | 600s (max) | Capped at 10 minutes |
+
+An approval resets the consecutive denial counter to zero.
+
+### Risk Classification
+
+Every request is scored on a 4-tier risk scale that determines UI friction:
+
+| Risk | Score | Wait timer | Type-to-confirm | Timeout | Examples |
+|------|-------|------------|-----------------|---------|----------|
+| Low | 0-25 | 0s | No | 60s | `/tmp/**`, `/proc/self/status` |
+| Medium | 26-50 | 3s | No | 120s | Most paths (base score) |
+| High | 51-75 | 5s | No | 180s | `/etc/passwd`, `/var/log/**`, execs like `curl` |
+| Critical | 76+ | 10s | Yes ("CONFIRM") | 300s | `/etc/shadow`, `/root/**` |
+
+Score modifiers: exec type (1.5x), post-denial retry (2x), high request rate (1.3x).
+
+### Justification Analysis
+
+If the agent provides a `--justification`, the text is scanned for social engineering
+patterns. Suspicious patterns bump the risk score:
+
+- **Urgency**: "urgent", "immediately", "emergency", "asap"
+- **Security bypass**: "disable security", "bypass", "override", "skip check"
+- **Reassurance**: "trust me", "don't worry", "it's safe", "it's harmless"
+- **Authority claims**: "admin told", "supervisor", "authorized by"
+- **Sensitive mentions**: "ssh key", "password", "credential", "secret"
+
+Score >= 3 bumps risk by one tier. Score >= 8 bumps by two tiers.
+
+### Configuration Reference
+
+```toml
+[agents.permissions]
+auto_deny = ["/etc/shadow", "/home/user/.ssh/**"]
+rate_limit_per_minute = 3
+rate_limit_per_hour = 15
+deny_cooldown_secs = 30
+max_pending_per_agent = 2
+max_grant_total_secs = 3600
+
+[[agents.permissions.auto_approve]]
+pattern = "/tmp/**"
+max_duration_secs = 300
+
+[agents.permissions.timeouts]
+low = 60
+medium = 120
+high = 180
+critical = 300
+```
+
 ## Contributing
 
 Contributions are welcome. Please open an issue to discuss your idea before

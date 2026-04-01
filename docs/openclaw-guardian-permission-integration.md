@@ -21,7 +21,9 @@ Key architectural facts:
 - **File enforcement has two layers:** Landlock (immutable at launch, inode-level)
   AND eBPF (runtime-updatable via BPF maps). File grants only work for paths
   already within Landlock's allow set. If Landlock blocks a path, no runtime
-  grant can override it.
+  grant can override it. The daemon now returns a `warning` in the IPC response
+  when a file grant is approved for a Landlock-sandboxed agent. `guardian-ctl`
+  prints this warning to stderr.
 - The `guardian_request_permission` tool was added to OpenClaw to let the LLM
   request temporary access when it hits EACCES.
 

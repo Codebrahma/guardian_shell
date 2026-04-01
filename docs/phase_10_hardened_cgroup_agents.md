@@ -292,6 +292,7 @@ The `seccompiler` dependency already exists. No other new dependencies needed.
 3. **`default = "allow"` agents**: Can't use Landlock sandbox (inherently default-deny).
 4. **Comm-based agents**: Don't go through `guardian-launch`, so no Landlock/Seccomp layers.
 5. **Landlock requires 5.13+**: Older kernels fall back to eBPF-only. Most production distros (Ubuntu 22.04+, RHEL 9+, Fedora 36+) have 5.13+.
+6. **On-demand file grants are ineffective**: Landlock is immutable after `restrict_self()`. File access grants approved via the dashboard or `guardian-ctl` only update eBPF maps — Landlock still blocks paths not in the original allow list. **Exec grants work** because Landlock does not enforce execute permissions (only eBPF does). To allow a new file path, add it to the agent's policy and restart the agent. The daemon includes a warning in the IPC response when approving file grants for Landlock-sandboxed agents, and the dashboard `/requests` page displays a banner about this limitation.
 
 ---
 

@@ -31,6 +31,9 @@ Guardian Shell now provides eleven layers of protection:
    - [File Access Policies](#file-access-policies)
    - [Pattern Matching](#pattern-matching)
    - [Policy Evaluation Order](#policy-evaluation-order)
+   - [Read-Only Paths](#read-only-paths)
+   - [Exec Policy](#exec-policy)
+   - [Network Policy](#network-policy)
 5. [Running Guardian Shell](#running-guardian-shell)
    - [CLI Options](#cli-options)
    - [Log Levels](#log-levels)
@@ -361,9 +364,18 @@ cpu_max = "200000 100000"      # 2 CPU cores
 | `name` | Yes | Human-readable name displayed in log output |
 | `process_name` | For comm-based | Process name to match (from `/proc/PID/comm`, max 15 characters) |
 | `identity` | No | `"comm"` (default) or `"cgroup"`. Determines how the agent is identified |
+| `watch_children` | No | Whether to track child processes of this agent. Default: `true` |
+| `fail_closed` | No | When `true`, deny access on any eBPF error (default: fail-open). See [Fail-Closed Mode](#fail-closed-mode) |
 | `file_access.default` | Yes | Default action when no pattern matches: `"allow"` or `"deny"` |
 | `file_access.allow` | Yes | List of path patterns that are allowed |
 | `file_access.deny` | Yes | List of path patterns that are denied |
+| `file_access.read_only` | No | List of path patterns allowed for reads but blocked for writes, deletes, renames, and hardlinks |
+| `exec_policy.default` | No | Default action for exec: `"allow"` or `"deny"`. If omitted, all exec is allowed |
+| `exec_policy.allow` | No | List of allowed command path patterns |
+| `exec_policy.deny` | No | List of denied command path patterns |
+| `network_policy.default` | No | Default action for outbound connections: `"allow"` or `"deny"`. If omitted, all connections are allowed |
+| `network_policy.allow_ports` | No | List of allowed destination ports |
+| `network_policy.deny_ports` | No | List of denied destination ports |
 | `resources.memory_max` | No | Memory limit for cgroup agents (e.g., `"4G"`, `"512M"`) |
 | `resources.pids_max` | No | Max number of processes for cgroup agents |
 | `resources.cpu_max` | No | CPU bandwidth limit (e.g., `"200000 100000"` = 2 cores) |
@@ -457,6 +469,112 @@ deny = ["/home/user/project/.env", "/home/user/project/**/.secret"]
 | `/home/user/project/sub/.secret` | DENIED | Matches deny pattern |
 | `/etc/passwd` | DENIED | No pattern matches, default is "deny" |
 | `/home/user/project/src/lib.rs` | ALLOWED | Matches recursive allow pattern |
+
+### Read-Only Paths
+
+The `read_only` list allows an agent to read specific files but blocks all destructive operations (writes, deletes, renames, hardlinks). This is useful for system files the agent needs to read but must never modify:
+
+```toml
+[agents.file_access]
+default = "deny"
+allow = ["/home/user/project/**", "/tmp/**"]
+deny = ["/etc/shadow"]
+read_only = [
+    "/etc/passwd",
+    "/etc/hosts",
+    "/etc/resolv.conf",
+    "/var/log/**",
+]
+```
+
+| File Path | Operation | Result | Reason |
+|-----------|-----------|--------|--------|
+| `/etc/passwd` | READ | ALLOWED | In read_only list |
+| `/etc/passwd` | WRITE | DENIED | read_only blocks writes |
+| `/etc/passwd` | RENAME | DENIED | read_only blocks renames |
+| `/var/log/syslog` | READ | ALLOWED | Matches read_only pattern |
+| `/etc/shadow` | READ | DENIED | deny overrides read_only |
+
+**Notes:**
+- Deny rules take precedence over read_only (same as with allow rules)
+- read_only paths are treated as allowed for read access (`file_open`) but eBPF blocks destructive operations
+- If a path is in both `allow` and `read_only`, the `allow` rule wins (full read-write access)
+
+### Exec Policy
+
+The optional `[agents.exec_policy]` section controls which commands the agent can execute. If omitted, all exec is allowed (monitor-only for exec events).
+
+```toml
+[agents.exec_policy]
+default = "deny"
+allow = [
+    "/usr/bin/python3",
+    "/usr/bin/git",
+    "/usr/bin/grep",
+    "/usr/bin/ls",
+]
+deny = [
+    "/usr/bin/curl",
+    "/usr/bin/wget",
+    "/usr/bin/ssh",
+    "/usr/bin/sudo",
+]
+```
+
+| Field | Values | Description |
+|-------|--------|-------------|
+| `default` | `"allow"` or `"deny"` | Default action when no pattern matches |
+| `allow` | List of path patterns | Commands the agent is permitted to execute |
+| `deny` | List of path patterns | Commands the agent is forbidden from executing |
+
+Policy evaluation follows the same deny-takes-precedence logic as file access: deny rules are checked first, then allow rules, then the default.
+
+**Exec enforcement in kernel:** The eBPF `bprm_check_security` LSM hook blocks denied exec at the kernel level — the agent's `execve()` call returns `EACCES`. The `PENDING_EXEC_DENY` map is separate from the file `PENDING_DENY` map because during execve, the kernel internally opens the binary (triggering `file_open` LSM), which would consume a shared entry.
+
+### Network Policy
+
+The optional `[agents.network_policy]` section controls outbound TCP connections. If omitted, all connections are allowed (monitor-only for network events).
+
+```toml
+[agents.network_policy]
+default = "deny"
+allow_ports = [443, 53]         # HTTPS and DNS only
+deny_ports = [22, 25, 587]     # Block SSH, SMTP
+```
+
+| Field | Values | Description |
+|-------|--------|-------------|
+| `default` | `"allow"` or `"deny"` | Default action when no port rule matches |
+| `allow_ports` | List of port numbers | Destination ports the agent can connect to |
+| `deny_ports` | List of port numbers | Destination ports the agent is forbidden from connecting to |
+
+Policy evaluation: deny ports are checked first, then allow ports, then the default.
+
+**Network enforcement in kernel:** The `sys_enter_connect` tracepoint parses the sockaddr, evaluates port-based policy, and sets `PENDING_NET_DENY`. The LSM `socket_connect` hook then blocks the connection by returning `-ECONNREFUSED`.
+
+**Landlock TCP filtering (kernel 6.7+):** For cgroup agents, Landlock also enforces TCP port restrictions at the inode level. This is an additional layer on top of eBPF — both must allow the connection. On kernels < 6.7, only eBPF network enforcement is active.
+
+**Limitations:**
+- Only TCP `connect()` is enforced. UDP `sendto()` without prior `connect()` is not monitored.
+- DNS resolution happens before `connect()`, so domain-based policy is not possible — only port-based.
+
+**Example — restrictive network policy:**
+
+```toml
+[agents.network_policy]
+default = "deny"
+allow_ports = [
+    443,    # HTTPS (API calls)
+    53,     # DNS
+]
+deny_ports = [
+    22,     # SSH (reverse tunneling)
+    25, 587, 465,  # SMTP (email exfiltration)
+    3306, 5432, 6379, 27017,  # Databases
+    2375, 2376,  # Docker API
+    20, 21,  # FTP
+]
+```
 
 ---
 
@@ -1493,7 +1611,7 @@ identity = "cgroup"
 default = "deny"                          # Landlock requires default-deny
 allow = ["/tmp/**", "/home/user/project/**"]  # → Landlock PathBeneath rules
 
-[agents.exec]
+[agents.exec_policy]
 default = "deny"
 allow = ["/usr/bin/python3", "/usr/bin/git"]  # → Landlock Execute rights
 
@@ -2255,7 +2373,7 @@ deny = [
     "/home/user/.aws/**",
 ]
 
-[agents.exec]
+[agents.exec_policy]
 default = "deny"
 allow = ["/usr/bin/python3", "/usr/bin/git", "/usr/bin/grep", "/usr/bin/find"]
 

@@ -97,6 +97,19 @@ target/release/guardian --config my-config.toml --validate-config
 └─────────────────────────────────────────────────────────┘
 ```
 
+## Enforcement Modes
+
+| Mode | Behavior | LSM Failure |
+|------|----------|-------------|
+| `monitor` | Log-only, no blocking | No LSM hooks loaded |
+| `enforce` | Kernel-level blocking via LSM | Warning logged, continues in monitor-only |
+| `strict` | Kernel-level blocking, no degradation | **Daemon exits** — refuses to run without enforcement |
+
+```toml
+[global]
+mode = "strict"  # recommended for production
+```
+
 ## Security Tiers
 
 | Tier | Identity | Layers | Use Case |
@@ -118,6 +131,40 @@ target/release/guardian --config my-config.toml --validate-config
 cp configs/recommended.toml my-config.toml
 sudo target/release/guardian --config my-config.toml
 ```
+
+## Agent Configuration
+
+Each agent has four policy sections (all except `file_access` are optional):
+
+```toml
+[[agents]]
+name = "my-agent"
+identity = "cgroup"          # "comm" or "cgroup"
+watch_children = true         # track child processes (default: true)
+fail_closed = true            # deny on eBPF error (default: false)
+
+[agents.file_access]
+default = "deny"
+allow = ["/home/user/project/**", "/tmp/**"]
+deny = ["/home/user/.ssh/**"]
+read_only = ["/etc/passwd", "/var/log/**"]  # read OK, write/delete blocked
+
+[agents.exec_policy]
+default = "deny"
+allow = ["/usr/bin/git", "/usr/bin/python3"]
+deny = ["/usr/bin/curl", "/usr/bin/ssh"]
+
+[agents.network_policy]
+default = "deny"
+allow_ports = [443, 53]       # HTTPS + DNS
+deny_ports = [22, 25]         # SSH, SMTP
+
+[agents.resources]
+memory_max = "4G"
+pids_max = 200
+```
+
+See [USAGE.md](USAGE.md) for full configuration reference with examples.
 
 ## Dashboard
 

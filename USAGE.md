@@ -891,7 +891,7 @@ fi
 
 **Landlock limitation for cgroup agents:**
 
-Cgroup agents with `file_access.default = "deny"` have an immutable Landlock sandbox applied at launch. **File access grants** approved via the dashboard or CLI only update eBPF maps — Landlock will still block paths not in the original allow list. **Exec grants work** because Landlock does not enforce execute (only eBPF does). To permanently allow a new file path, add it to the agent's policy and restart the agent. `guardian-ctl` prints a `WARNING:` on stderr when a file grant is approved for a Landlock-sandboxed agent.
+Cgroup agents with `file_access.default = "deny"` have an immutable Landlock sandbox applied at launch. Permission requests for files in `read_only` or system read paths are **denied immediately** by the daemon without prompting the dashboard — these paths have read-only access under Landlock, so write grants are impossible at runtime. `read_only` takes precedence over `allow`: even if a parent allow glob matches (e.g. `allow = ["/project/**"]` with `read_only = ["/project/notes.txt"]`), Landlock layer 2 blocks writes to the read-only path. `guardian-ctl` receives: `DENIED: '<path>' is Landlock read-only protected`. Paths outside any Landlock set are also denied immediately as unreachable. **File access grants** only work for paths in `file_access.allow` that are NOT also in `read_only`. **Exec grants work** because Landlock does not enforce execute (only eBPF does). To permanently allow a new file path, add it to the agent's policy and restart the agent.
 
 **Requirements:**
 - The web dashboard must be enabled (`[dashboard] enabled = true` in config) OR use `guardian-ctl approve/deny` from the CLI
@@ -1624,7 +1624,7 @@ No additional configuration needed — `guardian-launch` translates your existin
 
 **Important:** Landlock is inherently default-deny. Agents with `file_access.default = "allow"` cannot use Landlock — the sandbox is skipped with a warning, and the agent falls back to eBPF-only enforcement.
 
-**Important:** Landlock rules are irreversible once applied. Temporary grants via `guardian-ctl grant` only update eBPF maps, not the Landlock sandbox. The Landlock sandbox provides a baseline that cannot be weakened, even by the daemon.
+**Important:** Landlock rules are irreversible once applied. Temporary grants via `guardian-ctl grant` only update eBPF maps, not the Landlock sandbox. The Landlock sandbox provides a baseline that cannot be weakened, even by the daemon. Permission requests for `read_only` or system read paths are denied immediately — `read_only` overrides `allow` (Landlock layer 2 intersects rights across layers).
 
 ### Expanded Seccomp Hardening
 
@@ -2830,7 +2830,7 @@ cargo install bpf-linker
 | **Landlock requires kernel 5.13+** | Landlock sandbox unavailable on older kernels. Falls back to eBPF-only | Most production distros (Ubuntu 22.04+, RHEL 9+) have 5.13+ |
 | **Landlock network requires kernel 6.7+** | TCP port filtering unavailable on older kernels. Falls back to eBPF network enforcement | Filesystem sandbox still works on 5.13+ |
 | **Landlock incompatible with default-allow** | Landlock is inherently default-deny. Agents with `file_access.default = "allow"` skip Landlock | Use `default = "deny"` for full Landlock protection |
-| **Landlock grants are irreversible** | `guardian-ctl grant` only updates eBPF maps, not Landlock sandbox. Landlock baseline cannot be relaxed | Agent must be relaunched for truly expanded access |
+| **Landlock grants are irreversible** | `guardian-ctl grant` only updates eBPF maps, not Landlock sandbox. Landlock baseline cannot be relaxed. `read_only` overrides `allow` — permission requests for read-only paths are denied immediately (no dashboard prompt) | Agent must be relaunched for truly expanded access |
 | **UDP not enforced by Landlock** | Landlock only filters TCP connect/bind. UDP `sendto()` unrestricted | Requires network namespace for UDP control |
 | **Comm-based agents lack Landlock/seccomp** | Tier 2 agents don't go through `guardian-launch` | Use cgroup agents for production security |
 | **Privilege drop requires SUDO_UID or --user** | Direct root login without sudo can't auto-detect target user | Use `--user`/`--group` flags or run via `sudo` |

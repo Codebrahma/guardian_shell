@@ -321,6 +321,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 | System read paths in Landlock | Common paths (/usr/lib, /etc/resolv.conf, /dev/null, etc.) get read+execute for dynamic linking. Without these, most binaries can't start. |
 | Two security tiers | Cgroup agents get 4-layer defense (Landlock+seccomp+eBPF+cgroup). Comm-based agents get eBPF only. Clear documentation prevents false sense of security. |
 | Exec grant deny removal | eBPF checks deny before allow. Exec grants must remove the deny entry (and symlink alternates) then re-add on expiry. |
+| Landlock read-only immediate denial | Permission requests for `read_only` or system read paths are denied immediately by the daemon — no dashboard prompt. `read_only` takes precedence over `allow` (Landlock layer 2 intersects rights, blocking writes even when a parent allow glob matches). Avoids wasted human approval for grants the kernel will still block. |
 | Per-request IPC auth | Socket is 0666 (world-accessible) but non-root UIDs can only send RequestPermission. Other commands require root. Enables cgroup agents with privilege drop to request permissions. |
 | OpenClaw guardian_request_permission tool | Shells out to guardian-ctl from inside the cgroup. Blocks up to 180s for human approval. Parses APPROVED/DENIED/AUTO-DENIED responses. |
 
@@ -351,6 +352,7 @@ sudo target/release/guardian-ctl stop -n test-agent     # Stop the agent
 23. **IPC socket was root-only**: Fixed — socket is now 0666 with per-request authorization (non-root can only send RequestPermission)
 24. **OpenClaw jiti build must run outside cgroup first**: Landlock sandbox blocks jiti TypeScript compilation. Run `pnpm openclaw --dev gateway` once outside cgroup before launching with guardian-launch.
 25. **On-demand grants limited by Landlock**: Landlock is immutable after `restrict_self()`. Grants approved via dashboard or `guardian-ctl` only update eBPF maps — Landlock still blocks paths not in the original allow set. **File grants** only work for paths already in `file_access.allow` or system read paths. **Exec grants** work for binaries in standard system paths (`/usr/bin`, `/usr/sbin`, etc.) or `exec_allow` config — but binaries at non-standard paths (e.g. `/opt/custom/tool`) not readable by Landlock will still fail. The daemon returns a `warning` in the `PermissionDecision` IPC response, `guardian-ctl` prints it to stderr, and the `/requests` dashboard page displays a banner.
+26. **Read-only Landlock paths deny permission requests immediately**: Permission requests for files in `read_only` or system read paths are denied instantly by the daemon without sending to the dashboard. These paths have read-only access under Landlock — the agent already has read access, so a permission request implies write access which Landlock cannot grant at runtime. `read_only` takes precedence over `allow` (Landlock layer 2 blocks writes even if the parent allow glob matches). `guardian-ctl` receives `DENIED: '<path>' is Landlock read-only protected`.
 
 ## Build Notes
 

@@ -266,9 +266,13 @@ Cgroup agents with `file_access.default = "deny"` have an immutable Landlock san
 applied at launch. Grants approved via the dashboard or `guardian-ctl` only update
 eBPF maps — Landlock cannot be modified after `restrict_self()`.
 
-**File grants:** Only work for paths already in the Landlock allow set (agent's
-`file_access.allow` list + system read paths). Grants for paths outside the allow set
-are silently blocked by Landlock. `guardian-ctl` prints a `WARNING:` when this occurs.
+**File grants:** Only work for paths in `file_access.allow` that are NOT also in
+`file_access.read_only`. `read_only` takes precedence over `allow` — Landlock layer 2
+blocks writes even when a parent allow glob matches (e.g. `allow = ["/project/**"]` with
+`read_only = ["/project/config.txt"]` means `config.txt` is write-blocked). Permission
+requests for `read_only` or system read paths are **denied immediately** by the daemon
+(no dashboard prompt). `guardian-ctl` receives: `DENIED: '<path>' is Landlock read-only protected`.
+Paths outside any Landlock set are also denied immediately as unreachable.
 
 **Exec grants:** Landlock does **not** handle `AccessFs::Execute` — exec enforcement is
 eBPF-only. However, to exec a binary the kernel must first **read** it. Binaries in

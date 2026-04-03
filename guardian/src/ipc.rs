@@ -874,6 +874,10 @@ async fn handle_request_permission(
                 // Check if path is reachable under the Landlock ruleset.
                 // Landlock allows: file_access.allow (rw), file_access.read_only (ro),
                 // and system read paths (ro). Anything else is blocked.
+                // For file requests: only paths in `allow` (rw) can have write grants.
+                // Paths in read_only or system paths are read-only under Landlock —
+                // the agent already has read access so a permission request means
+                // write access, which Landlock cannot grant at runtime.
                 let agent_cfg = s.config.agents.iter().find(|a| a.name == agent_name);
                 if let Some(cfg) = agent_cfg {
                     let in_allow = cfg.file_access.allow.iter()
@@ -902,8 +906,17 @@ async fn handle_request_permission(
                     if resource_type == "exec" {
                         !in_exec_allow && !in_system && !in_allow
                     } else {
-                        // For file: must be in allow, read_only, or system paths
-                        !in_allow && !in_read_only && !in_system
+                        // For file: read_only takes precedence over allow.
+                        // Landlock layer 2 blocks writes to read_only paths even
+                        // if the parent allow glob matches. A path explicitly in
+                        // read_only is write-blocked at the inode level.
+                        // System read paths are also read-only under Landlock.
+                        if in_read_only {
+                            true // Explicitly read-only — writes impossible
+                        } else {
+                            // Only `allow` paths (not in read_only) have r+w
+                            !in_allow
+                        }
                     }
                 } else {
                     false // Can't find config, let normal flow handle it
@@ -934,19 +947,61 @@ async fn handle_request_permission(
                 false
             };
 
+            // For file requests, provide a more specific message when the path
+            // is Landlock read-only (in read_only list or system paths) vs not
+            // reachable at all.
+            let landlock_read_only = if landlock_denied && resource_type == "file" {
+                let agent_cfg = s.config.agents.iter().find(|a| a.name == agent_name);
+                if let Some(cfg) = agent_cfg {
+                    let in_read_only = cfg.file_access.read_only.iter()
+                        .any(|p| crate::config::path_matches(&resource_path, p));
+                    const SYSTEM_READ_PATHS: &[&str] = &[
+                        "/usr/lib/**", "/usr/lib64/**", "/usr/libexec/**",
+                        "/lib/**", "/lib64/**", "/usr/share/**",
+                        "/usr/bin/**", "/usr/sbin/**", "/sbin/**",
+                        "/usr/local/**", "/etc/**",
+                        "/dev/null", "/dev/zero", "/dev/urandom", "/dev/random",
+                        "/dev/pts/**", "/dev/tty",
+                        "/var/**", "/snap/**", "/proc/self/**",
+                    ];
+                    let in_system = SYSTEM_READ_PATHS.iter()
+                        .any(|p| crate::config::path_matches(&resource_path, p));
+                    in_read_only || in_system
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
             if landlock_denied {
-                let reason = format!(
-                    "Denied: enforced by Landlock sandbox (immutable).                      {} access to '{}' is not in the Landlock allow set                      and cannot be granted at runtime.",
-                    resource_type, resource_path
-                );
+                let reason = if landlock_read_only {
+                    format!(
+                        "Denied: '{}' is Landlock read-only protected. \
+                        Read access is already granted but write/modify access \
+                        cannot be granted at runtime — Landlock sandbox is immutable after launch.",
+                        resource_path
+                    )
+                } else {
+                    format!(
+                        "Denied: enforced by Landlock sandbox (immutable). \
+                        {} access to '{}' is not in the Landlock allow set \
+                        and cannot be granted at runtime.",
+                        resource_type, resource_path
+                    )
+                };
                 info!(
-                    "Permission request Landlock-denied: agent='{}' type='{}' path='{}'",
-                    agent_name, resource_type, resource_path
+                    "Permission request Landlock-denied: agent='{}' type='{}' path='{}' read_only={}",
+                    agent_name, resource_type, resource_path, landlock_read_only
                 );
                 // Persist to audit trail
                 if let Some(ref db) = s.event_db {
                     let now = chrono::Utc::now().to_rfc3339();
-                    let flags = vec!["landlock_enforced".to_string()];
+                    let flags = if landlock_read_only {
+                        vec!["landlock_read_only".to_string()]
+                    } else {
+                        vec!["landlock_enforced".to_string()]
+                    };
                     if let Err(e) = db.insert_permission_audit(
                         s.next_permission_id, &agent_name, &resource_type, &resource_path,
                         justification.as_deref(), "critical", &flags, &now, &now,
